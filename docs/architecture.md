@@ -10,7 +10,7 @@ pi-agora 是 pi 的协作引擎：一个每用户单实例的后台进程（daem
 - 共享桌面：[board.md](board.md)
 - 会议：[meetings.md](meetings.md)
 - 对话存档：[archive.md](archive.md)
-- HTTP API 与 pi-pane 集成协议：[integration.md](integration.md)
+- daemon HTTP API 与接入 pi-pane 的映射：[integration.md](integration.md)
 
 ## 设计约束
 
@@ -45,7 +45,9 @@ pi-agora 是 pi 的协作引擎：一个每用户单实例的后台进程（daem
 | CLI | `packages/cli` | 启停 daemon、列出和查看所有会话、答复待处理提问、以用户身份召开会议 |
 | archive adapter | `packages/archive` | 版本化只读存档读取库，daemon 不运行时也能用，详见 [archive.md](archive.md) |
 | pane 插件 | `packages/pane-plugin` | 运行在 pi-pane 服务端，把 daemon 的数据映射成 pi-pane 的树节点、面板、动作、表单，详见 [integration.md](integration.md) |
-| 协议类型 | `packages/protocol` | HTTP API 和 pane 协议的 TypeScript 类型与 JSON schema |
+| 协议类型 | `packages/protocol` | daemon HTTP API 的 TypeScript 类型与 JSON schema |
+
+依赖方向：`daemon`、`extension`、`cli`、`archive`、`protocol` 都不依赖 pi-pane；只有 `pane-plugin` 把 pi-pane 的 `@pi-pane/plugin-api` 作为 peer 依赖。pane 插件接口（树节点、面板、动作、表单、通知等类型）以 pi-pane 仓库的 `docs/plugin-api.md` 为准，daemon API 和 agora 到 pane 的映射以本仓库的 [integration.md](integration.md) 为准。
 
 模块边界：
 
@@ -78,7 +80,7 @@ interface LaunchSpec {
   thinking: ThinkingLevel;
   profile: "explore" | "review" | "implement";
   resume?: { sessionFile: string }; // 有值时用 --session 恢复
-  env: Record<string, string>;  // AGORA_URL、AGORA_LAUNCH_TICKET
+  env: Record<string, string>;  // AGORA_URL、AGORA_LAUNCH_TICKET；不含 AGORA_HOME，见“user 身份的来源检查与审计”
 }
 ```
 
@@ -156,7 +158,7 @@ node <pi>/dist/bundle/cli.js --mode rpc
 2. 不兼容 → 拒绝连接并提示运行 `agora shutdown`。
 3. 新 daemon 启动时发现 `schema_version` 低于自身 → 先把 `agora.db` 复制到 `backups/agora-<旧版本>-<时间>.db`，再在一个事务里执行迁移。迁移失败则保持旧库不动并退出。
 
-协议版本协商见 [integration.md](integration.md#协议版本协商)。
+版本协商见 [integration.md](integration.md#版本协商)。
 
 ## 身份与鉴权
 
@@ -198,11 +200,29 @@ principal 是 daemon 里的行为主体，所有任务、提问、board 条目�
 - **控制租约**：同一 principal 同时只允许一个活动连接持有租约（续租间隔 30 秒，90 秒未续视为释放）。第二个连接认领时返回 `409 lease_held`；用户可在 CLI 用 `agora takeover <principalId>` 强制转移。
 - **协作会话**：daemon 启动子进程时生成一次性 launch ticket，经环境变量 `AGORA_LAUNCH_TICKET` 传入。扩展启动后立即用 `POST /v1/auth/launch` 兑换连接 token，并从 `process.env` 删除该变量，避免 bash 子进程继承。ticket 60 秒内有效、只能兑换一次，进程退出后对应 token 作废，重新拉起换新 ticket。
 
+### user 身份的来源检查与审计
+
+implement 档位的子代理开了 bash，和用户是同一个操作系统用户，可以读到 `secret/user.key`，进而以 user 身份答复自己转给用户的提问、给自己加预算。提示词注入就可能触发这种行为。以下措施用来抬高门槛，定位仍是“工具层权限”，不是隔离：
+
+1. **对端进程检查**：daemon 处理任何用用户密钥完成的认证（`as: "user"`，以及主会话的 register / reclaim，它们同样依赖用户密钥和可读的恢复凭证）时，按这条 loopback TCP 连接的对端端口查出对端进程 PID，再沿父进程链向上查。如果它在任何 agora 管理的会话进程树里，拒绝认证（`403 origin_in_managed_tree`）并记审计。
+   - Windows 上查 TCP 连接的所属进程用 `GetExtendedTcpTable` 一类系统接口，查父进程用进程快照一类接口；**具体 API 及在 Node 里的调用方式（原生模块或辅助程序）未核实**，P0 验证。
+   - pane 插件运行在 pi-pane 服务端里，它与 daemon 之间的连接对端是 pi-pane 进程，查不到真正发起操作的一方。所以 pane 插件在每个 user 操作上转交 pi-pane 测得的浏览器请求对端 PID（`Agora-Origin-Pid`，见 [integration.md](integration.md#约定)），daemon 对它做同样的检查。子代理用偷到的 pi-pane 访问令牌直接调 pi-pane 接口时，会在这一步被拦下。
+   - CLI 连接的对端就是 CLI 进程本身，直接检查。
+2. **审计**：所有 user 身份的操作（答复转交的提问、加预算、裁决、批准恢复、停止、接管任务、takeover）写入 `audit_log`：操作、目标、来源客户端（`cli` / `pane`，客户端自报）、测得的 PID 与可执行文件路径、时间。被拒绝的尝试也记录。pi-pane 和 CLI 在提问、决策的详情里显示“由谁、从哪里答复”，如“用户（pi-pane，PID 8812，2026-11-05 10:21）”。
+3. **文件工具拦截密钥目录**：所有档位的 `read`、`grep`、`find`、`ls`、`edit`、`write` 路径校验都拒绝 `AGORA_HOME/secret` 及其下的路径（真实路径比较），并拒绝配置项 `protectedPaths` 列出的其他目录（默认包含 pi-pane 的 `~/.pi/pane/secret`）。
+4. **不给路径提示**：daemon 拉起子进程时从环境变量里去掉 `AGORA_HOME`（以及 `PI_PANE_HOME`），只传 `AGORA_URL` 和 `AGORA_LAUNCH_TICKET`；任务书、工具结果和错误信息里也不出现密钥目录的路径。
+
+剩余风险：
+
+- implement 的 bash 仍然可以读密钥文件（默认位置可以猜到）。
+- 子进程可以脱离进程树再发起连接，例如通过计划任务、服务、`start` 启动后父进程退出的进程，来绕过对端进程检查。
+- 这一层只用来抬高门槛、防止提示词注入被直接利用，并留下可追查的记录；对蓄意绕过的程序无效。
+
 ### 安全边界
 
 - 只监听 loopback；浏览器不直接连 daemon（pi-pane 服务端插件代连），daemon 拒绝带 `Origin` 头的请求。
 - token 不出现在工具结果、会话内容和日志里。
-- **不防同一操作系统用户下的恶意程序**：同用户进程可以读密钥文件、读其他进程的内存或环境。文档和界面不宣称更强的隔离。
+- **不防同一操作系统用户下的恶意程序**：同用户进程可以读密钥文件、读其他进程的内存或环境。上一节的措施只针对 agora 自己拉起的会话。文档和界面不宣称更强的隔离。
 
 ## 存储
 
@@ -231,6 +251,7 @@ principal 是 daemon 里的行为主体，所有任务、提问、board 条目�
 | `boards`、`board_entries`、`board_drafts`、`board_cursors` | 见 [board.md](board.md) |
 | `meetings`、`meeting_seats`、`meeting_revisions`、`meeting_endorsements` | 见 [meetings.md](meetings.md) |
 | `outbox` | id、recipient_id、dedupe_key（唯一）、kind、payload、created_at、delivered_at、acked_at、attempts |
+| `audit_log` | id、principal_id、action、target、client（cli / pane / extension）、peer_pid、peer_exe、result（allowed / denied）、created_at |
 | `schema_version` | version、migrated_at |
 
 ## 权限档位
@@ -240,13 +261,13 @@ principal 是 daemon 里的行为主体，所有任务、提问、board 条目�
 | 档位 | 内置工具 | 其他 |
 | --- | --- | --- |
 | `explore` | `read`、`grep`、`find`、`ls` | agora 工具；`--no-mcp`；只加载 agora 扩展 |
-| `review` | 同 explore | 另加只读 git 查询工具 `agora_git`（固定子命令 `status`、`diff`、`log`、`show`，`execFile` 调用不经 shell）；不能跑测试 |
+| `review` | 同 explore | 另加只读 git 查询工具 `agora_git`（见下文“`agora_git` 的加固”）；不能跑测试 |
 | `implement` | `read`、`bash`、`edit`、`write`、`grep`、`find`、`ls` | agora 工具；MCP 和其他扩展按配置白名单开启 |
 
 执行方式：
 
 1. **工具白名单**：启动参数 `--tools` 用明确的工具名列表。`--tools` 列明工具名时会替换整个默认选择，`codemode` 不在列表里就不会启用；MCP 工具不受 `--tools` 的普通名称影响，所以 explore/review 必须加 `--no-mcp`（依据：`docs/cli.md` 的 Tools 和 MCP tools 两节）。
-2. **路径校验**：agora 扩展注册 `tool_call` 钩子（依据：`docs/extensions.md`，`dist/core/extensions/types.d.ts` 的 `tool_call` 事件），对 `read`、`grep`、`find`、`ls` 的路径参数做真实路径解析（`fs.realpath`，覆盖符号链接和 Windows junction），不在允许根目录（会话 cwd 加配置的额外只读根）内的调用直接拒绝。Windows 上比较前统一大小写和分隔符。
+2. **路径校验**：agora 扩展注册 `tool_call` 钩子（依据：`docs/extensions.md`，`dist/core/extensions/types.d.ts` 的 `tool_call` 事件），对文件类工具的路径参数做真实路径解析（`fs.realpath`，覆盖符号链接和 Windows junction）。explore/review 的 `read`、`grep`、`find`、`ls` 不在允许根目录（会话 cwd 加配置的额外只读根）内就拒绝；所有档位的文件类工具都拒绝受保护目录（`AGORA_HOME/secret` 和 `protectedPaths`，见“user 身份的来源检查与审计”）。Windows 上比较前统一大小写和分隔符。
 3. **不依赖工具注解**：`readOnlyHint` 等注解未经验证（依据：`docs/extensions.md`），不作为放行依据。
 4. **恢复不提权**：重新拉起进程时档位从 SQLite 读取，不接受客户端传入。
 
@@ -254,6 +275,23 @@ principal 是 daemon 里的行为主体，所有任务、提问、board 条目�
 
 - explore/review 是严格只读：不开 shell、MCP、codemode、网络。“只读”指不改工作文件；写 board、发起提问属于协作权限，照常允许。
 - **implement 开了 bash 之后，不保证命令不越出工作目录**。路径校验只覆盖文件类工具。这一层叫“工具层权限”，不叫沙箱；需要抵御恶意脚本时要用容器或虚拟机，不在本项目范围内。
+
+### `agora_git` 的加固
+
+只读的 git 命令也能执行代码：仓库自带的 `.git/config` 和 `.gitattributes` 可以配置 `diff.<driver>.textconv`、`diff.external`、`core.fsmonitor`、`core.pager`、`filter.<driver>.clean`、`log.showSignature`（会调用 `gpg.program`）等。review 任务审查的恰恰可能是不可信的代码，所以 `agora_git` 按以下规则执行：
+
+- **调用方式**：`execFile("git", args, { cwd: 任务工作目录, env })`，不经 shell；单次超时 30 秒，输出上限 1 MiB。
+- **固定在子命令前加的参数**：`--no-pager -c core.fsmonitor=false -c core.pager=cat -c log.showSignature=false`。
+- **子命令只允许 `status`、`diff`、`log`、`show`**：
+  - `diff`、`show`、`log` 固定加 `--no-ext-diff --no-textconv`；
+  - `status` 固定加 `--porcelain=v1 --ignore-submodules=all --no-optional-locks`；
+  - 所有子命令固定加 `--no-color`。
+- **环境变量**：在继承的环境上设 `GIT_CONFIG_NOSYSTEM=1`、`GIT_PAGER=cat`、`PAGER=cat`、`GIT_EXTERNAL_DIFF=`（空）、`GIT_TERMINAL_PROMPT=0`，并去掉 `GIT_DIR`、`GIT_WORK_TREE`、`GIT_CONFIG_PARAMETERS`、`GIT_CONFIG_COUNT` 及 `GIT_CONFIG_KEY_*` / `GIT_CONFIG_VALUE_*`。
+- **参数白名单**：模型只能传白名单内的选项（如 `--stat`、`--name-only`、`--name-status`、`-n <数字>`、`--oneline`、`--format=<固定几种>`、`-U<数字>`、`--cached`、提交号和提交范围）和 `--` 之后的路径。其余一律拒绝，尤其是 `-c`、`--output`、`--exec`、`--git-dir`、`--work-tree`、`-C`、`--ext-diff`、`--textconv`、`--show-signature`、`--config-env` 和任何会写文件或改引用的选项。提交号和范围用正则校验（十六进制、分支名字符、`..`、`~n`、`^`），不允许以 `-` 开头。
+- **路径限定**：`--` 之后的路径做真实路径解析，必须在任务工作目录内，同时受“受保护目录”规则约束。
+- **clean filter**：`status` 在文件状态信息过期时可能对工作区文件运行 `filter.<driver>.clean`。执行前用 `git config --get-regexp "^filter\."` 读出仓库配置的 filter（读配置不执行代码），对每个 driver 用 `-c` 覆盖其 `clean`、`smudge`、`process` 为空。空值是否等于禁用 filter **未核实**；P0 不通过则 review 档位不提供 `status`。
+
+P0 用一个带恶意配置的测试仓库验证：配置了 textconv、`diff.external`、`core.fsmonitor`、`core.pager`、clean filter、`log.showSignature` + `gpg.program` 的仓库中，`agora_git` 的各子命令都不会执行这些程序（用写标记文件的脚本判断）。
 
 ## worktree
 
@@ -291,9 +329,19 @@ principal 是 daemon 里的行为主体，所有任务、提问、board 条目�
 ## 资源与回收
 
 - 每个空闲 pi RPC 进程估算占 100–300 MiB（**估算，未实测**，P0 测量）。长上下文和图片会抬高峰值。
-- 同时推理的协作会话默认最多 4 个（`maxConcurrentRuns`，可配置）。超出的唤醒请求排队，按召集人发起顺序放行。主会话不受这个限制（不由 daemon 托管）。
+- 同时推理的协作会话默认最多 4 个（`maxConcurrentRuns`，可配置）。一次运行从发出 `prompt`（或注入触发新一轮的消息）开始占用一个名额，到 `agent_settled` 释放。见下文“名额优先级”。
 - 回收：协作会话 settled、没有进行中的工具调用、没有待回应的扩展 UI 对话框，空闲 5 分钟后停止进程（`idleReclaimMs`，默认 300000）。等待答复（`waiting_decision`）的会话同样可回收，答复到达后重新拉起。已结束的会议成员在纪要完成后立即回收。
 - 回收只停进程，**不删除**会话、任务、worktree 或存档。
+
+### 名额优先级
+
+> 待定：规则和预计等待时间的算法在试运行后确定。
+
+- 优先级：**主会话 > 进行中会议的参会者和书记 > 任务**；同级先到先得。主会话由终端或 pi-pane 托管，不经过 daemon，也不占名额，所以它始终优先；daemon 实际排序的只有后两级。
+- 正在运行的任务不被抢占。名额释放时，先给排队中的会议，再给任务。
+- **会议整体准入**：会议开始（或从暂停恢复）前，必须能一次拿到与席位数相同的名额，并在会议进行期间一直保留；某个席位暂时空闲时，它的名额也不借给任务。这样会议不会开到一半因为拿不到名额而卡住。书记使用会议已保留的名额。会议暂停、结束时释放。
+- 席位数超过 `maxConcurrentRuns` 的会议永远无法开始，convene 直接返回 `400 exceeds_concurrency`。
+- 拿不到全部名额时会议进入排队：convene 返回 `queued`，并给召集人发一条通知，写明排队位置、占用名额的任务及其已运行时间、预计等待时间（按历史任务运行时长的中位数粗估，没有历史时写“无法估计”）。召集人可以继续等、停掉某个任务让出名额，或取消会议。
 
 ## Windows 注意事项
 

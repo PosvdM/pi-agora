@@ -28,7 +28,7 @@ type AgoraTaskParams =
       action: "spawn";
       model: string;                 // 完整 provider/id，如 "<provider>/<model-id>"
       thinking?: ThinkingLevel;      // 默认 "high"
-      profile: "explore" | "review" | "implement";
+      profile: "explore" | "review" | "implement"; // 各档位的工具和限制见 architecture.md“权限档位”
       prompt: string;                // 完整任务书，子代理看不到召集人的对话
       title?: string;                // 侧栏显示用，默认取 prompt 首行
       cwd?: string;                  // 默认召集人的 cwd
@@ -57,7 +57,8 @@ type AgoraTaskParams =
 
 各动作的语义：
 
-- **spawn**：建任务、建会话、拉起进程、用 RPC `prompt` 发出任务书，立即返回，不等待完成。模型名在 spawn 时用 `get_available_models` 校验，无效则任务直接 `failed` 并说明原因。
+- **spawn**：建任务、建会话、拉起进程、用 RPC `prompt` 发出任务书，立即返回，不等待完成。模型名在 spawn 时用 `get_available_models` 校验，无效则任务直接 `failed` 并说明原因。推理名额不足时任务保持 `created` 排队，优先级低于会议（见 [architecture.md](architecture.md#名额优先级)）。
+- **review 档位的 git 查询**：review 任务可以用 `agora_git` 看 `status`、`diff`、`log`、`show`。只读 git 命令也可能被仓库配置（textconv、`diff.external`、`core.fsmonitor`、`core.pager`、clean filter 等）利用来执行代码，所以该工具固定禁用这些机制、只接受白名单参数，规则见 [architecture.md](architecture.md#agora_git-的加固)。
 - **list**：返回任务摘要（标题、模型、档位、状态、代数、最近活动时间、待答复提问数）。
 - **result**：返回指定代的最终回复（RPC `get_last_assistant_text` 在 settled 时取得并存入 `task_generations`）、状态、worktree 信息、用量统计。任务仍在运行时返回当前状态和“尚无结果”。
 - **steer**：见“返工 generation”。
@@ -160,6 +161,12 @@ interface AgoraRequest {
   escalatedTo?: string;          // 转交时为 user principal
   answers?: RequestAnswer[];
   answeredBy?: string;
+  answeredVia?: {                // 答复者是 user 时由 daemon 填写，来自审计记录
+    client: "cli" | "pane";
+    peerPid?: number;
+    peerExe?: string;
+    at: string;
+  };
   expiresAt?: string;            // 可选，ISO 时间
   createdAt: string;
   updatedAt: string;
@@ -177,7 +184,9 @@ interface RequestQuestion {
 interface RequestAnswer { id: string; selected: string[]; custom?: string }
 ```
 
-题目格式和 pi-pane 的表单一致，便于转给用户时直接渲染（见 [integration.md](integration.md#表单)）。
+题目字段与 pi-pane 表单的 `FormQuestion` 一一对应（类型定义见 pi-pane 仓库的 `docs/plugin-api.md`），转给用户时可以直接渲染；映射方式见 [integration.md](integration.md#动作)。核心包不引用 pi-pane 的类型，`RequestQuestion` 在 `packages/protocol` 中独立定义。
+
+用户答复（无论来自 CLI 还是 pi-pane）都先经过来源进程检查，并写入审计；提问详情和召集人收到的通知里显示 `answeredVia`，如“由用户答复（pi-pane，PID 8812，2026-11-05 10:21）”。见 [architecture.md](architecture.md#user-身份的来源检查与审计)。
 
 ### 状态
 
@@ -223,7 +232,7 @@ type AgoraRequestParams =
 | --- | --- |
 | 已授权、正在运行的任务 | 继续运行到 settled |
 | 任务完成、失败 | 通知留在 outbox；召集人恢复会话并认领 principal 后补送 |
-| 子代理提问 | 提问保持 `open`，任务进入 `waiting_decision`；同时出现在用户的“待处理”列表，用户可以直接答复（`answeredBy` 记为 user） |
+| 子代理提问 | 提问保持 `open`，任务进入 `waiting_decision`；同时出现在用户的“待处理”列表，用户可以直接答复（`answeredBy` 记为 user，并记录 `answeredVia`） |
 | 需要新决策、增加预算 | 暂停等待，不自动继续 |
 | 任务崩溃 | 停在 `interrupted`，通知进入“待处理”，见 [architecture.md](architecture.md#崩溃与恢复) |
 

@@ -34,7 +34,11 @@ pi-agora 的对应做法：
 | pi-agora（本仓库） | 后台 daemon、pi 扩展、CLI；子代理、board、会议、提问、存档；对外 HTTP API 和只读存档接口 |
 | pi-pane | 轻量 Web 界面：托管主会话、聊天流、图片占位符、通用插件接口（会话树、面板、动作、表单、通知） |
 
-pi-pane 不认识“子代理”“会议”这些概念。pi-agora 提供一个运行在 pi-pane 服务端的插件，把子会话树、board、待处理事项等通过 pi-pane 的通用接口显示出来。两者的集成协议以本仓库的 [docs/integration.md](docs/integration.md) 为准。
+pi-pane 不认识“子代理”“会议”这些概念。pi-agora 提供一个运行在 pi-pane 服务端的插件（`packages/pane-plugin`），把子会话树、board、待处理事项等通过 pi-pane 的通用接口显示出来。
+
+- pane 插件接口（树节点、面板、动作、表单、通知等）以 pi-pane 仓库的 `docs/plugin-api.md` 为准。
+- daemon HTTP API 和 agora 数据到 pane 接口的映射以本仓库的 [docs/integration.md](docs/integration.md) 为准。
+- 只有 `pane-plugin` 依赖 pi-pane 的插件接口包，其余包都不依赖 pi-pane。
 
 不装 pi-pane 时，pi-agora 的全部功能都可以在 pi 终端和 `agora` CLI 里使用。
 
@@ -61,5 +65,5 @@ packages/
 | [docs/board.md](docs/board.md) | 共享桌面：数据模型、条目类型、可见性、投递与增量、工具、prompt cache |
 | [docs/meetings.md](docs/meetings.md) | 会议：召集、定方案流程、认可、僵局、预算、书记与纪要、插话、崩溃 |
 | [docs/archive.md](docs/archive.md) | 全量对话存档：存什么、存在哪、继承关系、完整性校验、只读 adapter |
-| [docs/integration.md](docs/integration.md) | 与 pi-pane 的集成协议（以此为准）：HTTP API、树节点、面板、动作、表单、会话流、版本协商 |
+| [docs/integration.md](docs/integration.md) | daemon HTTP API、会话流、agora 到 pi-pane 插件接口的映射、离线存档读取、版本协商 |
 | [docs/roadmap.md](docs/roadmap.md) | P0 验证项、MVP 范围、工程量、明确不做、主要风险 |

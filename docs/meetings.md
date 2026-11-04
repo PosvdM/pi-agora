@@ -55,6 +55,8 @@ interface MeetingLimits {         // 安全上限，触发后暂停询问召集�
 
 `convene` 立即返回 `meetingId` 和会议节点信息，召集人收到的是**会议回执**，不是讨论流水。
 
+推理名额：会议必须一次拿到与席位数相同的名额才开始。席位数超过 `maxConcurrentRuns` 时 convene 返回 `400 exceeds_concurrency`；名额暂时不够时回执的状态为 `queued`，并附排队位置和预计等待时间，拿到名额后自动开始并再发一条通知。规则见 [architecture.md](architecture.md#名额优先级)（待定）。
+
 ### `agora_meeting` 的其他动作
 
 | action | 谁能用 | 说明 |
@@ -142,7 +144,7 @@ interface EndorseParams {
 ## 调度
 
 - 每个阶段，daemon 给需要发言的参会者发一条 `agora:meeting-turn` 自定义消息：本阶段要求 + board 增量（格式见 [board.md](board.md#投递内容格式)），触发一轮。
-- 同一阶段内各参会者并行运行，受全局并发上限（默认 4）约束。
+- 同一阶段内各参会者并行运行。会议开始时已经为每个席位保留了一个推理名额，会议进行中不会因拿不到名额而停住（规则见 [architecture.md](architecture.md#名额优先级)，待定）。
 - 参会者 settled 后，调度器检查本阶段的完成条件，满足后推进到下一阶段。
 - 参会者不会因自己发的条目被唤醒。
 - 参会者在会议中可以用 `agora_request ask` 向召集人提问，提问期间会议暂停在当前阶段。
@@ -236,7 +238,7 @@ interface EndorseParams {
 
 | 通知 | 时机 |
 | --- | --- |
-| 会议回执 | convene 成功 |
+| 会议回执 | convene 成功；排队的会议开始时再发一条 |
 | 决策请求 | 僵局、上限触发、参会者提问、核对超时 |
 | 异常 | 参会者或书记崩溃 |
 | 最终纪要 | 会议结束 |
@@ -256,7 +258,7 @@ interface EndorseParams {
 ## 会议状态
 
 ```text
-convening ─► sealed ─► critique ─► merging ⇄ reviewing ─► minuting ─► ended
+convening ─► queued（等名额，可跳过）─► sealed ─► critique ─► merging ⇄ reviewing ─► minuting ─► ended
                          任意阶段 ─► paused ─► （召集人决定后回到原阶段）
                          任意阶段 ─► interrupted（崩溃且无人处理）
 ```

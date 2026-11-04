@@ -19,8 +19,10 @@ P0 只做小实验，验证设计依赖的 pi 行为和平台行为，结论写�
 | 9 | prompt cache：同一会话连续追加 board 增量时，Claude、GPT（Sol、Astra）、Gemini 的 `usage.cacheRead` | 记录各模型的实际命中情况 | board.md |
 | 10 | launch ticket：扩展删除 `process.env.AGORA_LAUNCH_TICKET` 后，`bash` 子进程是否还能看到 | 看不到 | architecture.md |
 | 11 | daemon 存活：Windows 上由终端里的 pi 扩展自动拉起（detached、`windowsHide`）的 daemon，在关闭终端窗口、注销前是否存活 | 关闭终端后 daemon 和子进程继续运行 | architecture.md |
+| 12 | 对端进程检查：Windows 上从 loopback TCP 连接查出对端 PID（`GetExtendedTcpTable` 一类接口）、沿父进程链判断是否属于受管会话；在 Node 里的实现方式（原生模块或辅助程序）和耗时 | implement 子代理的 bash 里用偷到的 `user.key` 认证、经 pi-pane 接口答复都被拒；正常 CLI 和 pi-pane 不受影响；单次检查 < 50 毫秒 | architecture.md |
+| 13 | `agora_git` 加固：用配置了恶意 textconv、`diff.external`、`core.fsmonitor`、`core.pager`、clean filter、`log.showSignature` + `gpg.program` 的测试仓库跑各子命令；尝试白名单外的参数 | 恶意程序一次都未执行（以标记文件判断）；白名单外参数全部被拒 | architecture.md |
 
-P0 约 3–4 人日。
+P0 约 4–5 人日。
 
 ## MVP 范围
 
@@ -30,13 +32,14 @@ MVP 在 **pi 终端**里验收：主代理装 agora 扩展，不依赖 pi-pane�
 
 - daemon：单实例、认证握手、主会话注册与恢复、控制租约、launch ticket、排空关闭、版本协商、数据库迁移与备份。
 - 进程监管：`RpcSubprocessDriver`、并发上限、空闲回收、进程树终止、崩溃诊断。
-- 任务：`agora_task` 全部动作、状态机、generation、outbox 通知、worktree 创建与清理、三个权限档位。
+- 任务：`agora_task` 全部动作、状态机、generation、outbox 通知、worktree 创建与清理、三个权限档位（含 `agora_git` 加固）、推理名额优先级。
+- 安全：user 身份的对端进程检查、审计日志、受保护目录拦截。
 - 提问：`agora_request`、转给用户、“待处理”（CLI）。
 - board：条目、引用与替代、密封草稿、投递位置与增量、`agora_board`。
 - 会议：define-plan 流程、认可与版本绑定、僵局检测、预算与时长上限、插话、书记与纪要、崩溃处理、用户召开会议（CLI）。
 - 存档：全量保存、流片段、退出诊断、继承关系、完整性校验、archive adapter。
 - CLI：`agora daemon start`、`agora shutdown`、`agora status`、`agora ls [--tree]`、`agora show`、`agora log`、`agora tail`、`agora pending`、`agora answer`、`agora meeting convene|status|interject|decide|stop`、`agora task stop|cleanup|recover`、`agora takeover`、`agora verify-archive`。
-- pane 插件：按 [integration.md](integration.md) 实现树、面板、动作、表单、通知和离线读取（与 pi-pane MVP 联调时完成）。
+- pane 插件：按 pi-pane 的 `docs/plugin-api.md`（pane 协议）和本仓库 [integration.md](integration.md)（映射）实现树、面板、动作、表单、通知和离线读取（与 pi-pane MVP 联调时完成）。
 
 ## 分期与工程量
 
@@ -44,15 +47,15 @@ MVP 在 **pi 终端**里验收：主代理装 agora 扩展，不依赖 pi-pane�
 
 | 阶段 | 内容 | 人日 |
 | --- | --- | --- |
-| P0 | 上表验证项 | 3–4 |
-| M1 daemon 核心 | 生命周期、鉴权、SQLite 与迁移、进程监管、存档、HTTP 框架 | 6–8 |
-| M2 任务 | 任务与提问、outbox、worktree、权限档位、扩展工具、CLI 基本命令 | 6–8 |
+| P0 | 上表验证项 | 4–5 |
+| M1 daemon 核心 | 生命周期、鉴权（含对端进程检查、审计）、SQLite 与迁移、进程监管与名额优先级、存档、HTTP 框架 | 7–9 |
+| M2 任务 | 任务与提问、outbox、worktree、权限档位（含 `agora_git` 加固）、扩展工具、CLI 基本命令 | 6–8 |
 | M3 board 与会议 | board、密封草稿、投递、会议调度、认可、僵局、预算、书记 | 5–7 |
 | M4 对外接口 | archive adapter、pane 插件、其余 CLI 命令 | 2–3 |
 | M5 联调与故障验收 | 见下方“必须测试的故障” | 3–5 |
-| 合计 | | 25–35 |
+| 合计 | | 27–37 |
 
-与 pi-pane（12–18 人日）合计 37–53 人日，日历时间 8–11 周。M2 之后 pi-pane 可以并行开发。公开发布前的加固（安装体验、跨平台测试、安全审查、文档补全）另算。
+定稿估算为 25–35 人日；增加的 2 人日来自对端进程检查、审计、`agora_git` 加固和名额优先级。与 pi-pane（12–18 人日）合计 39–55 人日，日历时间约 8–12 周。M2 之后 pi-pane 可以并行开发。公开发布前的加固（安装体验、跨平台测试、安全审查、文档补全）另算。
 
 ### 必须测试的故障
 
@@ -64,6 +67,8 @@ MVP 在 **pi 终端**里验收：主代理装 agora 扩展，不依赖 pi-pane�
 - board 条目已写入但投递未确认时 daemon 崩溃；
 - 密封草稿通过任何接口泄漏给其他参会者；
 - 主会话 fork 后两个会话同时认领同一 principal；
+- implement 子代理读取 `user.key` 或 pi-pane 访问令牌后，尝试以 user 身份答复自己的提问；
+- 任务占满名额时召开会议（应排队并通知，名额释放后优先给会议）；
 - 会议多模型并发时触及预算上限；
 - daemon 运行中升级版本。
 
@@ -92,5 +97,6 @@ MVP 在 **pi 终端**里验收：主代理装 agora 扩展，不依赖 pi-pane�
 | 僵局检测误判 | 过早或过晚暂停 | 只用于暂停，不自动结束；阈值待定，试运行校准 |
 | 各模型的 prompt cache 行为不同 | 会议成本高于预期 | P0 观察；预算上限兜底 |
 | 存档量增长 | 磁盘占用 | `agora status` 显示占用；显式删除命令 |
-| 集成协议两边不同步 | pi-pane 显示错误 | 协议只在 integration.md 定义，版本协商，pane 插件契约测试 |
+| pane 协议升级后插件未跟上 | pi-pane 拒绝加载插件或显示错误 | pane 协议由 pi-pane 的 plugin-api.md 定义并做版本协商；只有 `pane-plugin` 依赖它；契约测试 |
+| 子代理冒充用户 | 自己答复自己转交的提问、给自己加预算 | 对端进程检查、审计、拦截密钥目录；脱离进程树的绕过无法防范，文档写明 |
 | 同用户恶意程序 | 读取密钥、冒充主会话 | 明确不防；文档说明边界 |
