@@ -60,7 +60,7 @@ type EntryKind =
 | `question` | 向 board 成员提问 | 可以有 `responds` 引用 |
 | `answer` | 回答 | 必须有一条 `rel: "answers"` 的引用 |
 | `contract` | 并行开发的接口约定 | 修改用新条目 `supersedes` 旧条目 |
-| `decision` | 决议或硬约束 | 只有 board owner（召集人）或 user principal 能写 |
+| `decision` | 决议或硬约束 | 只有 board owner（召集人）或 user principal 能写；以 user 为作者时是用户级操作，需要用户确认 |
 | `status` | 进展、阻塞、缺席、认可等状态 | 会议的认可用 `meta.endorsement`，见 [meetings.md](meetings.md#认可与版本绑定) |
 | `summary` | 对某个序号范围的摘要 | `meta.range = [fromSeq, toSeq]` |
 
@@ -97,9 +97,11 @@ type EntryKind =
 1. daemon 决定唤醒某个会话（会议调度或有新条目引用它），取 `(confirmedSeq, headSeq]` 中与它相关的公开条目。
 2. 生成一条投递，`deliveryId = <boardId>:<principalId>:<fromSeq>-<toSeq>`，写入该会话的 outbox。
 3. 会话里的 agora 扩展收到后用 `pi.sendMessage({ customType: "agora:board-delta", ... }, { triggerTurn: true, deliverAs: "followUp" })` 追加到上下文末尾。
-4. 扩展看到这条自定义消息的 `message_end` 后确认，daemon 把 `confirmedSeq` 推进到 `toSeq`。
+4. 扩展在会话文件里核实带该 `deliveryId` 的自定义消息记录已完整写入后确认，daemon 把 `confirmedSeq` 推进到 `toSeq`。
 
-只有确认后才推进位置。HTTP 请求成功、扩展收到数据都不算。
+只有确认后才推进位置。HTTP 请求成功、扩展收到数据、出现 `message_end`、出现在 `getEntries()` 里都不算：`message_end` 先于写入会话文件发出，新会话的条目在第一条对话消息之前只在内存里。确认规则与任务通知相同，见 [tasks.md](tasks.md#投递)。
+
+会话处于停止中（`stopping`）时不投递，等停止完成或新一轮开始后再按 `confirmedSeq` 继续（见 [architecture.md](architecture.md#控制队列与并发)）。被 `clear_queue` 清掉的投递没有写入会话，下次会重发。
 
 ### 恢复
 
@@ -138,10 +140,12 @@ type AgoraBoardParams =
 - 会话只绑定一个 board 时 `boardId` 可省略。
 - `read` 只返回公开条目，不推进投递位置（投递位置只由投递确认推进）。
 - `post` 的 `idempotencyKey` 由调用方生成，同一 key 重复提交返回第一次的结果，防止工具重试产生重复条目。
-- `basedOnSeq` 必填，由 Agent 填写它最后看到的序号。daemon 不校验它是否真实，只用于展示和僵局检测。
+- `basedOnSeq` 必填，由 Agent 填写它最后看到的序号。daemon 不校验它是否真实，只用于展示。会议中判断条目是否属于当前阶段用的是 daemon 自己记录的 `phaseEpoch`，不是 `basedOnSeq`。
 - **不提供阻塞等待（wait）**。需要等别人发言时，Agent 结束本轮，由 daemon 在有新条目时唤醒。
 
-用户和召集人在 CLI 或 pi-pane 里发条目时走同一个 HTTP 接口，作者是对应的 principal。
+召集人和用户在 CLI 或 pi-pane 里发条目时走同一个 HTTP 接口，作者是对应的 principal。以 user 为作者的条目是用户级操作，经用户确认后写入（见 [security.md](security.md#用户确认)）。各角色的读写权限见 [security.md](security.md#board)。
+
+会议中的条目还要通过阶段 fencing 检查（`phaseEpoch`、目标修订），旧阶段的晚到条目照常追加但标为过时，见 [meetings.md](meetings.md#阶段-fencing)。
 
 ## prompt cache 的考虑
 
@@ -160,7 +164,7 @@ type AgoraBoardParams =
 | --- | --- |
 | `boards` | Board 字段 |
 | `board_members` | boardId、principalId、role |
-| `board_entries` | BoardEntry 字段；`(board_id, seq)` 唯一；只插入 |
+| `board_entries` | BoardEntry 字段；`(board_id, seq)` 唯一；只插入；会议条目另记 `phase_epoch`、`stale` |
 | `board_drafts` | 密封草稿：boardId、authorId、kind、body、refs、meta、createdAt |
 | `board_cursors` | boardId、principalId、confirmed_seq、pending_delivery_id、updated_at |
 

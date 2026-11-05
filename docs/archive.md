@@ -21,22 +21,28 @@ agora 拉起的每个会话（子代理、参会者、书记）的完整对话�
 
 ```text
 <AGORA_HOME>/sessions/<agoraSessionId>/
-  <pi 会话文件>.jsonl       # 由 pi 写入；实际路径以 get_state 返回的 sessionFile 为准
+  session.jsonl            # pi 会话文件，路径由 daemon 预先分配，由 pi 写入
   partials/<runId>.jsonl   # 流片段
   runs/<runId>.json        # 退出诊断
 ```
 
-- 每个协作会话启动时显式指定 `--session-dir` 和 `--session-id`，**不使用 `--no-session`**，保证 pi 落盘（依据：`docs/cli.md`）。
-- `--session-dir` 下的文件布局**未核实**（可能按 cwd 再分一层目录）。daemon 不推断路径，以 RPC `get_state` 返回的 `sessionFile` 为准写入 `agora_sessions.session_file`。
+- 每个协作会话启动时用 `--session <预先分配的路径>`，**不使用 `--no-session`**，保证 pi 落盘（依据：`docs/cli.md`；路径分配和写锁见 [architecture.md](architecture.md#启动参数)）。
+- daemon 启动后用 RPC `get_state` 返回的 `sessionFile` 核对路径，写入 `agora_sessions.session_file`。会话文件要等第一条 user 或 assistant 消息出现后才创建（依据：`dist/core/session-manager.js` 的 `_persist`），协作会话的第一条消息就是任务书，所以就绪后很快落盘。
 - `runId` 对应 `process_runs` 表的一行，同一会话每次拉起进程都是新的 run。
 
 ### 流片段
 
 daemon 从 RPC 事件流里收到 `message_update` 增量（依据：`docs/json.md`，RPC 线上的 `message_update` 只带增量），按 `contentIndex` 缓存当前正在生成的消息：
 
-- 每秒最多一次，把缓存追加写入 `partials/<runId>.jsonl`：`{ "t": 时间, "messageSeq": n, "contentIndex": i, "delta": "..." }`。
-- 收到该消息的 `message_end` 后追加一行 `{ "messageSeq": n, "closed": true }`。最终内容以 pi JSONL 为准，片段只用于还原没写完的部分。
-- 进程异常退出时，没有 `closed` 标记的片段就是“未完成的流片段”，查看器在对话末尾单独显示为“中断时正在生成的内容”。
+- 每秒最多一次，把缓存追加写入 `partials/<runId>.jsonl`，每行保留块类型：
+
+  ```json
+  { "t": "2026-11-05T08:41:03Z", "messageSeq": 7, "contentIndex": 1, "blockType": "toolCall", "toolCallId": "call_abc", "toolName": "bash", "delta": "{\"command\":\"npm te" }
+  ```
+
+  `blockType` 为 `thinking`、`text` 或 `toolCall`；`toolCall` 块的开始行带 `toolCallId` 和 `toolName`。
+- **只在最终消息确认已写入会话文件后才关闭片段**：收到 `message_end` 时不关闭（pi 先发 `message_end` 再写文件，依据：`dist/core/agent-session.js:760–779`）；daemon 用 `get_entries` 取到这条消息对应的 entryId，并在会话文件里读到该 entryId 的完整一行后，才追加一行 `{ "messageSeq": n, "closed": true, "entryId": "…" }`。`get_entries` 返回的条目不一定已写入文件（新会话在第一条对话消息之前只在内存里），所以不能只看它。最终内容以 pi JSONL 为准，片段只用于还原没写完的部分。
+- 进程异常退出时，没有 `closed` 标记的片段就是“未完成的流片段”，按块类型还原后在对话末尾单独显示为“中断时正在生成的内容”。如果会话文件里其实已经有这条消息（进程在写入后、关闭片段前退出），读取时按 `messageSeq` 与文件内容比对，已写入的不再显示。
 
 ### 退出诊断
 
@@ -61,6 +67,16 @@ daemon 从 RPC 事件流里收到 `message_update` 增量（依据：`docs/json.
 ```
 
 正常退出（回收、停止）也写诊断，`reason` 分别为 `idle_reclaim`、`stopped`。
+
+## 三种投影
+
+| 投影 | 内容 | 用途 |
+| --- | --- | --- |
+| ① 原始存档 | 会话文件中的全部条目，带稳定的 entryId，含废弃分支和自定义条目 | 完整性校验、导出 |
+| ② 用户聊天视图 | 从当前叶子沿 `parentId` 回到根的整条活动分支，包括压缩前的内容；压缩条目作为分隔标记保留 | 会话查看（CLI、pi-pane） |
+| ③ 模型当前上下文 | 压缩和 context edit 之后实际发给模型的消息 | 诊断 |
+
+`packages/archive` 导出②的投影函数（输入条目列表和叶子 id，输出活动分支上的条目，保持 pi 的原始形状）。daemon 在线时对 `get_entries` 的结果、adapter 离线时对只读解析的结果调用同一个函数，所以在线和离线返回的视图相同。接口见 [integration.md](integration.md#会话视图)。
 
 ## 继承关系
 
@@ -104,14 +120,14 @@ daemon 从 RPC 事件流里收到 `message_update` 增量（依据：`docs/json.
 ## 保留策略
 
 - daemon 从不自动删除会话目录或会话文件。
-- 用户删除存档只能显式执行 `agora archive delete <sessionId>`，需二次确认；删除后 `archive_state = missing`，SQLite 中的元数据保留，树中显示为“缺失”。
+- 用户删除存档只能显式执行 `agora archive delete <sessionId>`，这是用户级操作，需要在已配对浏览器中确认（见 [security.md](security.md#用户确认)）；删除后 `archive_state = missing`，SQLite 中的元数据保留，树节点仍然列出，`availability` 变为 `missing`，显示为“缺失”（变更流发 `upsert`，不是 tombstone，见 [integration.md](integration.md#同步与按需加载)）。
 - 存档占用的磁盘空间在 `agora status` 里显示。
 
 ## 读取权限
 
 | 读者 | 能读什么 |
 | --- | --- |
-| user principal（CLI、pi-pane 插件） | 全部存档 |
+| CLI、pi-pane 插件（`host:cli`、`host:pane`） | 全部存档 |
 | 召集人（Agent） | 自己召集的任务和会议下所有会话；会议进行中的参会者对话除外，会议结束后可读 |
 | 参会者、书记 | 不能读其他会话的对话，只能读 board 公开条目 |
 | 子代理 | 不能读其他会话的对话 |
@@ -132,7 +148,9 @@ export interface ArchiveReaderV1 {
   listSessions(q?: { convenerId?: string; meetingId?: string; taskId?: string; limit?: number; cursor?: string })
     : Promise<Page<ArchivedSessionSummary>>;
   getSession(agoraSessionId: string): Promise<ArchivedSession | undefined>;
-  readMessages(agoraSessionId: string, q?: { cursor?: string; limit?: number }): Promise<Page<ArchivedMessage>>;
+  readUserView(agoraSessionId: string, q?: { before?: string; limit?: number })   // ②，从叶子往回分页
+    : Promise<{ leafId: string | null; entries: SessionEntry[]; historyBefore: string | null }>;
+  readRawEntries(agoraSessionId: string, q?: { cursor?: string; limit?: number }): Promise<Page<SessionEntry>>; // ①
   readPartials(agoraSessionId: string): Promise<PartialFragment[]>;
   readDiagnostics(agoraSessionId: string): Promise<RunDiagnostics[]>;
   listBoardEntries(boardId: string, q?: { afterSeq?: number; limit?: number }): Promise<Page<BoardEntry>>;
@@ -164,7 +182,8 @@ export interface Page<T> { items: T[]; nextCursor?: string }
 实现约束：
 
 - 用 `node:sqlite` 以只读方式打开 `agora.db`（`readOnly` 选项，Node 24；daemon 同时在写时依赖 WAL 的读写并发，P0 验证）。
-- 会话文件按 pi 的 JSONL 格式解析，消息结构与 pi 的 `AgentMessage` 一致；可以复用 pi 导出的 `SessionManager.open()`（依据：`dist/core/session-manager.d.ts`），是否复用在实现时决定。
+- **会话文件只读解析**：按 pi 的 JSONL 格式（`docs/session-format.md`）自行解析，旧版本格式在内存里迁移，绝不写回。不用 pi 导出的 `SessionManager.open()`：它在文件为空或需要从旧格式迁移时会调用 `_rewriteFile()` 重写文件（依据：`dist/core/session-manager.js:666–727`）。最后一行不完整（进程在写入中途退出）时忽略该行，并在 `archive_state` 的校验中记录。解析结果的条目保持 pi `SessionEntry` 的原始形状。
 - 只接受 `AGORA_HOME` 下的路径：从数据库读出的 `session_file` 先做真实路径解析，不在数据目录内的拒绝读取。
 - adapter 不暴露 SQLite 表结构。数据库迁移时同步更新 adapter；`apiVersion` 只在返回结构不兼容时递增，旧版本保留至少一个大版本。
 - 不读取、不返回密封草稿。
+- P0 用 pi 1.5.0 支持的各版本会话文件和截断文件验证：解析出的活动分支与 RPC `get_entries` 加叶子计算的结果一致，解析前后文件哈希不变。
