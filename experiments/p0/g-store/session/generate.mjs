@@ -3,6 +3,7 @@ import { copyFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createExperiment } from '../../harness/index.mjs';
+import { stopDriver } from '../lib.mjs';
 
 export const genExtPath = fileURLToPath(new URL('./gen-ext.ts', import.meta.url));
 
@@ -74,7 +75,8 @@ export async function generateSession() {
     const sessionFile = state.data.sessionFile;
     return { experiment, rpc, sessionFile, oldBranchLeaf: oldLeaf, firstAssistantId: firstAssistant.id, log };
   } catch (error) {
-    await experiment.stop();
+    await stopDriver(rpc); // 不调用 experiment.stop()，避免对已退出的 driver 再发信号
+
     error.message += `; fixture: ${experiment.root}`;
     throw error;
   }

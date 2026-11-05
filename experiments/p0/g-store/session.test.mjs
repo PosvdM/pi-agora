@@ -9,10 +9,13 @@ import { join } from 'node:path';
 import { after, test } from 'node:test';
 import { activeBranch, fingerprint, parseAndVerifyUnchanged, parseSessionFile } from './session/parser.mjs';
 import { generateSession, genExtPath } from './session/generate.mjs';
+import { stopDriver, teardownExperiment, writeEvidence } from './lib.mjs';
 
 let allPassed = true;
 // 顶层 await：先生成会话，再按样本定义测试。
 const gen = await generateSession();
+const drivers = [gen.rpc]; // 本文件启动过的 driver，收尾时只停止仍在运行的
+const evidence = { node: process.version, platform: process.platform, startedAt: new Date().toISOString(), generation: gen.log, variants: [] };
 const fixturesDir = join(gen.experiment.root, 'g-fixtures'); // 只读解析的样本
 const piDir = join(gen.experiment.root, 'g-pi-copies');      // 交给 pi 打开的副本
 mkdirSync(fixturesDir);
@@ -29,15 +32,16 @@ let liveLeaf;                                                // 导航后 pi 内
   liveLeaf = live.leafId;
   const afterNav = fingerprint(gen.sessionFile);
   gen.log.push(`navigate(no summary) 后 live leafId=${live.leafId}，文件最后一个条目=${live.entries.at(-1).id}，文件变化=${beforeNav.sha256 !== afterNav.sha256}`);
-  await gen.rpc.stop();
+  await stopDriver(gen.rpc);
   copyFileSync(gen.sessionFile, source);
   sourceLines = readFileSync(source, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
 }
 
 after(async () => {
-  await gen.experiment.stop();
-  if (allPassed && !process.env.P0_KEEP) await gen.experiment.cleanup();
-  else console.log(`# 保留现场: ${gen.experiment.root}`);
+  const remove = allPassed && !process.env.P0_KEEP;
+  await teardownExperiment(gen.experiment, drivers, { remove });
+  if (!remove) console.log(`# 保留现场: ${gen.experiment.root}`);
+  console.log(`# 证据: ${writeEvidence('session', evidence)}`);
 });
 
 // ---------- 样本构造 ----------
@@ -153,8 +157,10 @@ test('pi 进程内导航后的叶子与文件推导的叶子', async (t) => {
   const copy = join(piDir, 'nav-check.jsonl');
   copyFileSync(source, copy);
   const rpc = await gen.experiment.start({ args: ['--session', copy] });
+  drivers.push(rpc);
   const reopened = (await rpc.command({ type: 'get_entries' })).data;
-  await rpc.stop();
+  await stopDriver(rpc);
+  evidence.navigation = { liveLeafAfterNavigate: liveLeaf, parsedLeaf: parsed.leafId, reopenedLeaf: reopened.leafId };
   t.diagnostic(`导航后 pi 内存中的 leafId=${liveLeaf}；只读解析 leafId=${parsed.leafId}；pi 重新打开后 leafId=${reopened.leafId}`);
   assert.equal(parsed.leafId, reopened.leafId);
 });
@@ -162,6 +168,8 @@ test('pi 进程内导航后的叶子与文件推导的叶子', async (t) => {
 for (const v of variantList) {
   test(`只读解析：${v.name}`, async (t) => {
     t.diagnostic(`样本: ${v.name} (${v.file})`);
+    const record = { name: v.name, file: v.file.split('/').at(-1) };
+    evidence.variants.push(record);
     try {
       // 1. 只读解析：两次结果相同，文件不变。
       const first = parseAndVerifyUnchanged(v.file);
@@ -171,6 +179,10 @@ for (const v of variantList) {
       const p = first.parsed;
       t.diagnostic(`解析: status=${p.status} version=${p.version} entries=${p.entries.length} leaf=${p.leafId} branch=${p.branch.length} diagnostics=${JSON.stringify(p.diagnostics)}`);
       t.diagnostic(`解析前后 sha256=${first.before.sha256.slice(0, 16)}… 相同=${first.before.sha256 === first.after.sha256} mtime 相同=${first.before.mtimeMs === first.after.mtimeMs}`);
+      Object.assign(record, {
+        parsed: { status: p.status, version: p.version, entries: p.entries.length, leafId: p.leafId, branch: p.branch.length, diagnostics: p.diagnostics },
+        fingerprintBefore: first.before, fingerprintAfter: first.after, secondParseIdentical: true,
+      });
       assert.equal(p.status, v.expect);
 
       // 2. 交给 pi 打开副本。
@@ -182,6 +194,7 @@ for (const v of variantList) {
       let startError = null;
       try {
         rpc = await gen.experiment.start({ args: ['--session', copy, '-e', genExtPath] });
+        drivers.push(rpc);
       } catch (error) {
         startError = error.message.split('\n')[0].slice(0, 300);
       }
@@ -189,15 +202,17 @@ for (const v of variantList) {
         const afterPi = fingerprint(copy);
         t.diagnostic(`pi 无法打开: ${startError}`);
         t.diagnostic(`pi 对副本的改动: ${classifyChange(beforePi, afterPi, beforeBytes, readFileSync(copy))}`);
+        Object.assign(record, { piStartError: startError, piChange: classifyChange(beforePi, afterPi, beforeBytes, readFileSync(copy)) });
         assert.equal(p.status, 'invalid', '只有解析器判为 invalid 的文件才应被 pi 拒绝');
         return;
       }
       const r = (await rpc.command({ type: 'get_entries' })).data;
       const state = (await rpc.command({ type: 'get_state' })).data;
-      await rpc.stop();
+      await stopDriver(rpc);
       const afterPi = fingerprint(copy);
       t.diagnostic(`pi get_entries: entries=${r.entries.length} leafId=${r.leafId} sessionFile 相同=${state.sessionFile === copy}`);
       t.diagnostic(`pi 对副本的改动: ${classifyChange(beforePi, afterPi, beforeBytes, readFileSync(copy))}`);
+      Object.assign(record, { pi: { entries: r.entries.length, leafId: r.leafId }, piChange: classifyChange(beforePi, afterPi, beforeBytes, readFileSync(copy)) });
       assert.notEqual(p.status, 'invalid', 'pi 能打开的文件不应被解析器判为 invalid');
 
       // 3. 比较条目、叶子、活动分支（投影②）。
@@ -221,11 +236,14 @@ for (const v of variantList) {
         assert.deepEqual(pa, pb);
         const sameIds = p.entries.filter((e, i) => e.id === rPrefix[i]?.id).length;
         t.diagnostic(`v1：id 与 pi 迁移时生成的相同的条目 ${sameIds}/${p.entries.length}`);
+        record.v1SameIds = `${sameIds}/${p.entries.length}`;
       } else {
         assert.deepEqual(p.entries, rPrefix, '条目应与 get_entries 完全相同');
         assert.equal(p.leafId, rLeaf, 'leafId 应相同');
         assert.deepEqual(p.branch, piBranch, '活动分支应相同');
       }
+      record.piAppendedOnOpen = r.entries.slice(p.entries.length).map((e) => e.type);
+      record.originalMatches = true;
       t.diagnostic(`原文件一致：条目 ${p.entries.length} 个，leaf ${p.leafId}，活动分支 ${p.branch.length} 个（${p.branch.map((e) => e.type === 'message' ? e.message.role : e.type).join(' → ')}）`);
 
       // 4. pi 退出后的副本（已被 pi 迁移、补换行或追加条目）与 get_entries 完全一致。
@@ -234,6 +252,7 @@ for (const v of variantList) {
       assert.deepEqual(post.parsed.entries, r.entries, 'pi 写回后的文件应与 get_entries 一致');
       assert.equal(post.parsed.leafId, r.leafId);
       assert.deepEqual(post.parsed.branch, activeBranch(r.entries, r.leafId));
+      record.postPi = { version: post.parsed.header?.version, entries: post.parsed.entries.length, leafId: post.parsed.leafId, diagnostics: post.parsed.diagnostics, matchesGetEntries: true };
       t.diagnostic(`pi 写回后的副本：version=${post.parsed.header?.version} 条目 ${post.parsed.entries.length} 个，leaf ${post.parsed.leafId}，与 get_entries 完全一致；diagnostics=${JSON.stringify(post.parsed.diagnostics)}`);
     } catch (error) {
       allPassed = false;

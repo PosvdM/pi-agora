@@ -8,16 +8,20 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { join } from 'node:path';
-import test from 'node:test';
+import test, { after } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createExperiment, readJsonl } from '../harness/index.mjs';
-import { PI_ROOT } from './lib.mjs';
+import { PI_ROOT, teardownExperiment, writeEvidence } from './lib.mjs';
 
 // 服务端预判用 pi 自己的实现（pi-pane 设计中由 pi 导出的同名函数）。直接导入 trust-manager.js，
 // 避免加载整个 pi 入口。
 const { hasTrustRequiringProjectResources, ProjectTrustStore } = await import(
   pathToFileURL(join(PI_ROOT, 'dist/core/trust-manager.js')).href
 );
+
+// 本文件的观察结果；默认写到每次运行新建的临时目录，P0_RECORD=1 时写入仓库的 evidence/。
+const evidence = { node: process.version, platform: process.platform, startedAt: new Date().toISOString(), scenarios: [] };
+after(() => { console.log(`# 证据: ${writeEvidence('trust', evidence)}`); });
 
 const ext = (name) => fileURLToPath(new URL(`./trust/${name}`, import.meta.url));
 const MARK = 'TRUST-MARKER-MAIN';
@@ -58,7 +62,8 @@ async function scenario(t, opts) {
   });
   t.diagnostic(`fixture: ${e.root}`);
   let ok = false;
-  t.after(async () => { await e.stop(); if (ok && !process.env.P0_KEEP) await e.cleanup(); });
+  const drivers = [];
+  t.after(async () => { await teardownExperiment(e, drivers, { remove: ok && !process.env.P0_KEEP }); });
   const real = realpathSync(e.cwd);
   if (opts.resources !== false) await writeProjectResources(e.cwd, MARK);
   if (opts.setup) await opts.setup(e, real);
@@ -82,6 +87,7 @@ async function scenario(t, opts) {
     args: [...args, ...(opts.args ?? [])],
     env: { P0_PANE_BRIDGE_CONFIG: configPath, P0_TRUST_LOG: otherLog, P0_EARLY_TRUST: opts.early ?? '', P0_LATE_TRUST: opts.late ?? '', ...opts.env },
   });
+  drivers.push(rpc);
   const observe = async (marker, from) => {
     const { response } = await rpc.promptAndWait(`probe ${randomUUID()}`, { timeoutMs: 20_000 });
     assert.equal(response.success, true);
@@ -104,6 +110,12 @@ async function scenario(t, opts) {
   t.diagnostic(`pane 处理器调用: ${JSON.stringify(result.paneHandlerCalls.map(({ source, result: r, hasUI, uiConfirm, mode, instance }) => ({ instance, source, r, hasUI, uiConfirm, mode })))}`);
   if (result.otherLog.length) t.diagnostic(`其他处理器: ${JSON.stringify(result.otherLog.map(({ kind, mode }) => ({ kind, mode })))}`);
   t.diagnostic(`trust.json 前: ${JSON.stringify(trustBefore)} 后: ${JSON.stringify(result.trustAfter)}`);
+  evidence.scenarios.push({
+    test: t.name, pre, decisionSent: result.decisionSent, loaded: result.loaded, thinkingLevel: result.thinkingLevel,
+    isProjectTrusted: result.isProjectTrusted, trustBefore, trustAfter: result.trustAfter,
+    bridgeLog: result.bridgeLog, otherLog: result.otherLog,
+    ...(result.second ? { afterSwitch: result.second, afterSwitchBack: result.third, switchMs: result.switchMs } : {}),
+  });
   result.finish = () => { ok = true; };
   return result;
 }

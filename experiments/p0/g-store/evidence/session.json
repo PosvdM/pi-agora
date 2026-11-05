@@ -1,0 +1,636 @@
+{
+  "node": "v26.12.0",
+  "platform": "darwin",
+  "startedAt": "2026-11-05T14:23:36.551Z",
+  "generation": [
+    "compact: {\"id\":\"p0-10\",\"type\":\"response\",\"command\":\"compact\",\"success\":true,\"data\":{\"summary\":\"## Goal\\nSUMMARY-BY-FAKE-PROVIDER\\n\\n---\\n\\n**Turn Context (split turn):**\\n\\n## Goal\\nSUMMARY-BY-FAKE-PROVIDER\\n\\n<read-files>\\ninput.txt\\n</read-files>\",\"firstKeptEntryId\":\"5bcdefb9\",\"tokensBefore\":1350,\"estimate",
+    "navigate(summarize): {\"id\":\"p0-13\",\"type\":\"response\",\"command\":\"prompt\",\"success\":true,\"data\":{\"disposition\":\"handled\"}}",
+    "entries=20 leaf=d1109a48 oldBranchLeaf=5bfd0dee",
+    "navigate(no summary) 后 live leafId=5bfd0dee，文件最后一个条目=d1109a48，文件变化=false"
+  ],
+  "variants": [
+    {
+      "name": "v3（pi 生成，含压缩、分支摘要、label、custom 等）",
+      "file": "v3.jsonl",
+      "parsed": {
+        "status": "ok",
+        "version": 3,
+        "entries": 20,
+        "leafId": "d1109a48",
+        "branch": 8,
+        "diagnostics": {
+          "size": 16785,
+          "malformedLines": [],
+          "tailWithoutNewline": false,
+          "truncatedTail": false,
+          "migratedFrom": null
+        }
+      },
+      "fingerprintBefore": {
+        "sha256": "8dd487d461a3a2054d6227aab7f9260f54b4506ba3ae4337a6322b7afd96759f",
+        "size": 16785,
+        "mtimeMs": 1793888616563.5286
+      },
+      "fingerprintAfter": {
+        "sha256": "8dd487d461a3a2054d6227aab7f9260f54b4506ba3ae4337a6322b7afd96759f",
+        "size": 16785,
+        "mtimeMs": 1793888616563.5286
+      },
+      "secondParseIdentical": true,
+      "pi": {
+        "entries": 20,
+        "leafId": "d1109a48"
+      },
+      "piChange": "未改动",
+      "piAppendedOnOpen": [],
+      "originalMatches": true,
+      "postPi": {
+        "version": 3,
+        "entries": 20,
+        "leafId": "d1109a48",
+        "diagnostics": {
+          "size": 16785,
+          "malformedLines": [],
+          "tailWithoutNewline": false,
+          "truncatedTail": false,
+          "migratedFrom": null
+        },
+        "matchesGetEntries": true
+      }
+    },
+    {
+      "name": "v3，最后一行没有换行符（内容完整）",
+      "file": "v3-no-newline.jsonl",
+      "parsed": {
+        "status": "ok",
+        "version": 3,
+        "entries": 20,
+        "leafId": "d1109a48",
+        "branch": 8,
+        "diagnostics": {
+          "size": 16784,
+          "malformedLines": [],
+          "tailWithoutNewline": true,
+          "truncatedTail": false,
+          "migratedFrom": null
+        }
+      },
+      "fingerprintBefore": {
+        "sha256": "fc8616f64e95589a5cac6493651437ec6f41ca783a275cbdc868b67a461d020b",
+        "size": 16784,
+        "mtimeMs": 1793888616565.4355
+      },
+      "fingerprintAfter": {
+        "sha256": "fc8616f64e95589a5cac6493651437ec6f41ca783a275cbdc868b67a461d020b",
+        "size": 16784,
+        "mtimeMs": 1793888616565.4355
+      },
+      "secondParseIdentical": true,
+      "pi": {
+        "entries": 20,
+        "leafId": "d1109a48"
+      },
+      "piChange": "在末尾追加 \"\\n\"",
+      "piAppendedOnOpen": [],
+      "originalMatches": true,
+      "postPi": {
+        "version": 3,
+        "entries": 20,
+        "leafId": "d1109a48",
+        "diagnostics": {
+          "size": 16785,
+          "malformedLines": [],
+          "tailWithoutNewline": false,
+          "truncatedTail": false,
+          "migratedFrom": null
+        },
+        "matchesGetEntries": true
+      }
+    },
+    {
+      "name": "v3，追加中途截断（切在多字节字符中间）",
+      "file": "v3-partial-append.jsonl",
+      "parsed": {
+        "status": "ok",
+        "version": 3,
+        "entries": 20,
+        "leafId": "d1109a48",
+        "branch": 8,
+        "diagnostics": {
+          "size": 16923,
+          "malformedLines": [],
+          "tailWithoutNewline": true,
+          "truncatedTail": true,
+          "migratedFrom": null
+        }
+      },
+      "fingerprintBefore": {
+        "sha256": "d095c0ae0a6dad4f8271be32469fbe09091084077b5bd2a2937c19b20a5f727b",
+        "size": 16923,
+        "mtimeMs": 1793888616565.6096
+      },
+      "fingerprintAfter": {
+        "sha256": "d095c0ae0a6dad4f8271be32469fbe09091084077b5bd2a2937c19b20a5f727b",
+        "size": 16923,
+        "mtimeMs": 1793888616565.6096
+      },
+      "secondParseIdentical": true,
+      "pi": {
+        "entries": 20,
+        "leafId": "d1109a48"
+      },
+      "piChange": "在末尾追加 \"\\n\"",
+      "piAppendedOnOpen": [],
+      "originalMatches": true,
+      "postPi": {
+        "version": 3,
+        "entries": 20,
+        "leafId": "d1109a48",
+        "diagnostics": {
+          "size": 16924,
+          "malformedLines": [
+            22
+          ],
+          "tailWithoutNewline": false,
+          "truncatedTail": false,
+          "migratedFrom": null
+        },
+        "matchesGetEntries": true
+      }
+    },
+    {
+      "name": "v3，最后一个条目被截去一半",
+      "file": "v3-cut-last.jsonl",
+      "parsed": {
+        "status": "ok",
+        "version": 3,
+        "entries": 19,
+        "leafId": "ffb6a165",
+        "branch": 7,
+        "diagnostics": {
+          "size": 16348,
+          "malformedLines": [],
+          "tailWithoutNewline": true,
+          "truncatedTail": true,
+          "migratedFrom": null
+        }
+      },
+      "fingerprintBefore": {
+        "sha256": "43fb8bdafe43bb428c4585f570828e9c91df1a9b5d0c07ea38fc1376a9fe69f4",
+        "size": 16348,
+        "mtimeMs": 1793888616565.721
+      },
+      "fingerprintAfter": {
+        "sha256": "43fb8bdafe43bb428c4585f570828e9c91df1a9b5d0c07ea38fc1376a9fe69f4",
+        "size": 16348,
+        "mtimeMs": 1793888616565.721
+      },
+      "secondParseIdentical": true,
+      "pi": {
+        "entries": 19,
+        "leafId": "ffb6a165"
+      },
+      "piChange": "在末尾追加 \"\\n\"",
+      "piAppendedOnOpen": [],
+      "originalMatches": true,
+      "postPi": {
+        "version": 3,
+        "entries": 19,
+        "leafId": "ffb6a165",
+        "diagnostics": {
+          "size": 16349,
+          "malformedLines": [
+            21
+          ],
+          "tailWithoutNewline": false,
+          "truncatedTail": false,
+          "migratedFrom": null
+        },
+        "matchesGetEntries": true
+      }
+    },
+    {
+      "name": "v3，中间有一行损坏",
+      "file": "v3-malformed-middle.jsonl",
+      "parsed": {
+        "status": "ok",
+        "version": 3,
+        "entries": 20,
+        "leafId": "d1109a48",
+        "branch": 8,
+        "diagnostics": {
+          "size": 16809,
+          "malformedLines": [
+            7
+          ],
+          "tailWithoutNewline": false,
+          "truncatedTail": false,
+          "migratedFrom": null
+        }
+      },
+      "fingerprintBefore": {
+        "sha256": "640b0c7c2e64f8917374907cec5c64141f2672029f41847ca6753ac8d63c3cb4",
+        "size": 16809,
+        "mtimeMs": 1793888616565.8352
+      },
+      "fingerprintAfter": {
+        "sha256": "640b0c7c2e64f8917374907cec5c64141f2672029f41847ca6753ac8d63c3cb4",
+        "size": 16809,
+        "mtimeMs": 1793888616565.8352
+      },
+      "secondParseIdentical": true,
+      "pi": {
+        "entries": 20,
+        "leafId": "d1109a48"
+      },
+      "piChange": "未改动",
+      "piAppendedOnOpen": [],
+      "originalMatches": true,
+      "postPi": {
+        "version": 3,
+        "entries": 20,
+        "leafId": "d1109a48",
+        "diagnostics": {
+          "size": 16809,
+          "malformedLines": [
+            7
+          ],
+          "tailWithoutNewline": false,
+          "truncatedTail": false,
+          "migratedFrom": null
+        },
+        "matchesGetEntries": true
+      }
+    },
+    {
+      "name": "v3，只有 session 头",
+      "file": "v3-header-only.jsonl",
+      "parsed": {
+        "status": "ok",
+        "version": 3,
+        "entries": 0,
+        "leafId": null,
+        "branch": 0,
+        "diagnostics": {
+          "size": 196,
+          "malformedLines": [],
+          "tailWithoutNewline": false,
+          "truncatedTail": false,
+          "migratedFrom": null
+        }
+      },
+      "fingerprintBefore": {
+        "sha256": "29bbbe3f00cbb56f1b6f53243a20cebae79d69cde36d77e7e0d3ef499c497a74",
+        "size": 196,
+        "mtimeMs": 1793888616565.9062
+      },
+      "fingerprintAfter": {
+        "sha256": "29bbbe3f00cbb56f1b6f53243a20cebae79d69cde36d77e7e0d3ef499c497a74",
+        "size": 196,
+        "mtimeMs": 1793888616565.9062
+      },
+      "secondParseIdentical": true,
+      "pi": {
+        "entries": 2,
+        "leafId": "f9e0f92d"
+      },
+      "piChange": "在末尾追加 \"{\\\"type\\\":\\\"model_change\\\",\\\"id\\\":\\\"e0f50ba8\\\",\\\"parentId\\\":null,\\\"timestamp\\\":\\\"2026-11-05T1\"",
+      "piAppendedOnOpen": [
+        "model_change",
+        "thinking_level_change"
+      ],
+      "originalMatches": true,
+      "postPi": {
+        "version": 3,
+        "entries": 2,
+        "leafId": "f9e0f92d",
+        "diagnostics": {
+          "size": 468,
+          "malformedLines": [],
+          "tailWithoutNewline": false,
+          "truncatedTail": false,
+          "migratedFrom": null
+        },
+        "matchesGetEntries": true
+      }
+    },
+    {
+      "name": "v2（构造：version 2 + hookMessage）",
+      "file": "v2.jsonl",
+      "parsed": {
+        "status": "ok",
+        "version": 2,
+        "entries": 21,
+        "leafId": "aa000002",
+        "branch": 9,
+        "diagnostics": {
+          "size": 17030,
+          "malformedLines": [],
+          "tailWithoutNewline": false,
+          "truncatedTail": false,
+          "migratedFrom": 2
+        }
+      },
+      "fingerprintBefore": {
+        "sha256": "88524e69059550e3813a543774a6c7df7a3bb4291d48349266c3b8a08a75bf81",
+        "size": 17030,
+        "mtimeMs": 1793888616566.1675
+      },
+      "fingerprintAfter": {
+        "sha256": "88524e69059550e3813a543774a6c7df7a3bb4291d48349266c3b8a08a75bf81",
+        "size": 17030,
+        "mtimeMs": 1793888616566.1675
+      },
+      "secondParseIdentical": true,
+      "pi": {
+        "entries": 21,
+        "leafId": "aa000002"
+      },
+      "piChange": "被重写（17030 → 17025 字节）",
+      "piAppendedOnOpen": [],
+      "originalMatches": true,
+      "postPi": {
+        "version": 3,
+        "entries": 21,
+        "leafId": "aa000002",
+        "diagnostics": {
+          "size": 17025,
+          "malformedLines": [],
+          "tailWithoutNewline": false,
+          "truncatedTail": false,
+          "migratedFrom": null
+        },
+        "matchesGetEntries": true
+      }
+    },
+    {
+      "name": "v1（构造：无 version、线性、firstKeptEntryIndex、hookMessage）",
+      "file": "v1.jsonl",
+      "parsed": {
+        "status": "ok",
+        "version": 1,
+        "entries": 17,
+        "leafId": "a0db865f",
+        "branch": 17,
+        "diagnostics": {
+          "size": 15001,
+          "malformedLines": [],
+          "tailWithoutNewline": false,
+          "truncatedTail": false,
+          "migratedFrom": 1
+        }
+      },
+      "fingerprintBefore": {
+        "sha256": "a9f1a637d0d1fbf87418c7adff7baa6944d8938420fb2f2966c3a6aaac3d5665",
+        "size": 15001,
+        "mtimeMs": 1793888616566.2673
+      },
+      "fingerprintAfter": {
+        "sha256": "a9f1a637d0d1fbf87418c7adff7baa6944d8938420fb2f2966c3a6aaac3d5665",
+        "size": 15001,
+        "mtimeMs": 1793888616566.2673
+      },
+      "secondParseIdentical": true,
+      "pi": {
+        "entries": 17,
+        "leafId": "b2c841ab"
+      },
+      "piChange": "被重写（15001 → 15653 字节）",
+      "v1SameIds": "0/17",
+      "piAppendedOnOpen": [],
+      "originalMatches": true,
+      "postPi": {
+        "version": 3,
+        "entries": 17,
+        "leafId": "b2c841ab",
+        "diagnostics": {
+          "size": 15653,
+          "malformedLines": [],
+          "tailWithoutNewline": false,
+          "truncatedTail": false,
+          "migratedFrom": null
+        },
+        "matchesGetEntries": true
+      }
+    },
+    {
+      "name": "v1（构造：version 1）",
+      "file": "v1-version1.jsonl",
+      "parsed": {
+        "status": "ok",
+        "version": 1,
+        "entries": 17,
+        "leafId": "a0db865f",
+        "branch": 17,
+        "diagnostics": {
+          "size": 15013,
+          "malformedLines": [],
+          "tailWithoutNewline": false,
+          "truncatedTail": false,
+          "migratedFrom": 1
+        }
+      },
+      "fingerprintBefore": {
+        "sha256": "71b7a7ca0c58b04f0faa44c76463c7b7723aee1e7cc5cf1ae2f4b9be35301de2",
+        "size": 15013,
+        "mtimeMs": 1793888616566.5413
+      },
+      "fingerprintAfter": {
+        "sha256": "71b7a7ca0c58b04f0faa44c76463c7b7723aee1e7cc5cf1ae2f4b9be35301de2",
+        "size": 15013,
+        "mtimeMs": 1793888616566.5413
+      },
+      "secondParseIdentical": true,
+      "pi": {
+        "entries": 17,
+        "leafId": "8bf65b63"
+      },
+      "piChange": "被重写（15013 → 15653 字节）",
+      "v1SameIds": "0/17",
+      "piAppendedOnOpen": [],
+      "originalMatches": true,
+      "postPi": {
+        "version": 3,
+        "entries": 17,
+        "leafId": "8bf65b63",
+        "diagnostics": {
+          "size": 15653,
+          "malformedLines": [],
+          "tailWithoutNewline": false,
+          "truncatedTail": false,
+          "migratedFrom": null
+        },
+        "matchesGetEntries": true
+      }
+    },
+    {
+      "name": "v1，最后一行被截断",
+      "file": "v1-cut-last.jsonl",
+      "parsed": {
+        "status": "ok",
+        "version": 1,
+        "entries": 16,
+        "leafId": "2a87e715",
+        "branch": 16,
+        "diagnostics": {
+          "size": 14852,
+          "malformedLines": [],
+          "tailWithoutNewline": true,
+          "truncatedTail": true,
+          "migratedFrom": 1
+        }
+      },
+      "fingerprintBefore": {
+        "sha256": "4df6c7c89381ceec37b4560c30a1f1edb4bcfe29b3cc8f1fff2e1fa1c66a9d0e",
+        "size": 14852,
+        "mtimeMs": 1793888616566.6533
+      },
+      "fingerprintAfter": {
+        "sha256": "4df6c7c89381ceec37b4560c30a1f1edb4bcfe29b3cc8f1fff2e1fa1c66a9d0e",
+        "size": 14852,
+        "mtimeMs": 1793888616566.6533
+      },
+      "secondParseIdentical": true,
+      "pi": {
+        "entries": 16,
+        "leafId": "c6a05d10"
+      },
+      "piChange": "被重写（14852 → 15441 字节）",
+      "v1SameIds": "0/16",
+      "piAppendedOnOpen": [],
+      "originalMatches": true,
+      "postPi": {
+        "version": 3,
+        "entries": 16,
+        "leafId": "c6a05d10",
+        "diagnostics": {
+          "size": 15441,
+          "malformedLines": [],
+          "tailWithoutNewline": false,
+          "truncatedTail": false,
+          "migratedFrom": null
+        },
+        "matchesGetEntries": true
+      }
+    },
+    {
+      "name": "空文件（0 字节）",
+      "file": "empty.jsonl",
+      "parsed": {
+        "status": "empty",
+        "version": null,
+        "entries": 0,
+        "leafId": null,
+        "branch": 0,
+        "diagnostics": {
+          "size": 0,
+          "malformedLines": [],
+          "tailWithoutNewline": false,
+          "truncatedTail": false,
+          "migratedFrom": null
+        }
+      },
+      "fingerprintBefore": {
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "size": 0,
+        "mtimeMs": 1793888616566.7017
+      },
+      "fingerprintAfter": {
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "size": 0,
+        "mtimeMs": 1793888616566.7017
+      },
+      "secondParseIdentical": true,
+      "pi": {
+        "entries": 2,
+        "leafId": "0c469fd0"
+      },
+      "piChange": "在末尾追加 \"{\\\"type\\\":\\\"session\\\",\\\"version\\\":3,\\\"id\\\":\\\"01a1ac18-0df8-769e-acaf-9d96b10302d5\\\",\\\"times\"",
+      "piAppendedOnOpen": [
+        "model_change",
+        "thinking_level_change"
+      ],
+      "originalMatches": true,
+      "postPi": {
+        "version": 3,
+        "entries": 2,
+        "leafId": "0c469fd0",
+        "diagnostics": {
+          "size": 468,
+          "malformedLines": [],
+          "tailWithoutNewline": false,
+          "truncatedTail": false,
+          "migratedFrom": null
+        },
+        "matchesGetEntries": true
+      }
+    },
+    {
+      "name": "只有空行",
+      "file": "blank.jsonl",
+      "parsed": {
+        "status": "invalid",
+        "version": null,
+        "entries": 0,
+        "leafId": null,
+        "branch": 0,
+        "diagnostics": {
+          "size": 2,
+          "malformedLines": [],
+          "tailWithoutNewline": false,
+          "truncatedTail": false,
+          "migratedFrom": null
+        }
+      },
+      "fingerprintBefore": {
+        "sha256": "75a11da44c802486bc6f65640aa48a730f0f684c5c07a42ba3cd1735eb3fb070",
+        "size": 2,
+        "mtimeMs": 1793888616566.804
+      },
+      "fingerprintAfter": {
+        "sha256": "75a11da44c802486bc6f65640aa48a730f0f684c5c07a42ba3cd1735eb3fb070",
+        "size": 2,
+        "mtimeMs": 1793888616566.804
+      },
+      "secondParseIdentical": true,
+      "piStartError": "pi closed: {\"code\":1,\"signal\":null}; stderr=Error: Session file is not a valid pi session: /var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-oQXzzL/g-pi-copies/blank.jsonl",
+      "piChange": "未改动"
+    },
+    {
+      "name": "第一行不是 session 头",
+      "file": "no-header.jsonl",
+      "parsed": {
+        "status": "invalid",
+        "version": null,
+        "entries": 0,
+        "leafId": null,
+        "branch": 0,
+        "diagnostics": {
+          "size": 16589,
+          "malformedLines": [],
+          "tailWithoutNewline": false,
+          "truncatedTail": false,
+          "migratedFrom": null
+        }
+      },
+      "fingerprintBefore": {
+        "sha256": "fb5a2eb1c67fc8c5fcd73bbda8b434c132200a9789bbffe50c6019715c9f6206",
+        "size": 16589,
+        "mtimeMs": 1793888616567.1826
+      },
+      "fingerprintAfter": {
+        "sha256": "fb5a2eb1c67fc8c5fcd73bbda8b434c132200a9789bbffe50c6019715c9f6206",
+        "size": 16589,
+        "mtimeMs": 1793888616567.1826
+      },
+      "secondParseIdentical": true,
+      "piStartError": "pi closed: {\"code\":1,\"signal\":null}; stderr=Error: Session file is not a valid pi session: /var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-oQXzzL/g-pi-copies/no-header.jsonl",
+      "piChange": "未改动"
+    }
+  ],
+  "navigation": {
+    "liveLeafAfterNavigate": "5bfd0dee",
+    "parsedLeaf": "d1109a48",
+    "reopenedLeaf": "d1109a48"
+  }
+}
