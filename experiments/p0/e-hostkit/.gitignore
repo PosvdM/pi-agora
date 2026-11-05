@@ -1,0 +1,8 @@
+node_modules/
+build/
+*.node
+*.o
+*.dSYM/
+hostkit-helper
+core
+core.*
