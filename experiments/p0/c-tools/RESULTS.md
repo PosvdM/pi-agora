@@ -5,14 +5,14 @@
 本实验覆盖 [roadmap.md](../../../docs/roadmap.md) 的 agora #3、#4、#5、#19。结论限于本机 macOS 和本目录的受管扩展原型，不代表尚未实现的 daemon 已经通过验收。Windows 和 Linux 均为**待测**。
 
 - 实测环境：macOS，Node `v26.12.0`，pi `1.5.0`，git `2.56.0`。
-- 最后一次完整运行：`2026-11-05T06:03:25.125Z`；16 个测试，14 个通过，2 个 Windows 测试跳过，0 个失败，约 9.2 秒。
+- 最后一次完整运行：`2026-11-05T14:25:20.208Z`；18 个测试，16 个通过，2 个 Windows 测试跳过，0 个失败，约 10.3 秒。
 - 临时卷实测不区分大小写，NFC/NFD 文件名互通。`realpath` 把 `PROTECTED` 和 `protected` 都返回为磁盘上的 `protected`，并把 `/var/...` 返回为 `/private/var/...`。
 - 所有模型请求都来自共用 harness 的假 provider；没有真实模型请求，没有网络访问。`HOME`、`PI_CODING_AGENT_DIR`、会话和工作目录均指向临时现场；没有修改全局安装、全局 git 配置或用户的 `~/.pi`。
 
 | 条目 | 结论 | 主要结果 |
 | --- | --- | --- |
-| agora #3 | 通过 | 非白名单工具既不声明，也无法调用。MCP 白名单外服务器仍启动并完成工具发现，但其工具不能调用。 |
-| agora #4 | 通过 | 五种指定故障都未发送任务书、未执行 canary，并结束进程、记录诊断。MCP 初始工具快照和裸异常另有观察。 |
+| agora #3 | 通过 | 已保存信任的项目确实加载了 thinking 设置，但 `defaultTools` 不能绕过显式白名单；非白名单真实调用全部失败。MCP 结果不变。 |
+| agora #4 | 通过 | 受管原型通过：五种指定故障都未发送任务书、未执行 canary，并结束进程、记录诊断；不代表真实 daemon 已验收。 |
 | agora #5 | 部分通过 | 静态越界调用全部被拒；TOCTOU 能越过检查，与文档声明的剩余风险一致。原生 Windows 的 PowerShell 和 junction 尚未验证。 |
 | agora #19 | 部分通过 | git 2.56.0 接受固定 argv，加固调用的恶意标记为 0；最低支持版本没有实测。 |
 
@@ -21,21 +21,26 @@
 从仓库根目录运行：
 
 ```sh
-node --test --test-timeout=20000 experiments/p0/c-tools/tools.test.mjs
+node experiments/p0/c-tools/run.mjs
 ```
 
-更新机器可读观察和运行日志：
+运行器调用 `node --test --test-timeout=20000`，每次创建不同的系统临时目录，保存完整 `run.log`、`observations.json` 和两个项目设置现场的原始 provider/RPC 日志。直接运行 `node --test --test-timeout=20000 experiments/p0/c-tools/tools.test.mjs` 也会创建唯一临时证据目录。
+
+只有显式设置 `P0_RECORD=1` 才刷新仓库里的已提交证据：
 
 ```sh
-C_TOOLS_RECORD=1 node --test --test-timeout=20000 experiments/p0/c-tools/tools.test.mjs \
-  > experiments/p0/c-tools/run.log 2>&1
+P0_RECORD=1 node experiments/p0/c-tools/run.mjs
 ```
+
+默认完整重跑前后，仓库中 `observations.json` 和 `run.log` 的 SHA-256 均保持不变。本次记录运行的证据目录是 `/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-c-tools-run-8RrTX0`。
 
 测试主体只使用 Node 标准库、现有 pi 和 git。macOS 上 pager 的终端正控还使用已有的 `/usr/bin/python3` 标准库 `pty`；找不到该程序时不运行该正控，其他测试不依赖 Python。Windows 原生 PowerShell、junction 用例已经写入脚本，本次跳过；跨平台脚本未经 Windows/Linux 实测。
 
 | 文件 | 用途 |
 | --- | --- |
 | `tools.test.mjs` | 受管启动监督原型、假 provider 驱动、故障注入和攻击用例。 |
+| `run.mjs` | 创建唯一临时输出目录、运行测试并捕获完整日志；仅 `P0_RECORD=1` 刷新仓库日志。 |
+| `safe-harness.mjs` | 本组复制的 harness 入口，沿用共用 RPC 驱动，并包装幂等 stop 和已退出检查。 |
 | `managed-extension.ts` | 删除 launch ticket、验证 ticket、报告工具集合、就绪前拒绝调用、捕获策略异常、文件路径检查和 `agora_git`。 |
 | `path-policy.mjs` | pi 路径解析规则的独立原型、真实路径与包含关系检查。 |
 | `git-policy.mjs` | argv 白名单、filter 覆盖、环境清理及无 shell 的 git 调用。 |
@@ -55,17 +60,26 @@ C_TOOLS_RECORD=1 node --test --test-timeout=20000 experiments/p0/c-tools/tools.t
 
 ### 验证内容与通过标准
 
-使用 `--tools read,grep,find,ls,agora_* -ne -e <原型> -ns -np --no-approve`，同时在临时 agent 配置两个 MCP 服务器，在项目 `.pi/settings.json` 配置 `defaultTools`，尝试加入 `bash`、`codemode`、`write` 和非白名单 MCP 工具。
+使用 `--tools read,grep,find,ls,agora_* -ne -e <原型> -ns -np`，同时在临时 agent 配置两个 MCP 服务器，在项目 `.pi/settings.json` 配置 `defaultTools`，尝试加入 `bash`、`edit`、`write`、`codemode` 和非白名单 MCP 工具。分别验证 `--no-approve` 和已保存项目信任两条启动路径；后者既不传 `--no-approve`，也不传 `--approve`。
 
-通过标准：provider 请求没有这些工具的声明；假 provider 实际发出的越权调用失败。implement 的 MCP 控制实验只声明白名单服务器的工具，并记录两个服务器是否启动。
+通过标准：先用独立于工具选择的 thinking 标记证明项目设置确实被加载；再确认每个 provider 请求都没有越权工具的声明，假 provider 实际发出的越权调用失败。implement 的 MCP 控制实验只声明白名单服务器的工具，并记录两个服务器是否启动。
 
 ### 实测结果
 
-默认受管启动的声明只有：
+两个项目设置现场都在临时 agent 的 `trust.json` 中将规范化 cwd 保存为 `true`，并将全局 `defaultProjectTrust` 设为 `never`，避免默认放行。独立标记为全局 `defaultThinkingLevel=low`、项目 `defaultThinkingLevel=high`。没有 CLI thinking 参数或运行时改级别。
+
+| 场景 | 信任参数 | 初始 `get_state.thinkingLevel` | ready 的 thinking | 项目设置是否加载 |
+| --- | --- | --- | --- | --- |
+| 拒绝对照 | `--no-approve`，覆盖已保存的信任 | `low` | `low` | 否 |
+| 已保存信任 | 不传信任覆盖参数，读取临时 `trust.json` | `high` | `high` | 是 |
+
+`high` 来自同一份项目设置文件，证明可信现场的 `.pi/settings.json` 没有被跳过。随后两场景各检查 14 个 provider 请求，工具集合始终精确等于以下白名单：
 
 ```text
 read, grep, find, ls, agora_canary
 bash -> Tool bash not found
+edit -> Tool edit not found
+write -> Tool write not found
 codemode -> Tool codemode not found
 mcp__allowed__ping -> Tool mcp__allowed__ping not found
 mcp__denied__ping -> Tool mcp__denied__ping not found
@@ -73,7 +87,9 @@ powershell -> Tool powershell not found
 MCP spawn count = 0
 ```
 
-这些错误来自真实 pi 工具分派结果，不是仅检查启动参数。工具声明取自假 provider 的请求日志。项目 `defaultTools` 没有绕过显式白名单或 `--no-approve`。
+这些错误来自真实 pi 工具分派结果，不是仅检查启动参数。两场景中，假 provider 都实际尝试上述 7 类越权调用；断言同时要求 `isError=true` 和精确的 `Tool <name> not found`，不以受管钩子的 ready 拒绝代替工具不可调用。`write` 的目标 `blocked.txt` 不存在，两个 MCP 服务器的启动记录也不存在。
+
+原始 provider 请求、RPC 记录、全局/项目设置和 `trust.json` 分别归档在本次证据目录的 `project-settings-deny/`、`project-settings-saved/`。`observations.json.archived` 记录其绝对路径。
 
 implement 策略的 MCP 专项控制只选取只读文件工具和 agora 工具。显式加载 `-e builtin:mcp` 并加入 `mcp__allowed__*` 后，分别测试 `direct` 和默认的 `codemode` exposure：
 
@@ -88,7 +104,7 @@ implement 策略的 MCP 专项控制只选取只读文件工具和 agora 工具�
 
 ### 结论
 
-**通过**。本机上，“不声明”和“真实调用失败”都有请求及 RPC 日志证明。MCP 白名单限制工具暴露，不限制服务器连接：未列入的服务器仍启动、接收初始化和工具发现请求。这个事实影响 [architecture.md「权限档位」](../../../docs/architecture.md#权限档位) 中的 MCP 连接范围；本实验没有把连接误记为工具执行。
+**通过**。受信任项目用独立 thinking 标记证明设置确实加载；其 `defaultTools` 没有绕过显式白名单，每个 provider 请求的声明和全部真实越权调用均满足断言。拒绝信任对照与 MCP 专项也通过。MCP 白名单限制工具暴露，不限制服务器连接：未列入的服务器仍启动、接收初始化和工具发现请求。这个事实影响 [architecture.md「权限档位」](../../../docs/architecture.md#权限档位) 中的 MCP 连接范围；本实验没有把连接误记为工具执行。
 
 Windows：待测。Linux：待测。
 
@@ -119,7 +135,7 @@ Windows：待测。Linux：待测。
 
 ### 结论
 
-**通过**。五种指定故障在受管原型中均关闭放行路径，任务书和执行标记均为 0。这个结论不涵盖真实 HTTP 认证服务、持久化 ticket 存储或 pi 原生 `extension_error` 对所有异常的覆盖；裸钩子抛错的观察不能用于声称 pi 会发该事件。
+**通过**（受管原型）。五种指定故障在受管原型中均关闭放行路径，任务书和执行标记均为 0。这个结论不涵盖真实 HTTP 认证服务、持久化 ticket 存储或 pi 原生 `extension_error` 对所有异常的覆盖；裸钩子抛错的观察不能用于声称 pi 会发该事件。
 
 Windows：待测。Linux：待测。
 
@@ -239,21 +255,25 @@ minimumGitVersionTested = false
 
 ### 结论
 
-**部分通过**。本机 git 2.56.0 的固定 argv、安全标记和参数拒绝通过。现有设计要求在最低支持版本验证，但文档没有给出该版本的数值；本机也没有运行第二个 git 版本，因此不能据此满足 roadmap #19 的全部条件。关联位置是 architecture.md「agora_git 的加固」固定 argv 后的版本要求。
+**部分通过**。本机 git 2.56.0 的固定 argv、安全标记和参数拒绝通过。最低支持版本由主人确定，本轮不测，也没有运行第二个 git 版本，因此不能据此满足 roadmap #19 的全部条件。关联位置是 architecture.md「agora_git 的加固」固定 argv 后的版本要求。
 
 Windows：待测。Linux：待测。最低 git 版本：待测。
 
 ## Harness 与现场清理
 
-没有修改 harness，也没有确认到 harness 的实现错误。本组在目录内补充了 ready/ticket 监督逻辑、MCP 日志文件监听和退出后的精确 PID 检查。共用工具声明不覆盖完整独立子进程组清理；本次 MCP 由 pi 正常 shutdown 关闭，逐 PID 检查均未发现遗留。
+共用 harness 没有修改。审查确认其 `stop()` 会在检查退出状态前发送信号，重复 `stop()`/`cleanup()` 有向已回收 PGID 发信号的风险；没有证据表明本实验实际误杀了进程。
+
+本组 `safe-harness.mjs` 复制共用入口并包装每个驱动：先检查 child 的退出状态，已退出时只等待 exit；首次停止的 Promise 被缓存，并发或重复调用共用该 Promise。单元测试用会抛错的已退出驱动证明原始 stop 调用次数为 0；用显式 release barrier 证明并发和后续 stop 只调用原实现一次。没有使用固定延时作为同步。
+
+本组仍补充 ready/ticket 监督、MCP 日志条件等待和退出后的精确 PID 检查。共用工具不覆盖完整独立子进程组清理；本次 MCP 由 pi 正常 shutdown 关闭，逐 PID 检查均未发现遗留。
 
 最后一次完整运行保留三个预期需要复查的现场，绝对路径只适用于本机：
 
 | 现场 | 原因 |
 | --- | --- |
-| `/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-4siJhR` | 裸 `tool_call` 抛错没有 RPC `extension_error`。 |
-| `/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-YShpWc` | macOS 原始 pi 显式声明 PowerShell、执行时拒绝。 |
-| `/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-9rrOjT` | TOCTOU 读到受保护 fixture。 |
+| `/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-WPxgVd` | 裸 `tool_call` 抛错没有 RPC `extension_error`。 |
+| `/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-ADV144` | macOS 原始 pi 显式声明 PowerShell、执行时拒绝。 |
+| `/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-MMlU6u` | TOCTOU 读到受保护 fixture。 |
 
 每个现场保留 `requests.jsonl`、`rpc-1.jsonl`、guard 日志和隔离配置。早期探查中有两次外层命令超时、若干正控和断言调整；相应临时现场没有删除，也没有据此修改或回滚 pi、harness、设计文档。初次 MCP/PowerShell/裸异常/TOCTOU 的异常观察已向主 Agent 报告。
 
@@ -264,6 +284,7 @@ Windows：待测。Linux：待测。最低 git 版本：待测。
 本机安装根目录为 `/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/`。核对的关键位置如下：
 
 - `docs/cli.md`、`docs/extensions.md`、`docs/mcp.md`：显式工具选择、资源禁用、钩子及 MCP exposure。
+- `dist/core/settings-manager.js` 的项目设置加载、`dist/core/sdk.js` 的显式工具覆盖，以及 `dist/core/trust-manager.js` 的规范化路径和布尔 trust 文件格式：受信任设置补测的依据。
 - `dist/core/extensions/runner.js` 的 `emitToolCall`：该函数没有将抛错转换成 `extension_error` 的 catch。
 - `dist/core/tools/path-utils.js`、`dist/utils/paths.js`：路径解析和 read 候选顺序；`read.js` 使用异步候选解析。
 - `dist/core/tools/grep.js`、`find.js`：搜索参数含 hidden，不设置 follow。
