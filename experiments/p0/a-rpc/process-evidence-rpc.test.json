@@ -1,0 +1,89 @@
+{
+  "processes": [
+    {
+      "pid": 53164,
+      "exit": {
+        "code": 143,
+        "signal": null
+      }
+    },
+    {
+      "pid": 53170,
+      "exit": {
+        "code": 143,
+        "signal": null
+      }
+    },
+    {
+      "pid": 53179,
+      "exit": {
+        "code": null,
+        "signal": "SIGKILL"
+      }
+    },
+    {
+      "pid": 53183,
+      "exit": {
+        "code": 143,
+        "signal": null
+      }
+    },
+    {
+      "pid": 53188,
+      "exit": {
+        "code": 143,
+        "signal": null
+      }
+    },
+    {
+      "pid": 53190,
+      "exit": {
+        "code": 143,
+        "signal": null
+      }
+    },
+    {
+      "pid": 53195,
+      "exit": {
+        "code": 143,
+        "signal": null
+      }
+    },
+    {
+      "pid": 53197,
+      "exit": {
+        "code": 143,
+        "signal": null
+      }
+    },
+    {
+      "pid": 53202,
+      "exit": {
+        "code": 143,
+        "signal": null
+      }
+    },
+    {
+      "pid": 53204,
+      "exit": {
+        "code": 143,
+        "signal": null
+      }
+    },
+    {
+      "pid": 53209,
+      "exit": {
+        "code": 143,
+        "signal": null
+      }
+    },
+    {
+      "pid": 53219,
+      "exit": {
+        "code": 143,
+        "signal": null
+      }
+    }
+  ],
+  "alive": []
+}
