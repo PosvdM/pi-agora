@@ -1,0 +1,26 @@
+{
+  "processes": [
+    {
+      "pid": 53160,
+      "exit": {
+        "code": 143,
+        "signal": null
+      }
+    },
+    {
+      "pid": 53168,
+      "exit": {
+        "code": 143,
+        "signal": null
+      }
+    },
+    {
+      "pid": 53177,
+      "exit": {
+        "code": 143,
+        "signal": null
+      }
+    }
+  ],
+  "alive": []
+}

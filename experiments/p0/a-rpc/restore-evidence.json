@@ -1,0 +1,95 @@
+{
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "saved first user"
+        }
+      ],
+      "timestamp": 1793858313123
+    },
+    {
+      "role": "assistant",
+      "api": "p0-scripted",
+      "provider": "p0-fake",
+      "model": "scripted",
+      "timestamp": 1793858313129,
+      "content": [
+        {
+          "type": "text",
+          "text": "saved assistant"
+        }
+      ],
+      "stopReason": "stop",
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 0,
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0
+        }
+      },
+      "durationMs": 1,
+      "thinkingLevel": "medium"
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "saved second user"
+        }
+      ],
+      "timestamp": 1793858313134
+    },
+    {
+      "role": "assistant",
+      "api": "p0-scripted",
+      "provider": "p0-fake",
+      "model": "scripted",
+      "timestamp": 1793858313135,
+      "content": [
+        {
+          "type": "text",
+          "text": "saved assistant"
+        }
+      ],
+      "stopReason": "stop",
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 0,
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0
+        }
+      },
+      "durationMs": 1,
+      "thinkingLevel": "medium"
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "third user"
+        }
+      ],
+      "timestamp": 1793858313468
+    }
+  ],
+  "fileMatches": true
+}

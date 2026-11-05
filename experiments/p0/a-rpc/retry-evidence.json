@@ -1,0 +1,35 @@
+{
+  "events": [
+    {
+      "seq": 2,
+      "type": "agent_start"
+    },
+    {
+      "seq": 11,
+      "type": "agent_end",
+      "willRetry": true
+    },
+    {
+      "seq": 12,
+      "type": "auto_retry_start"
+    },
+    {
+      "seq": 14,
+      "type": "agent_start"
+    },
+    {
+      "seq": 21,
+      "type": "auto_retry_end"
+    },
+    {
+      "seq": 23,
+      "type": "agent_end",
+      "willRetry": false
+    },
+    {
+      "seq": 24,
+      "type": "agent_settled",
+      "aborted": false
+    }
+  ]
+}

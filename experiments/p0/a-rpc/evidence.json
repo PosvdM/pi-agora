@@ -1,0 +1,929 @@
+{
+  "platform": "darwin",
+  "node": "v26.12.0",
+  "pi": "1.5.0",
+  "observations": {
+    "lifecycle": {
+      "toolSnapshotCuts": 55,
+      "statuses": {
+        "st_delivered": [
+          "accepted",
+          "queued",
+          "delivered"
+        ],
+        "st_dropped": [
+          "accepted",
+          "queued",
+          "dropped"
+        ]
+      },
+      "prompt": {
+        "disposition": "started"
+      },
+      "ping": {
+        "disposition": "handled"
+      },
+      "commands": [
+        {
+          "name": "p0-ping",
+          "description": "P0 extension command",
+          "source": "extension",
+          "sourceInfo": {
+            "path": "<fixture>/cwd/probe.ts",
+            "source": "cli",
+            "scope": "temporary",
+            "origin": "top-level"
+          }
+        },
+        {
+          "name": "p0-ui",
+          "description": "P0 UI dialogs",
+          "source": "extension",
+          "sourceInfo": {
+            "path": "<fixture>/cwd/probe.ts",
+            "source": "cli",
+            "scope": "temporary",
+            "origin": "top-level"
+          }
+        },
+        {
+          "name": "p0-replace",
+          "description": "P0 session replacement",
+          "source": "extension",
+          "sourceInfo": {
+            "path": "<fixture>/cwd/probe.ts",
+            "source": "cli",
+            "scope": "temporary",
+            "origin": "top-level"
+          }
+        },
+        {
+          "name": "p0-navigate",
+          "description": "P0 leaf navigation",
+          "source": "extension",
+          "sourceInfo": {
+            "path": "<fixture>/cwd/probe.ts",
+            "source": "cli",
+            "scope": "temporary",
+            "origin": "top-level"
+          }
+        },
+        {
+          "name": "p0-fork-file",
+          "description": "P0 static forkFrom",
+          "source": "extension",
+          "sourceInfo": {
+            "path": "<fixture>/cwd/probe.ts",
+            "source": "cli",
+            "scope": "temporary",
+            "origin": "top-level"
+          }
+        }
+      ],
+      "clearQueue": {
+        "steering": [
+          "【agora 返工 st_dropped，第 3 代】\nfix"
+        ],
+        "followUp": [
+          "drop follow-up"
+        ]
+      },
+      "handled": {
+        "disposition": "handled"
+      },
+      "users": [
+        "start gate",
+        "【agora 返工 st_delivered，第 2 代】\nfix",
+        "follow-up delivered"
+      ],
+      "toolEnd": 36,
+      "delivered": 43,
+      "agentEnd": [
+        60
+      ],
+      "agentSettled": 61,
+      "requests": 3,
+      "trace": [
+        {
+          "seq": 4,
+          "type": "agent_start"
+        },
+        {
+          "seq": 26,
+          "type": "queue_update",
+          "steering": [
+            "【agora 返工 st_dropped，第 3 代】\nfix"
+          ],
+          "followUp": []
+        },
+        {
+          "seq": 28,
+          "type": "queue_update",
+          "steering": [
+            "【agora 返工 st_dropped，第 3 代】\nfix"
+          ],
+          "followUp": [
+            "drop follow-up"
+          ]
+        },
+        {
+          "seq": 30,
+          "type": "queue_update",
+          "steering": [],
+          "followUp": []
+        },
+        {
+          "seq": 32,
+          "type": "queue_update",
+          "steering": [
+            "【agora 返工 st_delivered，第 2 代】\nfix"
+          ],
+          "followUp": []
+        },
+        {
+          "seq": 34,
+          "type": "queue_update",
+          "steering": [
+            "【agora 返工 st_delivered，第 2 代】\nfix"
+          ],
+          "followUp": [
+            "follow-up delivered"
+          ]
+        },
+        {
+          "seq": 36,
+          "type": "tool_execution_end"
+        },
+        {
+          "seq": 41,
+          "type": "queue_update",
+          "steering": [],
+          "followUp": [
+            "follow-up delivered"
+          ]
+        },
+        {
+          "seq": 51,
+          "type": "queue_update",
+          "steering": [],
+          "followUp": []
+        },
+        {
+          "seq": 60,
+          "type": "agent_end",
+          "willRetry": false
+        },
+        {
+          "seq": 61,
+          "type": "agent_settled",
+          "aborted": false
+        }
+      ]
+    },
+    "stop": {
+      "clearQueue": {
+        "steering": [
+          "steer one",
+          "steer two"
+        ],
+        "followUp": [
+          "follow one"
+        ]
+      },
+      "requests": 1,
+      "users": [
+        "stop test"
+      ],
+      "state": {
+        "model": {
+          "id": "scripted",
+          "name": "P0 scripted local provider",
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ],
+          "cost": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0
+          },
+          "contextWindow": 200000,
+          "maxTokens": 8192,
+          "api": "p0-scripted",
+          "provider": "p0-fake",
+          "baseUrl": "http://127.0.0.1:1/never-requested"
+        },
+        "thinkingLevel": "medium",
+        "isStreaming": false,
+        "isCompacting": false,
+        "steeringMode": "one-at-a-time",
+        "followUpMode": "one-at-a-time",
+        "sessionFile": "<fixture>/agent/sessions/2026-11-05T05-58-32-951Z_01a1aa49-9af6-7423-8a3a-8a9a11d86981.jsonl",
+        "sessionId": "01a1aa49-9af6-7423-8a3a-8a9a11d86981",
+        "autoCompactionEnabled": false,
+        "messageCount": 3,
+        "pendingMessageCount": 0
+      }
+    },
+    "abortTimeout": {
+      "timeoutMs": 180,
+      "exit": {
+        "code": null,
+        "signal": "SIGKILL"
+      },
+      "recoveredFileMatches": true,
+      "priorUserRestored": true,
+      "toolStarts": 1
+    },
+    "persistence": {
+      "leafMovedWithoutAppend": true,
+      "leafRebuildRequired": true,
+      "explicitFile": true,
+      "initialFileAbsent": true,
+      "cuts": [
+        {
+          "rawSeq": 7,
+          "role": "system",
+          "found": true,
+          "count": 5
+        },
+        {
+          "rawSeq": 9,
+          "role": "user",
+          "found": true,
+          "count": 5
+        },
+        {
+          "rawSeq": 14,
+          "role": "assistant",
+          "found": true,
+          "count": 5
+        },
+        {
+          "rawSeq": 25,
+          "role": "user",
+          "found": true,
+          "count": 2
+        },
+        {
+          "rawSeq": 30,
+          "role": "assistant",
+          "found": true,
+          "count": 2
+        }
+      ],
+      "extensionBeforePersist": [
+        {
+          "type": "message_end_before_persist",
+          "role": "system",
+          "alreadyPresent": false
+        },
+        {
+          "type": "message_end_before_persist",
+          "role": "user",
+          "alreadyPresent": false
+        },
+        {
+          "type": "message_end_before_persist",
+          "role": "assistant",
+          "alreadyPresent": false
+        },
+        {
+          "type": "message_end_before_persist",
+          "role": "user",
+          "alreadyPresent": false
+        },
+        {
+          "type": "message_end_before_persist",
+          "role": "assistant",
+          "alreadyPresent": false
+        },
+        {
+          "type": "message_end_before_persist",
+          "role": "user",
+          "alreadyPresent": false
+        },
+        {
+          "type": "message_end_before_persist",
+          "role": "assistant",
+          "alreadyPresent": false
+        }
+      ],
+      "preCompactionMessages": 5,
+      "afterCompactionEntries": 8,
+      "compaction": {
+        "summary": "P0 compact summary",
+        "firstKeptEntryId": "1d4159a9",
+        "tokensBefore": 1234,
+        "estimatedTokensAfter": 1359
+      },
+      "restartEntriesIdentical": true,
+      "restoredContext": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "The conversation history before this point was compacted into the following summary:\n\n<summary>\nP0 compact summary\n</summary>"
+            }
+          ],
+          "timestamp": 1793858314804
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "history two"
+            }
+          ],
+          "timestamp": 1793858314801
+        },
+        {
+          "role": "assistant",
+          "api": "p0-scripted",
+          "provider": "p0-fake",
+          "model": "scripted",
+          "timestamp": 1793858314802,
+          "content": [
+            {
+              "type": "text",
+              "text": "fallback answer"
+            }
+          ],
+          "stopReason": "stop",
+          "usage": {
+            "input": 0,
+            "output": 0,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": 0,
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0,
+              "total": 0
+            }
+          },
+          "durationMs": 0,
+          "thinkingLevel": "medium"
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "after restart"
+            }
+          ],
+          "timestamp": 1793858315104
+        }
+      ]
+    },
+    "snapshots": {
+      "snapshotsBeforeDiscard": 16,
+      "replayedCuts": 10,
+      "finalMessages": [
+        {
+          "role": "system",
+          "content": ""
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "snapshot stream"
+            }
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "thinking",
+              "thinking": "plan two"
+            },
+            {
+              "type": "text",
+              "text": "alpha beta gamma"
+            }
+          ]
+        }
+      ],
+      "pendingCompleted": 0,
+      "epochResync": true,
+      "futureResync": true,
+      "expiredResync": true,
+      "serverRestartFromDisk": true,
+      "interruptedRestartFromDisk": true
+    },
+    "ui": {
+      "value": {
+        "select": "B",
+        "confirm": true,
+        "input": "typed",
+        "editor": "edited\nlines",
+        "elapsed": 1
+      },
+      "timed": {
+        "select": null,
+        "confirm": false,
+        "input": null,
+        "editor": null,
+        "elapsed": 184
+      },
+      "cancelled": {
+        "select": null,
+        "confirm": false,
+        "input": null,
+        "editor": null,
+        "elapsed": 1
+      },
+      "pending": {
+        "select": null,
+        "confirm": false,
+        "input": null,
+        "editor": null,
+        "elapsed": 166
+      },
+      "editorTimeoutSupported": false,
+      "requests": [
+        {
+          "method": "select"
+        },
+        {
+          "method": "confirm"
+        },
+        {
+          "method": "input"
+        },
+        {
+          "method": "editor"
+        },
+        {
+          "method": "select",
+          "timeout": 60
+        },
+        {
+          "method": "confirm",
+          "timeout": 60
+        },
+        {
+          "method": "input",
+          "timeout": 60
+        },
+        {
+          "method": "select"
+        },
+        {
+          "method": "confirm"
+        },
+        {
+          "method": "input"
+        },
+        {
+          "method": "editor"
+        },
+        {
+          "method": "select"
+        },
+        {
+          "method": "confirm"
+        },
+        {
+          "method": "input"
+        },
+        {
+          "method": "editor"
+        }
+      ]
+    },
+    "sessionSwitch": {
+      "forkFromSourceUnchanged": true,
+      "cases": [
+        {
+          "via": "rpc",
+          "action": "new",
+          "targetMatches": true,
+          "previousMatches": true,
+          "targetExistedAtShutdown": false,
+          "sequence": [
+            "session_before_switch",
+            "session_shutdown",
+            "lock_result",
+            "session_start",
+            "session_start"
+          ],
+          "before": {
+            "type": "session_before_switch",
+            "reason": "new",
+            "file": "<fixture>/agent/sessions/2026-11-05T05-58-37-651Z_01a1aa49-ad52-74a7-9461-d549e00f4c5d.jsonl",
+            "targetExists": null
+          }
+        },
+        {
+          "via": "rpc",
+          "action": "resume",
+          "targetMatches": true,
+          "previousMatches": true,
+          "targetExistedAtShutdown": true,
+          "sequence": [
+            "session_before_switch",
+            "lock_result",
+            "session_shutdown",
+            "session_start",
+            "session_start"
+          ],
+          "before": {
+            "type": "session_before_switch",
+            "reason": "resume",
+            "targetSessionFile": "<fixture>/agent/sessions/2026-11-05T05-58-37-816Z_01a1aa49-adf8-74a7-9461-d54b474dc221.jsonl",
+            "file": "<fixture>/agent/sessions/2026-11-05T05-58-37-651Z_01a1aa49-ad52-74a7-9461-d549e00f4c5d.jsonl",
+            "targetExists": true
+          }
+        },
+        {
+          "via": "rpc",
+          "action": "fork",
+          "targetMatches": true,
+          "previousMatches": true,
+          "targetExistedAtShutdown": true,
+          "sequence": [
+            "session_before_fork",
+            "session_shutdown",
+            "lock_result",
+            "session_start",
+            "session_start"
+          ],
+          "before": {
+            "type": "session_before_fork",
+            "entryId": "7e954b5b",
+            "position": "before",
+            "file": "<fixture>/agent/sessions/2026-11-05T05-58-37-651Z_01a1aa49-ad52-74a7-9461-d549e00f4c5d.jsonl",
+            "targetExists": null
+          }
+        },
+        {
+          "via": "rpc",
+          "action": "clone",
+          "targetMatches": true,
+          "previousMatches": true,
+          "targetExistedAtShutdown": true,
+          "sequence": [
+            "session_before_fork",
+            "session_shutdown",
+            "lock_result",
+            "session_start",
+            "session_start"
+          ],
+          "before": {
+            "type": "session_before_fork",
+            "entryId": "7599e214",
+            "position": "at",
+            "file": "<fixture>/agent/sessions/2026-11-05T05-58-37-651Z_01a1aa49-ad52-74a7-9461-d549e00f4c5d.jsonl",
+            "targetExists": null
+          }
+        },
+        {
+          "via": "extension",
+          "action": "new",
+          "targetMatches": true,
+          "previousMatches": true,
+          "targetExistedAtShutdown": false,
+          "sequence": [
+            "session_before_switch",
+            "session_shutdown",
+            "lock_result",
+            "session_start"
+          ],
+          "before": {
+            "type": "session_before_switch",
+            "reason": "new",
+            "file": "<fixture>/agent/sessions/2026-11-05T05-58-37-651Z_01a1aa49-ad52-74a7-9461-d549e00f4c5d.jsonl",
+            "targetExists": null
+          }
+        },
+        {
+          "via": "extension",
+          "action": "resume",
+          "targetMatches": true,
+          "previousMatches": true,
+          "targetExistedAtShutdown": true,
+          "sequence": [
+            "session_before_switch",
+            "lock_result",
+            "session_shutdown",
+            "session_start"
+          ],
+          "before": {
+            "type": "session_before_switch",
+            "reason": "resume",
+            "targetSessionFile": "<fixture>/agent/sessions/2026-11-05T05-58-37-816Z_01a1aa49-adf8-74a7-9461-d54b474dc221.jsonl",
+            "file": "<fixture>/agent/sessions/2026-11-05T05-58-37-651Z_01a1aa49-ad52-74a7-9461-d549e00f4c5d.jsonl",
+            "targetExists": true
+          }
+        },
+        {
+          "via": "extension",
+          "action": "fork",
+          "targetMatches": true,
+          "previousMatches": true,
+          "targetExistedAtShutdown": true,
+          "sequence": [
+            "session_before_fork",
+            "session_shutdown",
+            "lock_result",
+            "session_start"
+          ],
+          "before": {
+            "type": "session_before_fork",
+            "entryId": "7e954b5b",
+            "position": "before",
+            "file": "<fixture>/agent/sessions/2026-11-05T05-58-37-651Z_01a1aa49-ad52-74a7-9461-d549e00f4c5d.jsonl",
+            "targetExists": null
+          }
+        },
+        {
+          "via": "extension",
+          "action": "clone",
+          "targetMatches": true,
+          "previousMatches": true,
+          "targetExistedAtShutdown": true,
+          "sequence": [
+            "session_before_fork",
+            "session_shutdown",
+            "lock_result",
+            "session_start"
+          ],
+          "before": {
+            "type": "session_before_fork",
+            "entryId": "7599e214",
+            "position": "at",
+            "file": "<fixture>/agent/sessions/2026-11-05T05-58-37-651Z_01a1aa49-ad52-74a7-9461-d549e00f4c5d.jsonl",
+            "targetExists": null
+          }
+        }
+      ],
+      "cancelResume": {
+        "cancelled": true
+      },
+      "occupiedResumeCancelled": {
+        "cancelled": true
+      },
+      "cancelledTargetUnchanged": true,
+      "failedLock": {
+        "blocked": true,
+        "stoppedAfterStart": true,
+        "furtherInputs": [],
+        "exit": {
+          "code": 143,
+          "signal": null
+        }
+      },
+      "events": [
+        {
+          "type": "session_before_switch",
+          "reason": "resume",
+          "targetSessionFile": "<fixture>/agent/sessions/2026-11-05T05-58-37-816Z_01a1aa49-adf8-74a7-9461-d54b474dc221.jsonl",
+          "file": "<fixture>/agent/sessions/2026-11-05T05-58-37-651Z_01a1aa49-ad52-74a7-9461-d549e00f4c5d.jsonl",
+          "targetExists": true
+        },
+        {
+          "type": "lock_result",
+          "at": "session_before_switch",
+          "acquired": false,
+          "target": "<fixture>/agent/sessions/2026-11-05T05-58-37-816Z_01a1aa49-adf8-74a7-9461-d54b474dc221.jsonl",
+          "error": "EEXIST"
+        },
+        {
+          "type": "session_before_switch",
+          "reason": "new",
+          "file": "<fixture>/agent/sessions/2026-11-05T05-58-37-651Z_01a1aa49-ad52-74a7-9461-d549e00f4c5d.jsonl",
+          "targetExists": null
+        },
+        {
+          "type": "session_shutdown",
+          "reason": "new",
+          "targetSessionFile": "<fixture>/agent/sessions/2026-11-05T05-58-38-009Z_01a1aa49-aeb9-74a7-9461-d5580c878dc4.jsonl",
+          "file": "<fixture>/agent/sessions/2026-11-05T05-58-37-651Z_01a1aa49-ad52-74a7-9461-d549e00f4c5d.jsonl",
+          "targetExists": false
+        },
+        {
+          "type": "lock_result",
+          "at": "session_shutdown",
+          "acquired": false,
+          "target": "<fixture>/agent/sessions/2026-11-05T05-58-38-009Z_01a1aa49-aeb9-74a7-9461-d5580c878dc4.jsonl",
+          "error": "EEXIST"
+        },
+        {
+          "type": "session_start",
+          "reason": "new",
+          "previousSessionFile": "<fixture>/agent/sessions/2026-11-05T05-58-37-651Z_01a1aa49-ad52-74a7-9461-d549e00f4c5d.jsonl",
+          "file": "<fixture>/agent/sessions/2026-11-05T05-58-38-009Z_01a1aa49-aeb9-74a7-9461-d5580c878dc4.jsonl",
+          "targetExists": null
+        },
+        {
+          "type": "session_start",
+          "reason": "new",
+          "previousSessionFile": "<fixture>/agent/sessions/2026-11-05T05-58-37-651Z_01a1aa49-ad52-74a7-9461-d549e00f4c5d.jsonl",
+          "file": "<fixture>/agent/sessions/2026-11-05T05-58-38-009Z_01a1aa49-aeb9-74a7-9461-d5580c878dc4.jsonl",
+          "targetExists": null
+        },
+        {
+          "type": "session_shutdown",
+          "reason": "quit",
+          "file": "<fixture>/agent/sessions/2026-11-05T05-58-38-009Z_01a1aa49-aeb9-74a7-9461-d5580c878dc4.jsonl",
+          "targetExists": null
+        }
+      ]
+    },
+    "replacementGuards": {
+      "results": [
+        {
+          "command": "new_session",
+          "data": {
+            "cancelled": true
+          }
+        },
+        {
+          "command": "switch_session",
+          "data": {
+            "cancelled": true
+          }
+        },
+        {
+          "command": "fork",
+          "data": {
+            "cancelled": true
+          }
+        },
+        {
+          "command": "clone",
+          "data": {
+            "cancelled": true
+          }
+        },
+        {
+          "command": "/p0-attempt new",
+          "data": {
+            "disposition": "handled"
+          }
+        },
+        {
+          "command": "/p0-attempt resume",
+          "data": {
+            "disposition": "handled"
+          }
+        },
+        {
+          "command": "/p0-attempt fork",
+          "data": {
+            "disposition": "handled"
+          }
+        },
+        {
+          "command": "/p0-attempt clone",
+          "data": {
+            "disposition": "handled"
+          }
+        }
+      ],
+      "extensionResults": [
+        {
+          "type": "replacement_result",
+          "source": "caller-extension",
+          "action": "new",
+          "result": {
+            "cancelled": true
+          }
+        },
+        {
+          "type": "replacement_result",
+          "source": "caller-extension",
+          "action": "resume",
+          "result": {
+            "cancelled": true
+          }
+        },
+        {
+          "type": "replacement_result",
+          "source": "caller-extension",
+          "action": "fork",
+          "result": {
+            "cancelled": true
+          }
+        },
+        {
+          "type": "replacement_result",
+          "source": "caller-extension",
+          "action": "clone",
+          "result": {
+            "cancelled": true
+          }
+        }
+      ],
+      "fileUnchangedForCancelledPaths": true,
+      "unexpectedShutdown": true,
+      "exit": {
+        "code": 143,
+        "signal": null
+      }
+    },
+    "cleanup": {
+      "processes": [
+        {
+          "pid": 53164,
+          "exit": {
+            "code": 143,
+            "signal": null
+          }
+        },
+        {
+          "pid": 53170,
+          "exit": {
+            "code": 143,
+            "signal": null
+          }
+        },
+        {
+          "pid": 53179,
+          "exit": {
+            "code": null,
+            "signal": "SIGKILL"
+          }
+        },
+        {
+          "pid": 53183,
+          "exit": {
+            "code": 143,
+            "signal": null
+          }
+        },
+        {
+          "pid": 53188,
+          "exit": {
+            "code": 143,
+            "signal": null
+          }
+        },
+        {
+          "pid": 53190,
+          "exit": {
+            "code": 143,
+            "signal": null
+          }
+        },
+        {
+          "pid": 53195,
+          "exit": {
+            "code": 143,
+            "signal": null
+          }
+        },
+        {
+          "pid": 53197,
+          "exit": {
+            "code": 143,
+            "signal": null
+          }
+        },
+        {
+          "pid": 53202,
+          "exit": {
+            "code": 143,
+            "signal": null
+          }
+        },
+        {
+          "pid": 53204,
+          "exit": {
+            "code": 143,
+            "signal": null
+          }
+        },
+        {
+          "pid": 53209,
+          "exit": {
+            "code": 143,
+            "signal": null
+          }
+        },
+        {
+          "pid": 53219,
+          "exit": {
+            "code": 143,
+            "signal": null
+          }
+        }
+      ],
+      "live": [],
+      "retained": [
+        "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-mkxCY5"
+      ]
+    }
+  }
+}
