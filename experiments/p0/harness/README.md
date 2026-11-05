@@ -12,7 +12,7 @@
 node --test experiments/p0/harness/smoke.test.mjs
 ```
 
-7 个测试覆盖 JSONL 分帧、文字和 thinking 流、usage、真实 `read`、图片顺序与工具声明、两种 abort、动态脚本与错误、扩展 UI 回应及超时。成功时删除临时现场，失败时保留并在测试输出打印 `fixture:` 路径。
+8 个测试覆盖 JSONL 分帧、文字和 thinking 流、usage、真实 `read`、图片顺序与工具声明、两种 abort、动态脚本与错误、扩展 UI 回应及超时，以及停止幂等性和已退出子进程的信号保护。成功时删除临时现场，失败时保留并在测试输出打印 `fixture:` 路径。
 
 ## 最小用法
 
@@ -102,7 +102,7 @@ const toolEnd = await rpc.waitFor(
 - `rpc.events` 是 `{ seq, timestamp, elapsedMs, event }[]`；`seq` 从 0 开始。`onEvent((event, record) => {})` 返回取消订阅函数，回调同步执行。
 - `send(object)` 写入任意 JSONL 记录，不等待响应，便于协议边界测试。写入串行等待 write callback；stdout 持续读取。
 - `DeadlineError` 只代表驱动的等待期限，不会偷偷 abort、杀进程或重发命令。超时后仍会记录迟到响应。
-- `rpc.stop({ graceMs = 700 })` 给独立进程组发 SIGTERM，等待退出；超时发 SIGKILL。`killGroup(signal)` 可直接发信号，`rpc.exit` 等待 stdio 关闭并返回 `{ code, signal }`。完整进程树和独立子进程组清理不在本工具范围内。
+- `rpc.stop({ graceMs = 700 })` 在子进程存活时给独立进程组发 SIGTERM，等待退出；超时且子进程仍存活时发 SIGKILL。已退出的子进程只等待 stdio 关闭，不再发信号。并发或重复调用返回同一 Promise，`graceMs` 以首次调用为准。`killGroup(signal)` 可直接发信号，`rpc.exit` 等待 stdio 关闭并返回 `{ code, signal }`。完整进程树和独立子进程组清理不在本工具范围内。
 
 识别忽略 abort 的示例：
 

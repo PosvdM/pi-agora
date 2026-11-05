@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
-import { createExperiment, DeadlineError, JsonlDecoder, scriptedUi } from './index.mjs';
+import { createExperiment, DeadlineError, JsonlDecoder, RpcDriver, scriptedUi } from './index.mjs';
 
 async function fixture(t, options) {
   const experiment = await createExperiment(options);
@@ -30,6 +30,31 @@ test('JSONL preserves Unicode separators, split UTF-8, and CRLF', () => {
   const truncated = new JsonlDecoder(() => {});
   truncated.push(Buffer.from('{"missing":'));
   assert.throws(() => truncated.end(), /Truncated/);
+});
+
+test('stop never signals an exited child, including before stdio closes', { timeout: 5000 }, async (t) => {
+  const rpc = new RpcDriver({ executable: '/usr/bin/true', env: {} });
+  const signal = t.mock.method(rpc, 'killGroup', () => {});
+  const observed = new Promise((resolve) => {
+    rpc.child.once('exit', () => {
+      resolve({ beforeClose: rpc.exitInfo === undefined, stopping: rpc.stop() });
+    });
+  });
+  const { beforeClose, stopping } = await observed;
+  assert.equal(beforeClose, true);
+  assert.deepEqual(await stopping, { code: 0, signal: null });
+  assert.equal(rpc.stop(), stopping);
+  assert.equal(rpc.stop({ graceMs: 0 }), stopping);
+  await rpc.stop();
+  assert.equal(signal.mock.callCount(), 0);
+
+  const closed = new RpcDriver({ executable: '/usr/bin/true', env: {} });
+  const closedSignal = t.mock.method(closed, 'killGroup', () => {});
+  const exit = await closed.exit;
+  const stopped = closed.stop();
+  assert.equal(closed.stop(), stopped);
+  assert.deepEqual(await stopped, exit);
+  assert.equal(closedSignal.mock.callCount(), 0);
 });
 
 test('streaming text/thinking, usage, and full image/tool request log', async (t) => {
@@ -115,8 +140,19 @@ test('ignoreAbort is observable as an abort deadline, not an idle run', async (t
   await experiment.waitForProvider((entry) => entry.kind === 'abort_received');
   assert.equal(rpc.events.slice(from).some(({ event }) => event.type === 'agent_settled'), false);
   assert.equal((await rpc.command({ type: 'get_state' })).data.isStreaming, true);
-  await rpc.stop({ graceMs: 100 });
+  const signal = t.mock.method(rpc, 'killGroup');
+  const stopping = rpc.stop({ graceMs: 100 });
+  assert.equal(rpc.stop({ graceMs: 0 }), stopping);
+  await Promise.all([stopping, rpc.stop()]);
   assert.ok(rpc.exitInfo.signal || rpc.exitInfo.code !== null);
+  const signals = signal.mock.calls.map(({ arguments: args }) => args[0]);
+  assert.equal(signals[0], 'SIGTERM');
+  assert.equal(signals.filter((value) => value === 'SIGTERM').length, 1);
+  assert.ok(signals.length <= 2);
+  if (signals.length === 2) assert.equal(signals[1], 'SIGKILL');
+  assert.equal(rpc.stop(), stopping);
+  await rpc.stop();
+  assert.equal(signal.mock.callCount(), signals.length);
 });
 
 test('scripts can change between turns, match last user text, and report errors', async (t) => {

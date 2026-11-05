@@ -35,6 +35,7 @@ export class RpcDriver {
   #writeQueue = Promise.resolve();
   #failure;
   #closed = false;
+  #stopPromise;
   #start = performance.now();
 
   constructor({ executable = 'pi', args = [], env, cwd, logPath, stderrPath, ui }) {
@@ -182,17 +183,25 @@ export class RpcDriver {
     catch (error) { if (error.code !== 'ESRCH') throw error; }
   }
 
-  async stop({ graceMs = 700 } = {}) {
-    this.killGroup('SIGTERM');
-    if (this.#closed) return this.exitInfo;
-    let timer;
-    try {
-      const exited = await Promise.race([
-        this.exit.then(() => true),
-        new Promise((resolve) => { timer = setTimeout(() => resolve(false), graceMs); }),
-      ]);
-      if (!exited) this.killGroup('SIGKILL');
-      return await this.exit;
-    } finally { clearTimeout(timer); }
+  #hasExited() {
+    return this.#closed || this.child.exitCode !== null || this.child.signalCode !== null;
+  }
+
+  stop({ graceMs = 700 } = {}) {
+    // Cache before signaling so concurrent callers share the entire stop sequence.
+    this.#stopPromise ??= Promise.resolve().then(async () => {
+      if (this.#hasExited()) return this.exit;
+      this.killGroup('SIGTERM');
+      let timer;
+      try {
+        const exited = await Promise.race([
+          this.exit.then(() => true),
+          new Promise((resolve) => { timer = setTimeout(() => resolve(false), graceMs); }),
+        ]);
+        if (!exited && !this.#hasExited()) this.killGroup('SIGKILL');
+        return await this.exit;
+      } finally { clearTimeout(timer); }
+    });
+    return this.#stopPromise;
   }
 }
