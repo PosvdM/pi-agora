@@ -5,6 +5,8 @@ import { existsSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { createExperiment, readJsonl, DeadlineError } from './experiment.mjs';
 import { SessionModel, reduce } from './session-model.mjs';
+import { recordEvidence } from './record.mjs';
+import { createHash } from 'node:crypto';
 
 const observations = {};
 const children = [];
@@ -48,7 +50,7 @@ after(async () => {
   await Promise.all(fixtures.map(e => e.stop()));
   const live = children.filter(rpc => { try { process.kill(rpc.child.pid, 0); return true; } catch { return false; } }).map(rpc => rpc.child.pid);
   observations.cleanup = { processes: children.map(rpc => ({ pid: rpc.child.pid, exit: rpc.exitInfo })), live, retained: fixtures.filter(e => existsSync(e.root)).map(e => e.root) };
-  await writeFile(new URL('./evidence.json', import.meta.url), JSON.stringify({ platform: process.platform, node: process.version, pi: '1.5.0', observations }, null, 2) + '\n');
+  await recordEvidence('evidence.json', { platform: process.platform, node: process.version, pi: '1.5.0', observations });
   assert.deepEqual(live, []);
 });
 
@@ -202,13 +204,21 @@ test('A4 preallocated session, since/leafId, message_end cut, compaction history
 });
 
 test('A5 snapshot cuts, delta blocks, discarded model reconnect, server restart and epochs', async t => {
-  const e = await fixture(t, { script: { fallback: { segments: [{ type: 'thinking', chunks: ['plan', { text: ' two', delayMs: 50 }] }, { type: 'text', chunks: ['alpha', { text: ' beta', delayMs: 120 }, { text: ' gamma', delayMs: 120 }] }] } } });
+  const e = await fixture(t, { script: { fallback: { segments: [{ type: 'thinking', chunks: ['plan', ' two'] }, { type: 'text', chunks: ['alpha', ' beta', ' gamma'] }] } } });
+  await control(e, { streamBarrier: true });
+  const waitAtAlpha = async (rpc, from) => {
+    const [barrier] = await Promise.all([
+      rpc.waitFor(event => event.type === 'extension_ui_request' && event.message?.startsWith('P0_BARRIER:'), { from, timeoutMs: 5000 }),
+      rpc.waitFor(event => event.type === 'message_update' && event.assistantMessageEvent.type === 'text_delta' && event.assistantMessageEvent.delta === 'alpha', { from, timeoutMs: 5000 }),
+    ]);
+    return barrier.message.slice('P0_BARRIER:'.length);
+  };
   let rpc = await e.start();
   let model = new SessionModel(rpc);
   await model.refresh();
   const from = rpc.cursor;
   await rpc.command({ type: 'prompt', message: 'snapshot stream' });
-  await rpc.waitFor(event => event.type === 'message_update' && event.assistantMessageEvent.type === 'text_delta', { from });
+  const releaseName = await waitAtAlpha(rpc, from);
   const disconnected = model.snapshot();
   const oldSnapshots = model.snapshots;
   const oldBuffer = model.buffer;
@@ -223,6 +233,7 @@ test('A5 snapshot cuts, delta blocks, discarded model reconnect, server restart 
   model = new SessionModel(rpc);
   await model.refresh();
   assert.deepEqual(model.subscribe(disconnected.cursor), { type: 'resync' });
+  await writeFile(join(e.root, releaseName), 'release next chunk');
   await rpc.waitFor('agent_settled', { from });
   await model.flush();
   assert.deepEqual(model.failures, []);
@@ -252,14 +263,14 @@ test('A5 snapshot cuts, delta blocks, discarded model reconnect, server restart 
   assert.deepEqual(model.snapshot().entries, beforeRestart.entries);
   const runFrom = rpc.cursor;
   await rpc.command({ type: 'prompt', message: 'restart during stream' });
-  await rpc.waitFor(event => event.type === 'message_update' && event.assistantMessageEvent.type === 'text_delta', { from: runFrom });
+  await waitAtAlpha(rpc, runFrom);
   const streamingCursor = model.snapshot().cursor;
   model.dispose(); await rpc.stop({ graceMs: 100 });
   rpc = await e.start({ args: ['--session', file] });
   model = new SessionModel(rpc); await model.refresh();
   assert.deepEqual(model.subscribe(streamingCursor), { type: 'resync' });
   assert.deepEqual(model.snapshot().entries, (await readJsonl(file)).filter(e => e.type !== 'session'));
-  observe(t, 'snapshots', { snapshotsBeforeDiscard: oldSnapshots.length, replayedCuts: cuts.length, finalMessages: final.entries.filter(e => e.type === 'message').map(e => ({ role: e.message.role, content: e.message.content })), pendingCompleted: final.inFlight.completed.length, epochResync: true, futureResync: true, expiredResync: true, serverRestartFromDisk: true, interruptedRestartFromDisk: true });
+  observe(t, 'snapshots', { explicitBarrier: true, snapshotsBeforeDiscard: oldSnapshots.length, replayedCuts: cuts.length, finalMessages: final.entries.filter(e => e.type === 'message').map(e => ({ role: e.message.role, content: e.message.content })), pendingCompleted: final.inFlight.completed.length, epochResync: true, futureResync: true, expiredResync: true, serverRestartFromDisk: true, interruptedRestartFromDisk: true });
   model.dispose();
 });
 
@@ -297,6 +308,30 @@ test('A7 RPC and extension new/resume/fork/clone, forkFrom source hash and lock 
   const staticFork = (await extLog(e)).find(x => x.type === 'forkFrom');
   assert.ok(existsSync(staticFork.target));
   assert.deepEqual(await readFile(source), original);
+  assert.equal(staticFork.beforeHash, staticFork.afterHash);
+  assert.equal(original.at(-1), 10);
+  const forkFromSourceCases = [{ sample: 'complete-with-final-lf', ...staticFork }];
+  const hash = bytes => createHash('sha256').update(bytes).digest('hex');
+  for (const [sample, bytes] of [
+    ['complete-without-final-lf', original.subarray(0, -1)],
+    ['truncated-final-line', Buffer.concat([original, Buffer.from('{"type":"message","id":"unfinished"')])],
+  ]) {
+    const path = await e.write(sample + '.jsonl', bytes);
+    const beforeHash = hash(await readFile(path));
+    const result = await rpc.command({ type: 'prompt', message: '/p0-fork-file ' + path });
+    assert.equal(result.success, true);
+    const observed = (await extLog(e)).findLast(row => row.type === 'forkFrom');
+    const after = await readFile(path);
+    assert.equal(observed.beforeHash, beforeHash);
+    assert.equal(observed.afterHash, hash(after));
+    assert.notEqual(observed.beforeHash, observed.afterHash);
+    assert.equal(observed.sourceUnchanged, false);
+    assert.equal(observed.appendedNewlineOnly, true);
+    assert.deepEqual(after, Buffer.concat([bytes, Buffer.from('\n')]));
+    assert.ok(existsSync(observed.target));
+    forkFromSourceCases.push({ sample, ...observed });
+  }
+  e.preserve = true;
   const cases = [];
   for (const via of ['rpc', 'extension']) {
     for (const action of ['new', 'resume', 'fork', 'clone']) {
@@ -362,7 +397,7 @@ test('A7 RPC and extension new/resume/fork/clone, forkFrom source hash and lock 
   assert.equal(stoppedAfterStart, true);
   assert.deepEqual(sent, []);
   assert.ok((await extLog(e)).some(x => x.type === 'lock_result' && x.acquired === false && x.error === 'EEXIST'));
-  observe(t, 'sessionSwitch', { forkFromSourceUnchanged: true, cases, cancelResume: cancelled.data, occupiedResumeCancelled: lockCancelled.data, cancelledTargetUnchanged: true, failedLock: { blocked, stoppedAfterStart, furtherInputs: sent, exit: rpc.exitInfo }, events: (await extLog(e)).slice(-8) });
+  observe(t, 'sessionSwitch', { forkFromSourceUnchanged: forkFromSourceCases.every(row => row.sourceUnchanged), forkFromSourceCases, cases, cancelResume: cancelled.data, occupiedResumeCancelled: lockCancelled.data, cancelledTargetUnchanged: true, failedLock: { blocked, stoppedAfterStart, furtherInputs: sent, exit: rpc.exitInfo }, events: (await extLog(e)).slice(-8) });
 });
 
 test('A8 collaboration replacement guards cancel RPC and extension paths; watchdog stops unexpected shutdown', async t => {
@@ -419,3 +454,40 @@ test('A8 collaboration replacement guards cancel RPC and extension paths; watchd
   assert.equal(shutdownSeen, true);
   observe(t, 'replacementGuards', { results, extensionResults: replacements, fileUnchangedForCancelledPaths: true, unexpectedShutdown: shutdownSeen, exit: rpc.exitInfo });
 });
+
+for (const [number, mode] of [[15, 'wake'], [16, 'silent']]) {
+  test('A' + number + ' ' + mode + ' custom notification persists once and leaves no completed duplicate', async t => {
+    const e = await fixture(t, { script: fallback });
+    const rpc = await e.start();
+    await rpc.promptAndWait('seed persisted conversation');
+    const model = new SessionModel(rpc); await model.refresh();
+    t.after(() => model.dispose());
+    const beforeRequests = (await e.requests()).length;
+    const from = rpc.cursor;
+    const response = await rpc.command({ type: 'prompt', message: '/p0-notify ' + mode });
+    assert.equal(response.data.disposition, 'handled');
+    await rpc.waitFor(event => event.type === 'message_end' && event.message.role === 'custom' && event.message.content === 'NOTICE_' + mode, { from });
+    if (mode === 'wake') await rpc.waitFor('agent_settled', { from });
+    await model.refresh(); await model.flush();
+    assert.deepEqual(model.failures, []);
+    const file = (await state(rpc)).sessionFile;
+    const disk = await readJsonl(file);
+    const persisted = disk.filter(entry => entry.type === 'custom_message' && entry.customType === 'p0-notice');
+    assert.equal(persisted.length, 1);
+    assert.equal(persisted[0].content, 'NOTICE_' + mode);
+    const snapshot = model.snapshot();
+    const copies = snapshot.entries.filter(entry => entry.type === 'custom_message' && entry.customType === 'p0-notice').length +
+      snapshot.inFlight.completed.filter(message => message.role === 'custom' && message.customType === 'p0-notice').length;
+    observe(t, 'custom-' + mode, { diskCount: persisted.length, snapshotCopies: copies, completed: snapshot.inFlight.completed, providerRequests: (await e.requests()).length - beforeRequests });
+    assert.deepEqual(snapshot.entries, disk.filter(entry => entry.type !== 'session'));
+    assert.deepEqual(snapshot.inFlight.completed, []);
+    assert.equal(copies, 1);
+    assert.equal((await e.requests()).length - beforeRequests, mode === 'wake' ? 1 : 0);
+    for (const cut of model.snapshots) {
+      const replay = structuredClone(cut); delete replay.cursor;
+      for (const record of model.subscribe(cut.cursor)) reduce(replay, record.event);
+      const expected = structuredClone(snapshot); delete expected.cursor;
+      assert.deepEqual(replay, expected);
+    }
+  });
+}

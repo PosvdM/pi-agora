@@ -5,6 +5,8 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createExperiment, DeadlineError } from './experiment.mjs';
 
+import { recordEvidence } from './record.mjs';
+
 const results = {};
 async function run(t, options, body) {
   const e = await createExperiment(options);
@@ -90,5 +92,5 @@ test('A14 user extension autodiscovery uses only the isolated agent directory in
 });
 
 test.after(async () => {
-  await writeFile(new URL('./edges-evidence.json', import.meta.url), JSON.stringify(results, null, 2) + '\n');
+  await recordEvidence('edges-evidence.json', results);
 });

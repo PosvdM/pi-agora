@@ -25,6 +25,17 @@
       },
       "commands": [
         {
+          "name": "p0-notify",
+          "description": "P0 custom message",
+          "source": "extension",
+          "sourceInfo": {
+            "path": "<fixture>/cwd/probe.ts",
+            "source": "cli",
+            "scope": "temporary",
+            "origin": "top-level"
+          }
+        },
+        {
           "name": "p0-ping",
           "description": "P0 extension command",
           "source": "extension",
@@ -220,8 +231,8 @@
         "isCompacting": false,
         "steeringMode": "one-at-a-time",
         "followUpMode": "one-at-a-time",
-        "sessionFile": "<fixture>/agent/sessions/2026-11-05T05-58-32-951Z_01a1aa49-9af6-7423-8a3a-8a9a11d86981.jsonl",
-        "sessionId": "01a1aa49-9af6-7423-8a3a-8a9a11d86981",
+        "sessionFile": "<fixture>/agent/sessions/2026-11-05T14-29-19-571Z_01a1ac1d-3c52-7652-bfeb-35fd532fcdd8.jsonl",
+        "sessionId": "01a1ac1d-3c52-7652-bfeb-35fd532fcdd8",
         "autoCompactionEnabled": false,
         "messageCount": 3,
         "pendingMessageCount": 0
@@ -315,7 +326,7 @@
       "afterCompactionEntries": 8,
       "compaction": {
         "summary": "P0 compact summary",
-        "firstKeptEntryId": "1d4159a9",
+        "firstKeptEntryId": "481a47f5",
         "tokensBefore": 1234,
         "estimatedTokensAfter": 1359
       },
@@ -329,7 +340,7 @@
               "text": "The conversation history before this point was compacted into the following summary:\n\n<summary>\nP0 compact summary\n</summary>"
             }
           ],
-          "timestamp": 1793858314804
+          "timestamp": 1793888961255
         },
         {
           "role": "user",
@@ -339,14 +350,14 @@
               "text": "history two"
             }
           ],
-          "timestamp": 1793858314801
+          "timestamp": 1793888961251
         },
         {
           "role": "assistant",
           "api": "p0-scripted",
           "provider": "p0-fake",
           "model": "scripted",
-          "timestamp": 1793858314802,
+          "timestamp": 1793888961252,
           "content": [
             {
               "type": "text",
@@ -368,7 +379,7 @@
               "total": 0
             }
           },
-          "durationMs": 0,
+          "durationMs": 1,
           "thinkingLevel": "medium"
         },
         {
@@ -379,12 +390,13 @@
               "text": "after restart"
             }
           ],
-          "timestamp": 1793858315104
+          "timestamp": 1793888961520
         }
       ]
     },
     "snapshots": {
-      "snapshotsBeforeDiscard": 16,
+      "explicitBarrier": true,
+      "snapshotsBeforeDiscard": 15,
       "replayedCuts": 10,
       "finalMessages": [
         {
@@ -441,14 +453,14 @@
         "confirm": false,
         "input": null,
         "editor": null,
-        "elapsed": 1
+        "elapsed": 0
       },
       "pending": {
         "select": null,
         "confirm": false,
         "input": null,
         "editor": null,
-        "elapsed": 166
+        "elapsed": 165
       },
       "editorTimeoutSupported": false,
       "requests": [
@@ -503,7 +515,45 @@
       ]
     },
     "sessionSwitch": {
-      "forkFromSourceUnchanged": true,
+      "forkFromSourceUnchanged": false,
+      "forkFromSourceCases": [
+        {
+          "sample": "complete-with-final-lf",
+          "type": "forkFrom",
+          "source": "<fixture>/agent/sessions/2026-11-05T14-29-23-588Z_01a1ac1d-4c03-7255-a2b7-656faf9423d0.jsonl",
+          "target": "<fixture>/agent/sessions/2026-11-05T14-29-23-728Z_01a1ac1d-4c90-7255-a2b7-65708b743796.jsonl",
+          "beforeHash": "9c1da4bf64efeb938a8cd0c8be8f252d5d3ead902104de80d34562a4feabd8cf",
+          "afterHash": "9c1da4bf64efeb938a8cd0c8be8f252d5d3ead902104de80d34562a4feabd8cf",
+          "beforeBytes": 7456,
+          "afterBytes": 7456,
+          "sourceUnchanged": true,
+          "appendedNewlineOnly": false
+        },
+        {
+          "sample": "complete-without-final-lf",
+          "type": "forkFrom",
+          "source": "<fixture>/cwd/complete-without-final-lf.jsonl",
+          "target": "<fixture>/agent/sessions/2026-11-05T14-29-23-730Z_01a1ac1d-4c92-7255-a2b7-65733b4aef15.jsonl",
+          "beforeHash": "278314a5179a44a24110c72faa9e242bd7a54b3c0f09dd7cbcf1b8e71dab64b6",
+          "afterHash": "9c1da4bf64efeb938a8cd0c8be8f252d5d3ead902104de80d34562a4feabd8cf",
+          "beforeBytes": 7455,
+          "afterBytes": 7456,
+          "sourceUnchanged": false,
+          "appendedNewlineOnly": true
+        },
+        {
+          "sample": "truncated-final-line",
+          "type": "forkFrom",
+          "source": "<fixture>/cwd/truncated-final-line.jsonl",
+          "target": "<fixture>/agent/sessions/2026-11-05T14-29-23-731Z_01a1ac1d-4c93-7255-a2b7-65755ee22085.jsonl",
+          "beforeHash": "bf116648be9550ec950272ee526d6637a7f45c44f06b1860c4327a7d52466232",
+          "afterHash": "46a9dad2d466cea0ec72b1ff8a55678954185a3187516ef8186ed5a15f6b8b79",
+          "beforeBytes": 7491,
+          "afterBytes": 7492,
+          "sourceUnchanged": false,
+          "appendedNewlineOnly": true
+        }
+      ],
       "cases": [
         {
           "via": "rpc",
@@ -521,7 +571,7 @@
           "before": {
             "type": "session_before_switch",
             "reason": "new",
-            "file": "<fixture>/agent/sessions/2026-11-05T05-58-37-651Z_01a1aa49-ad52-74a7-9461-d549e00f4c5d.jsonl",
+            "file": "<fixture>/agent/sessions/2026-11-05T14-29-23-588Z_01a1ac1d-4c03-7255-a2b7-656faf9423d0.jsonl",
             "targetExists": null
           }
         },
@@ -541,8 +591,8 @@
           "before": {
             "type": "session_before_switch",
             "reason": "resume",
-            "targetSessionFile": "<fixture>/agent/sessions/2026-11-05T05-58-37-816Z_01a1aa49-adf8-74a7-9461-d54b474dc221.jsonl",
-            "file": "<fixture>/agent/sessions/2026-11-05T05-58-37-651Z_01a1aa49-ad52-74a7-9461-d549e00f4c5d.jsonl",
+            "targetSessionFile": "<fixture>/agent/sessions/2026-11-05T14-29-23-728Z_01a1ac1d-4c90-7255-a2b7-65708b743796.jsonl",
+            "file": "<fixture>/agent/sessions/2026-11-05T14-29-23-588Z_01a1ac1d-4c03-7255-a2b7-656faf9423d0.jsonl",
             "targetExists": true
           }
         },
@@ -561,9 +611,9 @@
           ],
           "before": {
             "type": "session_before_fork",
-            "entryId": "7e954b5b",
+            "entryId": "af794e53",
             "position": "before",
-            "file": "<fixture>/agent/sessions/2026-11-05T05-58-37-651Z_01a1aa49-ad52-74a7-9461-d549e00f4c5d.jsonl",
+            "file": "<fixture>/agent/sessions/2026-11-05T14-29-23-588Z_01a1ac1d-4c03-7255-a2b7-656faf9423d0.jsonl",
             "targetExists": null
           }
         },
@@ -582,9 +632,9 @@
           ],
           "before": {
             "type": "session_before_fork",
-            "entryId": "7599e214",
+            "entryId": "5d4a6eeb",
             "position": "at",
-            "file": "<fixture>/agent/sessions/2026-11-05T05-58-37-651Z_01a1aa49-ad52-74a7-9461-d549e00f4c5d.jsonl",
+            "file": "<fixture>/agent/sessions/2026-11-05T14-29-23-588Z_01a1ac1d-4c03-7255-a2b7-656faf9423d0.jsonl",
             "targetExists": null
           }
         },
@@ -603,7 +653,7 @@
           "before": {
             "type": "session_before_switch",
             "reason": "new",
-            "file": "<fixture>/agent/sessions/2026-11-05T05-58-37-651Z_01a1aa49-ad52-74a7-9461-d549e00f4c5d.jsonl",
+            "file": "<fixture>/agent/sessions/2026-11-05T14-29-23-588Z_01a1ac1d-4c03-7255-a2b7-656faf9423d0.jsonl",
             "targetExists": null
           }
         },
@@ -622,8 +672,8 @@
           "before": {
             "type": "session_before_switch",
             "reason": "resume",
-            "targetSessionFile": "<fixture>/agent/sessions/2026-11-05T05-58-37-816Z_01a1aa49-adf8-74a7-9461-d54b474dc221.jsonl",
-            "file": "<fixture>/agent/sessions/2026-11-05T05-58-37-651Z_01a1aa49-ad52-74a7-9461-d549e00f4c5d.jsonl",
+            "targetSessionFile": "<fixture>/agent/sessions/2026-11-05T14-29-23-728Z_01a1ac1d-4c90-7255-a2b7-65708b743796.jsonl",
+            "file": "<fixture>/agent/sessions/2026-11-05T14-29-23-588Z_01a1ac1d-4c03-7255-a2b7-656faf9423d0.jsonl",
             "targetExists": true
           }
         },
@@ -641,9 +691,9 @@
           ],
           "before": {
             "type": "session_before_fork",
-            "entryId": "7e954b5b",
+            "entryId": "af794e53",
             "position": "before",
-            "file": "<fixture>/agent/sessions/2026-11-05T05-58-37-651Z_01a1aa49-ad52-74a7-9461-d549e00f4c5d.jsonl",
+            "file": "<fixture>/agent/sessions/2026-11-05T14-29-23-588Z_01a1ac1d-4c03-7255-a2b7-656faf9423d0.jsonl",
             "targetExists": null
           }
         },
@@ -661,9 +711,9 @@
           ],
           "before": {
             "type": "session_before_fork",
-            "entryId": "7599e214",
+            "entryId": "5d4a6eeb",
             "position": "at",
-            "file": "<fixture>/agent/sessions/2026-11-05T05-58-37-651Z_01a1aa49-ad52-74a7-9461-d549e00f4c5d.jsonl",
+            "file": "<fixture>/agent/sessions/2026-11-05T14-29-23-588Z_01a1ac1d-4c03-7255-a2b7-656faf9423d0.jsonl",
             "targetExists": null
           }
         }
@@ -688,55 +738,55 @@
         {
           "type": "session_before_switch",
           "reason": "resume",
-          "targetSessionFile": "<fixture>/agent/sessions/2026-11-05T05-58-37-816Z_01a1aa49-adf8-74a7-9461-d54b474dc221.jsonl",
-          "file": "<fixture>/agent/sessions/2026-11-05T05-58-37-651Z_01a1aa49-ad52-74a7-9461-d549e00f4c5d.jsonl",
+          "targetSessionFile": "<fixture>/agent/sessions/2026-11-05T14-29-23-728Z_01a1ac1d-4c90-7255-a2b7-65708b743796.jsonl",
+          "file": "<fixture>/agent/sessions/2026-11-05T14-29-23-588Z_01a1ac1d-4c03-7255-a2b7-656faf9423d0.jsonl",
           "targetExists": true
         },
         {
           "type": "lock_result",
           "at": "session_before_switch",
           "acquired": false,
-          "target": "<fixture>/agent/sessions/2026-11-05T05-58-37-816Z_01a1aa49-adf8-74a7-9461-d54b474dc221.jsonl",
+          "target": "<fixture>/agent/sessions/2026-11-05T14-29-23-728Z_01a1ac1d-4c90-7255-a2b7-65708b743796.jsonl",
           "error": "EEXIST"
         },
         {
           "type": "session_before_switch",
           "reason": "new",
-          "file": "<fixture>/agent/sessions/2026-11-05T05-58-37-651Z_01a1aa49-ad52-74a7-9461-d549e00f4c5d.jsonl",
+          "file": "<fixture>/agent/sessions/2026-11-05T14-29-23-588Z_01a1ac1d-4c03-7255-a2b7-656faf9423d0.jsonl",
           "targetExists": null
         },
         {
           "type": "session_shutdown",
           "reason": "new",
-          "targetSessionFile": "<fixture>/agent/sessions/2026-11-05T05-58-38-009Z_01a1aa49-aeb9-74a7-9461-d5580c878dc4.jsonl",
-          "file": "<fixture>/agent/sessions/2026-11-05T05-58-37-651Z_01a1aa49-ad52-74a7-9461-d549e00f4c5d.jsonl",
+          "targetSessionFile": "<fixture>/agent/sessions/2026-11-05T14-29-23-870Z_01a1ac1d-4d1e-7255-a2b7-658348b8269c.jsonl",
+          "file": "<fixture>/agent/sessions/2026-11-05T14-29-23-588Z_01a1ac1d-4c03-7255-a2b7-656faf9423d0.jsonl",
           "targetExists": false
         },
         {
           "type": "lock_result",
           "at": "session_shutdown",
           "acquired": false,
-          "target": "<fixture>/agent/sessions/2026-11-05T05-58-38-009Z_01a1aa49-aeb9-74a7-9461-d5580c878dc4.jsonl",
+          "target": "<fixture>/agent/sessions/2026-11-05T14-29-23-870Z_01a1ac1d-4d1e-7255-a2b7-658348b8269c.jsonl",
           "error": "EEXIST"
         },
         {
           "type": "session_start",
           "reason": "new",
-          "previousSessionFile": "<fixture>/agent/sessions/2026-11-05T05-58-37-651Z_01a1aa49-ad52-74a7-9461-d549e00f4c5d.jsonl",
-          "file": "<fixture>/agent/sessions/2026-11-05T05-58-38-009Z_01a1aa49-aeb9-74a7-9461-d5580c878dc4.jsonl",
+          "previousSessionFile": "<fixture>/agent/sessions/2026-11-05T14-29-23-588Z_01a1ac1d-4c03-7255-a2b7-656faf9423d0.jsonl",
+          "file": "<fixture>/agent/sessions/2026-11-05T14-29-23-870Z_01a1ac1d-4d1e-7255-a2b7-658348b8269c.jsonl",
           "targetExists": null
         },
         {
           "type": "session_start",
           "reason": "new",
-          "previousSessionFile": "<fixture>/agent/sessions/2026-11-05T05-58-37-651Z_01a1aa49-ad52-74a7-9461-d549e00f4c5d.jsonl",
-          "file": "<fixture>/agent/sessions/2026-11-05T05-58-38-009Z_01a1aa49-aeb9-74a7-9461-d5580c878dc4.jsonl",
+          "previousSessionFile": "<fixture>/agent/sessions/2026-11-05T14-29-23-588Z_01a1ac1d-4c03-7255-a2b7-656faf9423d0.jsonl",
+          "file": "<fixture>/agent/sessions/2026-11-05T14-29-23-870Z_01a1ac1d-4d1e-7255-a2b7-658348b8269c.jsonl",
           "targetExists": null
         },
         {
           "type": "session_shutdown",
           "reason": "quit",
-          "file": "<fixture>/agent/sessions/2026-11-05T05-58-38-009Z_01a1aa49-aeb9-74a7-9461-d5580c878dc4.jsonl",
+          "file": "<fixture>/agent/sessions/2026-11-05T14-29-23-870Z_01a1ac1d-4d1e-7255-a2b7-658348b8269c.jsonl",
           "targetExists": null
         }
       ]
@@ -833,87 +883,113 @@
         "signal": null
       }
     },
+    "custom-wake": {
+      "diskCount": 1,
+      "snapshotCopies": 1,
+      "completed": [],
+      "providerRequests": 1
+    },
+    "custom-silent": {
+      "diskCount": 1,
+      "snapshotCopies": 1,
+      "completed": [],
+      "providerRequests": 0
+    },
     "cleanup": {
       "processes": [
         {
-          "pid": 53164,
+          "pid": 14683,
           "exit": {
             "code": 143,
             "signal": null
           }
         },
         {
-          "pid": 53170,
+          "pid": 14689,
           "exit": {
             "code": 143,
             "signal": null
           }
         },
         {
-          "pid": 53179,
+          "pid": 14708,
           "exit": {
             "code": null,
             "signal": "SIGKILL"
           }
         },
         {
-          "pid": 53183,
+          "pid": 14716,
           "exit": {
             "code": 143,
             "signal": null
           }
         },
         {
-          "pid": 53188,
+          "pid": 14721,
           "exit": {
             "code": 143,
             "signal": null
           }
         },
         {
-          "pid": 53190,
+          "pid": 14725,
           "exit": {
             "code": 143,
             "signal": null
           }
         },
         {
-          "pid": 53195,
+          "pid": 14731,
           "exit": {
             "code": 143,
             "signal": null
           }
         },
         {
-          "pid": 53197,
+          "pid": 14737,
           "exit": {
             "code": 143,
             "signal": null
           }
         },
         {
-          "pid": 53202,
+          "pid": 14740,
           "exit": {
             "code": 143,
             "signal": null
           }
         },
         {
-          "pid": 53204,
+          "pid": 14742,
           "exit": {
             "code": 143,
             "signal": null
           }
         },
         {
-          "pid": 53209,
+          "pid": 14760,
           "exit": {
             "code": 143,
             "signal": null
           }
         },
         {
-          "pid": 53219,
+          "pid": 14773,
+          "exit": {
+            "code": 143,
+            "signal": null
+          }
+        },
+        {
+          "pid": 14775,
+          "exit": {
+            "code": 143,
+            "signal": null
+          }
+        },
+        {
+          "pid": 14788,
           "exit": {
             "code": 143,
             "signal": null
@@ -922,7 +998,7 @@
       ],
       "live": [],
       "retained": [
-        "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-mkxCY5"
+        "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-aadGr6"
       ]
     }
   }

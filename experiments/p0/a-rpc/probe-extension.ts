@@ -1,4 +1,5 @@
-import { appendFileSync, existsSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, writeFileSync, unlinkSync, watch } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
@@ -36,6 +37,38 @@ export default function (pi) {
       }
     });
   }
+  let barrierSequence = 0;
+  pi.on('provider_stream_event', async (event, ctx) => {
+    if (!config().streamBarrier || event.data.type !== 'text_delta' || event.data.delta !== ' beta') return;
+    const name = 'stream-release-' + process.pid + '-' + (++barrierSequence);
+    const path = join(root, name);
+    record({ type: 'stream_barrier', name });
+    ctx.ui.notify('P0_BARRIER:' + name);
+    await new Promise<void>((resolve, reject) => {
+      let done = false;
+      let timer;
+      const signal = ctx.signal;
+      const finish = (error?) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        watcher.close();
+        signal?.removeEventListener('abort', abort);
+        if (error) reject(error); else resolve();
+      };
+      const check = () => { if (existsSync(path)) finish(); };
+      const abort = () => finish(signal?.reason ?? new Error('barrier aborted'));
+      const watcher = watch(root, check);
+      watcher.once('error', finish);
+      timer = setTimeout(() => finish(new Error('stream barrier deadline exceeded')), 10000);
+      signal?.addEventListener('abort', abort, { once: true });
+      if (signal?.aborted) abort(); else check();
+    });
+  });
+  pi.registerCommand('p0-notify', { description: 'P0 custom message', handler: args => {
+    pi.sendMessage({ customType: 'p0-notice', content: 'NOTICE_' + args, display: true,
+      details: { dedupeKey: 'notice-' + args } }, { triggerTurn: args === 'wake', deliverAs: 'followUp' });
+  }});
   pi.on('message_end', (event, ctx) => {
     const entries = ctx.sessionManager.getEntries();
     record({ type: 'message_end_before_persist', role: event.message.role,
@@ -78,9 +111,15 @@ export default function (pi) {
   pi.registerCommand('p0-navigate', { description: 'P0 leaf navigation', handler: async (args, ctx) => {
     await ctx.navigateTree(args, { summarize: false });
   }});
-  pi.registerCommand('p0-fork-file', { description: 'P0 static forkFrom', handler: (_, ctx) => {
-    const copy = SessionManager.forkFrom(ctx.sessionManager.getSessionFile(), ctx.cwd, ctx.sessionManager.getSessionDir());
-    record({ type: 'forkFrom', target: copy.getSessionFile() });
+  pi.registerCommand('p0-fork-file', { description: 'P0 static forkFrom', handler: (args, ctx) => {
+    const source = args || ctx.sessionManager.getSessionFile();
+    const before = readFileSync(source);
+    const copy = SessionManager.forkFrom(source, ctx.cwd, ctx.sessionManager.getSessionDir());
+    const after = readFileSync(source);
+    const hash = bytes => createHash('sha256').update(bytes).digest('hex');
+    record({ type: 'forkFrom', source, target: copy.getSessionFile(),
+      beforeHash: hash(before), afterHash: hash(after), beforeBytes: before.length, afterBytes: after.length,
+      sourceUnchanged: before.equals(after), appendedNewlineOnly: after.equals(Buffer.concat([before, Buffer.from('\n')])) });
   }});
   pi.on('session_before_compact', (event, ctx) => {
     if (!config().customCompact) return;

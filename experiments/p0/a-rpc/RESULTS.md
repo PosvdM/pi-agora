@@ -10,13 +10,13 @@
 node --test --test-reporter=tap experiments/p0/a-rpc/*.test.mjs
 ```
 
-保存完整输出：
+普通运行只把 JSON 证据写到每个测试进程独立创建的临时目录，名称为 `pi-p0-a-evidence-*`，实际路径在输出的 `P0 evidence directory` 行中。每次运行使用不同目录，不改仓库里已提交的证据。只有设置 `P0_RECORD=1` 才刷新本目录的 JSON 基线。显式刷新 JSON 基线和完整输出：
 
 ```sh
-node --test --test-reporter=tap experiments/p0/a-rpc/*.test.mjs > experiments/p0/a-rpc/run.tap 2>&1
+P0_RECORD=1 node --test --test-reporter=tap experiments/p0/a-rpc/*.test.mjs > experiments/p0/a-rpc/run.tap 2>&1
 ```
 
-测试断言记录实测行为；已确认的设计差异也有观察断言，因此测试全部成功不等于设计全部通过。每次运行会重写本目录的 `*-evidence.json`、`evidence.json`；重定向命令还会重写 `run.tap`。
+测试断言记录实测行为；已确认的设计差异也有观察断言，因此测试全部成功不等于设计全部通过。A7 的源文件哈希变化是设计验收失败的证据，测试明确断言两个边界样本被补换行，没有将“不改源文件”判为通过。
 
 所有 provider 请求都交给 harness 的 `p0-fake/scripted`，不调用真实模型，不联网。每个现场使用独立的临时 `HOME`、`PI_CODING_AGENT_DIR`、会话目录和工作目录，不访问使用者的 `~/.pi`。测试扩展、技能和模板均由脚本创建。
 
@@ -24,30 +24,38 @@ node --test --test-reporter=tap experiments/p0/a-rpc/*.test.mjs > experiments/p0
 
 | 文件 | 用途 |
 | --- | --- |
-| `rpc.test.mjs` | A1–A8：生命周期、停止、持久化、快照、UI、切换、替换取消。 |
+| `rpc.test.mjs` | A1–A8、A15–A16：生命周期、停止、持久化、快照、UI、切换、替换取消，以及唤醒和静默通知的去重。 |
 | `retry.test.mjs` | A9–A10：自动重试与未压缩会话的恢复。 |
 | `edges.test.mjs` | A11–A14：技能与模板列表、只发 abort、忽略 abort 的 provider、用户扩展自动发现。 |
 | `probe-extension.ts` | 在隔离现场加载的受控扩展，记录生命周期、提供门控工具、会话命令和 UI 对话框。 |
 | `session-model.mjs` | 最小会话模型与快照原型，按 stdout 顺序同步更新状态、分配 epoch/seq，串行取 `get_entries since`。 |
 | `experiment.mjs` | 本组对 harness 的进程停止包装。 |
+| `record.mjs` | `P0_RECORD` 开关与每次运行的独立临时证据目录。 |
 | `evidence.json`、`*-evidence.json`、`process-evidence-*.json` | 逐项观测、模型请求摘录、进程退出记录。 |
-| `run.tap` | 一次完整复跑的输出。 |
+| `run.tap` | 一次显式记录模式完整复跑的输出。 |
+| `recording-evidence.json` | 两次普通复跑的目录哈希、独立证据路径和进程清理检查。 |
 
 ## 结论汇总
 
 | 验证项 | macOS 结论 | Windows | Linux | 实验 |
 | --- | --- | --- | --- | --- |
 | pane #2：RPC 托管与用户扩展 | 通过 | 待测 | 待测 | A1、A4、A9、A10、A14 |
-| pane #3：快照切点与重连 | 通过 | 待测 | 待测 | A1、A4、A5 |
+| pane #3：快照切点与重连 | 部分通过（原型部分通过，真实浏览器重连待验证） | 待测 | 待测 | A1、A4、A5、A15、A16 |
 | pane #4：停止与超时恢复 | 部分通过 | 待测 | 待测 | A2、A3、A12、A13 |
 | pane #5：扩展 UI | 通过 | 待测 | 待测 | A6 |
-| pane #7：会话切换与取锁时机 | 通过 | 待测 | 待测 | A3、A4、A7 |
+| pane #7：会话切换与取锁时机 | 部分通过（forkFrom 会改写两类源文件） | 待测 | 待测 | A3、A4、A7 |
 | pane #13：斜杠命令 | 通过 | 待测 | 待测 | A1、A11 |
 | agora #1：RPC 生命周期 | 通过 | 待测 | 待测 | A1–A3、A9、A12、A13 |
-| agora #2：会话落盘与恢复 | 通过 | 待测 | 待测 | A3–A5、A10 |
+| agora #2：会话落盘与恢复 | 通过 | 待测 | 待测 | A3–A5、A10、A15、A16 |
 | agora #17：子会话扩展 UI | 通过 | 待测 | 待测 | A6 |
 | agora #18：steer 送达追踪 | 通过 | 待测 | 待测 | A1、A2 |
 | agora #20：禁止会话替换 | 通过 | 待测 | 待测 | A8 |
+
+## 复跑记录
+
+`P0_RECORD=1` 的完整记录包含 16 个测试，16 个通过，0 个失败，耗时约 6.64 秒。另有两次未设置 `P0_RECORD` 的完整复跑，均为 16/16，耗时约 6.28 秒和 6.58 秒。两次运行前后对本目录全部文件的 SHA-256 逐一比较，内容和文件列表均未改变；三个测试进程每次各生成一个临时证据目录，六个目录名称互不相同。
+
+每次完整运行启动的 21 个 pi 子进程均已等待退出；三份 `process-evidence-*.json` 的 `alive` 都为空。记录模式的检查见本目录证据；普通运行的摘要与证据路径见 `recording-evidence.json`。本结论不把观察测试全绿解释为 pane #3、#4、#7 的设计整体验收通过。
 
 ## RPC 托管与运行结束
 
@@ -110,7 +118,7 @@ node --test --test-reporter=tap experiments/p0/a-rpc/*.test.mjs > experiments/p0
 
 对应 pane #3，并覆盖 agora #2 的会话模型一致性。
 
-**验证内容**：使用最小内存原型处理 stdout；重建 text、thinking、toolCall 块；在事件与条目响应之间取同步快照；从快照游标重放；丢弃内存模型后从 RPC 和会话文件重建；在流式输出中停止旧进程，再重启同一文件。
+**验证内容**：使用最小内存原型处理 stdout；重建 text、thinking、toolCall 块；在事件与条目响应之间取同步快照；从快照游标重放；丢弃内存模型后从 RPC 和会话文件重建；在流式输出中停止旧进程，再重启同一文件；核对唤醒和静默通知的 `custom_message` 与 `completed` 对应关系。
 
 **通过标准**：快照加游标后的事件能得到同一最终状态；补入持久化条目后移除对应 `completed`，没有重复消息或块；epoch 变化、未来游标和过期游标均返回 `resync`；重建后的条目与磁盘一致。
 
@@ -118,7 +126,7 @@ node --test --test-reporter=tap experiments/p0/a-rpc/*.test.mjs > experiments/p0
 
 - 原型在同一个同步回调中更新状态、分配 `seq`。条目补取串行执行，处理 `get_entries` 响应时产生 `pane_entries`。
 - A1 覆盖工具调用及队列，在每个快照切点重放后都得到与最终模型相同的条目和进行中消息状态；最终条目与会话文件相同。一次复跑包含 55 个此类切点，数量可能随调度变化。
-- A5 的两个块分别为 thinking `plan two`、text `alpha beta gamma`。丢弃原模型前的流式快照明确含 thinking 全文和 text `alpha`；此前 16 个切点重放后都等于丢弃前状态。
+- A5 的两个块分别为 thinking `plan two`、text `alpha beta gamma`。测试扩展在发布 ` beta` 的 provider 流事件之前等待显式 release 文件，并发出带 barrier 名称的通知。驱动以事件和 5 秒截止时间确认 `alpha` 已到达且 barrier 已建立，再取快照、重建模型，最后写入 release 文件。片段之间没有固定延时。丢弃前快照明确含 thinking 全文和 text `alpha`；此前切点重放后都等于丢弃前状态。
 - 丢弃模型后创建新的 epoch，以 `get_entries` 重建持久化部分并接收后续 RPC 事件。收到最终 `message_end` 后，完整 thinking/text 替换进行中内容；随后条目补取移除 `completed`。最终消息内容如下：
 
   ```json
@@ -130,11 +138,20 @@ node --test --test-reporter=tap experiments/p0/a-rpc/*.test.mjs > experiments/p0
 
   新模型的全部切点重放后等于其最终状态；`active` 为 `null`，`completed` 为空。最终条目与 JSONL 一致。
 - 旧 epoch 的游标、超过当前 head 的游标，以及缓冲中移除首事件后的游标 0，都返回 `resync`。
-- 模型丢弃后重启同一会话，以及再次流式输出中终止旧进程、确认退出后重启，新 epoch 都拒绝旧游标；重建条目与当时的磁盘相同。
+- 模型丢弃后重启同一会话，以及再次在相同 barrier 处终止旧进程、确认退出后重启，新 epoch 都拒绝旧游标；重建条目与当时的磁盘相同。
+- A15/A16 在已有落盘对话的会话里分别发送唤醒和静默通知。回归测试在旧模型上均失败：磁盘有 1 条 `custom_message`，快照同时含该条目和 1 条 `completed`，合计 2 份。原失败现场和 `/tmp/pi-p0-a-review-before-6Q9nBu/custom-before.tap` 保留。
+- 模型按条目类型匹配：普通 `message` 对应其 `message` 字段；`custom_message` 对应 custom 角色消息的 `customType`、`content`、`display`、`details`。自定义条目重新生成的元数据时间不参与匹配。两个回归样本使用不同的 `details.dedupeKey`；本组不据此声称验证了任意相同内容通知的生产级去重。
+- 补取条目并核对会话文件后，两个通知测试均得到：
+
+  ```json
+  { "diskCount": 1, "snapshotCopies": 1, "completed": [] }
+  ```
+
+  唤醒通知新增 1 次假 provider 请求；静默通知新增 0 次。两个用例的全部快照切点重放后都与最终状态相等。
 
 这里的浏览器和服务端重连均为内存模型实验，没有实际 HTTP/WebSocket 或页面。丢弃正在输出的模型后，单靠 `get_entries` 不能恢复尚未持久化的部分消息前缀；该次实验通过后续完整 `message_end` 恢复最终内容。它没有验证在丢失所有内存且旧进程仍输出时，立即恢复已有流式前缀，也没有验证强杀前未落盘片段的持久化。服务端重启场景按设计先终止旧 pi 并确认退出，再打开会话文件。
 
-**结论**：pane #3「通过」，范围为本任务要求的切点原型、最终内容一致性和 epoch 重同步。原型不实现历史分页、完整界面状态、真实浏览器重连或生产服务端。
+**结论**：pane #3「部分通过」：原型部分通过，真实浏览器重连待验证。自定义消息的两个回归样本、切点重放和 epoch 重同步通过；缺失的真实 HTTP/WebSocket 和页面验证涉及 pane `architecture.md`“快照与切点”“游标与重连”及 `plugin-api.md` 的 `SessionSnapshot`、`SessionStreamEvent`，不能由内存原型替代。原型也不实现历史分页或完整界面状态。agora #2 的落盘和上下文恢复结论保留，模型证据只覆盖本组列出的消息类型和通知样本。
 
 ## 停止与超时恢复
 
@@ -206,7 +223,17 @@ node --test --test-reporter=tap experiments/p0/a-rpc/*.test.mjs > experiments/p0
 
 **实测结果**：
 
-- A4 在 spawn 前创建文件锁替身，之后不存在的 `--session` 路径由 pi 沿用。A7 的 `forkFrom` 输出另一个文件，源文件内容逐字节不变。
+- A4 在 spawn 前创建文件锁替身，之后不存在的 `--session` 路径由 pi 沿用。
+- A7 对三类源文件直接调用 `SessionManager.forkFrom(source, cwd, sessionDir)`，比较调用前后的 SHA-256：
+
+  | 源文件样本 | 前后哈希 | 实测源文件变化 |
+  | --- | --- | --- |
+  | 完整且有尾换行 | 相等 | 内容不变。 |
+  | 完整但无尾换行 | 不相等 | 仅在末尾追加一个 LF，字节数增加 1。 |
+  | 有效历史后附截断尾行 | 不相等 | 截断内容保留，仅在末尾追加一个 LF，字节数增加 1。 |
+
+  三次调用都生成了新会话文件。完整哈希与字节数见 `evidence.json` 的 `sessionSwitch.forkFromSourceCases`。两个变更样本的现场保留。
+- pi `dist/core/session-manager.js` 的 `forkFrom()` 在第 1386–1389 行调用 `loadEntriesFromFile(source)`；后者在第 326–368 行读取有效会话后，对非空尾行执行 `appendFileSync(resolvedFilePath, "\n")`。这与两个样本的变更一致。pane `architecture.md`“拉起”中从只读视图 Fork 的“不改源文件”要求没有满足；影响该路径对源历史文件的只读保证。本组没有修改设计或实现替代路径。
 - 扩展没有独立的 `clone()` 方法，实验按 pi API 使用 `ctx.fork(leafId, { position: "at" })`。
 - 八个切换用例的 `session_shutdown.targetSessionFile` 均等于切换后 `get_state.sessionFile`，`session_start.previousSessionFile` 均等于源路径。
 - 取锁替身的调用顺序为：
@@ -232,7 +259,7 @@ node --test --test-reporter=tap experiments/p0/a-rpc/*.test.mjs > experiments/p0
 
   resume 的 `lock_result` 在 `session_before_switch` 与 `session_shutdown` 之间。重复的 start 中目标及 previous 路径相同，没有观察到第二次会话文件替换。`rpc-mode.js` 在 runtimeHost 替换完成后又调用 `rebindSession()`，runtimeHost 自身也通过回调 rebind；源代码与双回调现象一致。该观察涉及 pane `architecture.md`“会话切换”“会话替换后的重绑定”，本组没有把事件次数视为恰好一次。
 
-**结论**：pane #7「通过」。这里仅验证取锁时点；真实跨进程写锁、原生锁释放与跨宿主恢复不在本组范围。
+**结论**：pane #7「部分通过」。“forkFrom 不改源文件”没有满足；其余预分配路径、切换、取消和取锁时点符合本组标准。真实跨进程写锁、原生锁释放与跨宿主恢复不在本组范围。
 
 ## 斜杠命令
 
@@ -310,7 +337,7 @@ node --test --test-reporter=tap experiments/p0/a-rpc/*.test.mjs > experiments/p0
 
 A14 为测试用户扩展自动发现，用临时 `NODE_OPTIONS --import` preload 从 pi 的 argv 中移除默认 `--no-extensions`。它只作用于该隔离现场，不修改 harness 或全局安装。
 
-出现预期外结果的现场未删除。首次失败的 abort 现场和短会话 compact 现场保留在本机临时目录；每次完整复跑还会保留 abort 队列差异和重复 `session_start` 的现场，路径由 `run.tap` 的 `retained` 行给出。其他成功现场清理。保留现场不是遗留进程。
+出现预期外结果的现场未删除。首次失败的 abort、短会话 compact 和自定义消息回归现场保留在本机临时目录；每次完整复跑还会保留 abort 队列差异、forkFrom 源文件变更和重复 `session_start` 的现场，路径由相应测试输出的 `retained` 行给出。其他成功现场清理。保留现场不是遗留进程。
 
 `process-evidence-*.json` 分别记录三个测试文件启动的全部 pi 子进程；它们的退出都已等待，`alive` 数组为空。测试未创建外部工具后代；没有遗留进程。没有按进程名终止任何进程。
 

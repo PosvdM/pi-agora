@@ -8,14 +8,14 @@
           "text": "saved first user"
         }
       ],
-      "timestamp": 1793858313123
+      "timestamp": 1793888959699
     },
     {
       "role": "assistant",
       "api": "p0-scripted",
       "provider": "p0-fake",
       "model": "scripted",
-      "timestamp": 1793858313129,
+      "timestamp": 1793888959702,
       "content": [
         {
           "type": "text",
@@ -48,14 +48,14 @@
           "text": "saved second user"
         }
       ],
-      "timestamp": 1793858313134
+      "timestamp": 1793888959707
     },
     {
       "role": "assistant",
       "api": "p0-scripted",
       "provider": "p0-fake",
       "model": "scripted",
-      "timestamp": 1793858313135,
+      "timestamp": 1793888959708,
       "content": [
         {
           "type": "text",
@@ -88,7 +88,7 @@
           "text": "third user"
         }
       ],
-      "timestamp": 1793858313468
+      "timestamp": 1793888960013
     }
   ],
   "fileMatches": true
