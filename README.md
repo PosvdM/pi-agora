@@ -57,7 +57,7 @@ packages/
   protocol/      协议类型与 schema
 ```
 
-运行环境（计划）：Node.js 24 及以上（使用内置 `node:sqlite`），pi 1.5.x；Windows、macOS、Linux 同时支持。pi 从配置项 `piPath` 或全局 npm 目录查找，见 [pi-hostkit 的“定位 pi”](https://github.com/PosvdM/pi-hostkit/blob/main/docs/design.md#定位-pi)。
+运行环境（计划）：Node.js 24 及以上（使用内置 `node:sqlite`），pi 1.5.x；Windows、macOS、Linux 同时支持。pi 依次从配置项 `piPath`、pi 官方安装脚本的安装目录、全局 npm 目录查找，见 [pi-hostkit 的“定位 pi”](https://github.com/PosvdM/pi-hostkit/blob/main/docs/design.md#定位-pi)。
 
 ## 文档
 
