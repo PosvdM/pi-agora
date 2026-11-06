@@ -1,7 +1,7 @@
 {
   "platform": "darwin",
   "node": "v26.12.0",
-  "evidenceDir": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-c-tools-run-8RrTX0",
+  "evidenceDir": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-c-tools-run-wprq8B",
   "cases": [
     {
       "cleanupGuard": true,
@@ -94,7 +94,7 @@
       ],
       "checkedRequests": 14,
       "mcpSpawns": 0,
-      "archivedAt": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-c-tools-run-8RrTX0/project-settings-deny"
+      "archivedAt": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-c-tools-run-wprq8B/project-settings-deny"
     },
     {
       "group": 3,
@@ -182,7 +182,7 @@
       ],
       "checkedRequests": 14,
       "mcpSpawns": 0,
-      "archivedAt": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-c-tools-run-8RrTX0/project-settings-saved"
+      "archivedAt": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-c-tools-run-wprq8B/project-settings-saved"
     },
     {
       "group": 3,
@@ -197,13 +197,13 @@
       ],
       "connections": [
         {
-          "server": "denied",
-          "pid": 12797,
+          "server": "allowed",
+          "pid": 66772,
           "kind": "spawn"
         },
         {
-          "server": "allowed",
-          "pid": 12796,
+          "server": "denied",
+          "pid": 66773,
           "kind": "spawn"
         }
       ],
@@ -247,13 +247,13 @@
       ],
       "connections": [
         {
-          "server": "allowed",
-          "pid": 12803,
+          "server": "denied",
+          "pid": 66777,
           "kind": "spawn"
         },
         {
-          "server": "denied",
-          "pid": 12804,
+          "server": "allowed",
+          "pid": 66776,
           "kind": "spawn"
         }
       ],
@@ -318,7 +318,7 @@
       "taskSent": false,
       "executed": false,
       "diagnostic": {
-        "reason": "Error: EEXIST: file already exists, open '/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-kX9VEr/ticket.spent'"
+        "reason": "Error: EEXIST: file already exists, open '/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-gxFABZ/ticket.spent'"
       },
       "exit": {
         "code": 143,
@@ -357,7 +357,7 @@
       "group": 5,
       "name": "read",
       "input": {
-        "path": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-872LC1/secret/host.key"
+        "path": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-KabCg9/secret/host.key"
       },
       "isError": true,
       "result": "Error: protected path"
@@ -384,7 +384,7 @@
       "group": 5,
       "name": "read",
       "input": {
-        "path": "file:///var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-872LC1/cwd/protected/secret.txt"
+        "path": "file:///var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-KabCg9/cwd/protected/secret.txt"
       },
       "isError": true,
       "result": "Error: protected path"
@@ -643,8 +643,8 @@
     {
       "group": 5,
       "caseInsensitive": true,
-      "realLower": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-872LC1/cwd/protected",
-      "realUpper": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-872LC1/cwd/protected",
+      "realLower": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-KabCg9/cwd/protected",
+      "realUpper": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-KabCg9/cwd/protected",
       "nfdExists": true,
       "hookedFileCalls": 32
     },
@@ -712,13 +712,14 @@
         {
           "kind": "allowed_path",
           "tool": "read",
-          "target": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-MMlU6u/cwd/safe/value.txt"
+          "target": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-Gu8G9w/cwd/safe/value.txt"
         }
       ]
     },
     {
       "group": 19,
-      "git": "git version 2.56.0"
+      "executable": "/tmp/pi-p0-git-2.34.1-24czjc/install/bin/git",
+      "git": "git version 2.34.1"
     },
     {
       "group": 19,
@@ -749,6 +750,7 @@
         "--"
       ],
       "stdout": "MM tracked.txt\n",
+      "stderr": "",
       "markerCount": 0
     },
     {
@@ -780,6 +782,7 @@
         "--"
       ],
       "stdout": "diff --git a/tracked.txt b/tracked.txt\nindex 77d3b3b..59b5ccc 100644\n--- a/tracked.txt\n+++ b/tracked.txt\n@@ -1 +1 @@\n-staged version three\n+worktree stale data\n",
+      "stderr": "",
       "markerCount": 0
     },
     {
@@ -815,6 +818,7 @@
         "--"
       ],
       "stdout": "diff --git a/tracked.txt b/tracked.txt\nindex 6702fe2..77d3b3b 100644\n--- a/tracked.txt\n+++ b/tracked.txt\n@@ -1 +1 @@\n-version two\n+staged version three\n",
+      "stderr": "",
       "markerCount": 0
     },
     {
@@ -848,6 +852,7 @@
         "--"
       ],
       "stdout": "diff --git a/tracked.txt b/tracked.txt\nindex 9bc69cf..6702fe2 100644\n--- a/tracked.txt\n+++ b/tracked.txt\n@@ -1 +1 @@\n-version one\n+version two\n",
+      "stderr": "",
       "markerCount": 0
     },
     {
@@ -887,7 +892,8 @@
         "2",
         "--"
       ],
-      "stdout": "commit 66959d4f0c7fc51e5b9a00e924c8e3fc22330c67\nAuthor: P0 <p0@example.invalid>\nDate:   Thu Nov 5 22:25:17 2026 +0800\n\n    two\n\ndiff --git a/tracked.txt b/tracked.txt\nindex 9bc69cf..6702fe2 100644\n--- a/tracked.txt\n+++ b/tracked.txt\n@@ -1 +",
+      "stdout": "commit 45a800cad6eb23080da579756a7a0c9212230caf\nAuthor: P0 <p0@example.invalid>\nDate:   Fri Nov 6 14:43:26 2026 +0800\n\n    two\n\ndiff --git a/tracked.txt b/tracked.txt\nindex 9bc69cf..6702fe2 100644\n--- a/tracked.txt\n+++ b/tracked.txt\n@@ -1 +",
+      "stderr": "",
       "markerCount": 0
     },
     {
@@ -921,7 +927,8 @@
         "HEAD",
         "--"
       ],
-      "stdout": "commit 66959d4f0c7fc51e5b9a00e924c8e3fc22330c67\nAuthor: P0 <p0@example.invalid>\nDate:   Thu Nov 5 22:25:17 2026 +0800\n\n    two\n\ndiff --git a/tracked.txt b/tracked.txt\nindex 9bc69cf..6702fe2 100644\n--- a/tracked.txt\n+++ b/tracked.txt\n@@ -1 +",
+      "stdout": "commit 45a800cad6eb23080da579756a7a0c9212230caf\nAuthor: P0 <p0@example.invalid>\nDate:   Fri Nov 6 14:43:26 2026 +0800\n\n    two\n\ndiff --git a/tracked.txt b/tracked.txt\nindex 9bc69cf..6702fe2 100644\n--- a/tracked.txt\n+++ b/tracked.txt\n@@ -1 +",
+      "stderr": "",
       "markerCount": 0
     },
     {
@@ -950,6 +957,7 @@
         "--no-color",
         "--"
       ],
+      "stderr": "",
       "markerCount": 0
     },
     {
@@ -978,11 +986,14 @@
         "--no-color",
         "--"
       ],
+      "stderr": "",
       "markerCount": 0
     },
     {
       "group": 19,
       "providerTool": "agora_git",
+      "executable": "/tmp/pi-p0-git-2.34.1-24czjc/install/bin/git",
+      "stderr": "",
       "result": "MM tracked.txt\n"
     },
     {
@@ -1047,6 +1058,61 @@
     },
     {
       "group": 19,
+      "hardenedChildArgv": [
+        [
+          "false",
+          "2",
+          "1793947406905301000"
+        ],
+        [
+          "false",
+          "1",
+          "1793947406905301000"
+        ],
+        [
+          "false",
+          "2",
+          "1793947406915940000"
+        ],
+        [
+          "false",
+          "1",
+          "1793947406915940000"
+        ],
+        [
+          "false",
+          "2",
+          "1793947406926043000"
+        ],
+        [
+          "false",
+          "1",
+          "1793947406926043000"
+        ],
+        [
+          "false",
+          "2",
+          "1793947406957555000"
+        ],
+        [
+          "false",
+          "1",
+          "1793947406957555000"
+        ],
+        [
+          "false",
+          "2",
+          "1793947406970115000"
+        ],
+        [
+          "false",
+          "1",
+          "1793947406970115000"
+        ]
+      ]
+    },
+    {
+      "group": 19,
       "positiveMarkers": [
         "textconv",
         "external",
@@ -1058,141 +1124,142 @@
         "pager"
       ],
       "hardenedMarkers": 0,
-      "minimumGitVersionTested": false
+      "minimumGitVersion": "2.34",
+      "minimumGitVersionTested": true
     }
   ],
   "retained": [
     {
-      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-WPxgVd",
+      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-sOv7Vo",
       "reason": "raw tool_call throw has no extension_error event"
     },
     {
-      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-ADV144",
+      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-1M2U39",
       "reason": "raw pi declares powershell on macOS when explicitly selected, but execution rejects"
     },
     {
-      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-MMlU6u",
+      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-Gu8G9w",
       "reason": "TOCTOU read reached protected fixture; documented design residual risk"
     }
   ],
   "cleanup": [
     {
-      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-y4CS8z",
+      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-m96jMP",
       "pids": [
-        12787
+        66761
       ],
       "remaining": []
     },
     {
-      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-QGGCmM",
+      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-1QDzXl",
       "pids": [
-        12789
+        66766
       ],
       "remaining": []
     },
     {
-      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-JhY7hP",
+      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-Rpxd3V",
       "pids": [
-        12797,
-        12796,
-        12795
+        66772,
+        66773,
+        66768
       ],
       "remaining": []
     },
     {
-      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-X3Aqx9",
+      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-LBFsGl",
       "pids": [
-        12803,
-        12804,
-        12799
+        66777,
+        66776,
+        66775
       ],
       "remaining": []
     },
     {
-      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-KxJWzM",
+      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-TIgwcH",
       "pids": [],
       "remaining": []
     },
     {
-      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-HLxUbT",
+      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-IjontR",
       "pids": [
-        12808
+        66784
       ],
       "remaining": []
     },
     {
-      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-PLaQUh",
+      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-hMWH81",
       "pids": [
-        12813
+        66786
       ],
       "remaining": []
     },
     {
-      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-kX9VEr",
+      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-gxFABZ",
       "pids": [
-        12815
+        66789
       ],
       "remaining": []
     },
     {
-      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-P0vRp2",
+      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-09PbT0",
       "pids": [
-        12817
+        66794
       ],
       "remaining": []
     },
     {
-      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-WPxgVd",
+      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-sOv7Vo",
       "pids": [
-        12822
+        66796
       ],
       "remaining": []
     },
     {
-      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-872LC1",
+      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-KabCg9",
       "pids": [
-        12824
+        66801
       ],
       "remaining": []
     },
     {
-      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-ADV144",
+      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-1M2U39",
       "pids": [
-        12833
+        66810
       ],
       "remaining": []
     },
     {
-      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-xcB4cl",
+      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-7uEAaF",
       "pids": [
-        12839
+        66812
       ],
       "remaining": []
     },
     {
-      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-MMlU6u",
+      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-Gu8G9w",
       "pids": [
-        12853
+        66817
       ],
       "remaining": []
     },
     {
-      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-RvmYd5",
+      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-5iHFz0",
       "pids": [
-        12953
+        66869
       ],
       "remaining": []
     }
   ],
   "archived": [
     {
-      "fixture": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-y4CS8z",
-      "path": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-c-tools-run-8RrTX0/project-settings-deny"
+      "fixture": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-m96jMP",
+      "path": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-c-tools-run-wprq8B/project-settings-deny"
     },
     {
-      "fixture": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-QGGCmM",
-      "path": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-c-tools-run-8RrTX0/project-settings-saved"
+      "fixture": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-1QDzXl",
+      "path": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-c-tools-run-wprq8B/project-settings-saved"
     }
   ],
-  "timestamp": "2026-11-05T14:25:20.208Z"
+  "timestamp": "2026-11-06T06:43:29.325Z"
 }

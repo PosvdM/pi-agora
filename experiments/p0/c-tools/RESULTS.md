@@ -4,17 +4,18 @@
 
 本实验覆盖 [roadmap.md](../../../docs/roadmap.md) 的 agora #3、#4、#5、#19。结论限于本机 macOS 和本目录的受管扩展原型，不代表尚未实现的 daemon 已经通过验收。Windows 和 Linux 均为**待测**。
 
-- 实测环境：macOS，Node `v26.12.0`，pi `1.5.0`，git `2.56.0`。
-- 最后一次完整运行：`2026-11-05T14:25:20.208Z`；18 个测试，16 个通过，2 个 Windows 测试跳过，0 个失败，约 10.3 秒。
+- 实测环境：macOS arm64，Node `v26.12.0`，pi `1.5.0`；系统 git `2.56.0`，最低支持系列 git `2.34` 实测 `2.34.1`（kernel.org 官方源码，在临时目录编译）。
+- git `2.34.1` 完整运行：`2026-11-06T06:43:29.325Z`；18 个测试，16 个通过，2 个 Windows 测试跳过，0 个失败，约 9.6 秒。
+- git `2.56.0` 完整运行：`2026-11-06T06:43:45.382Z`；18 个测试，16 个通过，2 个 Windows 测试跳过，0 个失败，约 9.3 秒。两轮均未遇到睡眠或超时，不需要重试。
 - 临时卷实测不区分大小写，NFC/NFD 文件名互通。`realpath` 把 `PROTECTED` 和 `protected` 都返回为磁盘上的 `protected`，并把 `/var/...` 返回为 `/private/var/...`。
-- 所有模型请求都来自共用 harness 的假 provider；没有真实模型请求，没有网络访问。`HOME`、`PI_CODING_AGENT_DIR`、会话和工作目录均指向临时现场；没有修改全局安装、全局 git 配置或用户的 `~/.pi`。
+- 所有模型请求都来自共用 harness 的假 provider；没有真实模型请求，测试期间没有网络访问。git `2.34.1` 源码通过 HTTPS 下载，构建和测试不需要网络。`HOME`、`PI_CODING_AGENT_DIR`、会话和工作目录均指向临时现场；没有修改全局安装、全局 git 配置或用户的 `~/.pi`。
 
 | 条目 | 结论 | 主要结果 |
 | --- | --- | --- |
 | agora #3 | 通过 | 已保存信任的项目确实加载了 thinking 设置，但 `defaultTools` 不能绕过显式白名单；非白名单真实调用全部失败。MCP 结果不变。 |
 | agora #4 | 通过 | 受管原型通过：五种指定故障都未发送任务书、未执行 canary，并结束进程、记录诊断；不代表真实 daemon 已验收。 |
 | agora #5 | 部分通过 | 静态越界调用全部被拒；TOCTOU 能越过检查，与文档声明的剩余风险一致。原生 Windows 的 PowerShell 和 junction 尚未验证。 |
-| agora #19 | 部分通过 | git 2.56.0 接受固定 argv，加固调用的恶意标记为 0；最低支持版本没有实测。 |
+| agora #19 | 通过 | git 2.34.1 和 2.56.0 均接受固定 argv，加固调用的恶意标记均为 0，白名单外参数全部拒绝；2.34.1 的 `core.fsmonitor=false` hook 语义单独记录。 |
 
 ## 重跑与文件
 
@@ -22,17 +23,20 @@
 
 ```sh
 node experiments/p0/c-tools/run.mjs
+P0_GIT=/absolute/path/to/git-2.34.1 node experiments/p0/c-tools/run.mjs
 ```
+
+`P0_GIT` 选择本次测试的 git 可执行文件，不设置或为空时使用 `PATH` 中的 `git`。仓库构造、filter 配置读取、加固命令、真实 provider 的 `agora_git` 和全部正控（含 Python PTY）都使用该选择；不修改持久 `PATH` 或全局 git 配置。使用绝对路径可避免测试工作目录改变对相对路径的影响。
 
 运行器调用 `node --test --test-timeout=20000`，每次创建不同的系统临时目录，保存完整 `run.log`、`observations.json` 和两个项目设置现场的原始 provider/RPC 日志。直接运行 `node --test --test-timeout=20000 experiments/p0/c-tools/tools.test.mjs` 也会创建唯一临时证据目录。
 
 只有显式设置 `P0_RECORD=1` 才刷新仓库里的已提交证据：
 
 ```sh
-P0_RECORD=1 node experiments/p0/c-tools/run.mjs
+P0_RECORD=1 P0_GIT=/absolute/path/to/git-2.34.1 node experiments/p0/c-tools/run.mjs
 ```
 
-默认完整重跑前后，仓库中 `observations.json` 和 `run.log` 的 SHA-256 均保持不变。本次记录运行的证据目录是 `/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-c-tools-run-8RrTX0`。
+默认完整重跑前后，仓库中 `observations.json` 和 `run.log` 的 SHA-256 均保持不变，git `2.34.1` 和 `2.56.0` 都核对过。仓库内这两个文件记录 git `2.34.1` 的显式 `P0_RECORD=1` 运行；证据目录是 `/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-c-tools-run-wprq8B`。git `2.56.0` 的完整日志和观察记录位于 `/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-c-tools-run-tQnA5d`。后者默认运行未改写已提交证据。
 
 测试主体只使用 Node 标准库、现有 pi 和 git。macOS 上 pager 的终端正控还使用已有的 `/usr/bin/python3` 标准库 `pty`；找不到该程序时不运行该正控，其他测试不依赖 Python。Windows 原生 PowerShell、junction 用例已经写入脚本，本次跳过；跨平台脚本未经 Windows/Linux 实测。
 
@@ -211,6 +215,26 @@ The powershell tool is only available on Windows.
 
 恶意配置包括 textconv、`diff.external`、`core.fsmonitor`、`core.pager`、clean/smudge/process filter、`log.showSignature=true` 和 `gpg.program`。程序只写入本现场的 `git-markers.jsonl`。配置只写临时仓库的 `.git/config` 和 `.gitattributes`；`GIT_CONFIG_GLOBAL` 指向临时空文件，`GIT_CONFIG_NOSYSTEM=1`。
 
+### 最低版本的获取与构建
+
+实测版本为 `git version 2.34.1`，官方源码地址为 `https://www.kernel.org/pub/software/scm/git/git-2.34.1.tar.xz`。压缩包的 SHA-256 是 `3a0755dd1cfab71a24dd96df3498c29cd0acd13b04f3d08bf933e81286db802c`。构建命令如下：
+
+```sh
+build=$(mktemp -d /tmp/pi-p0-git-2.34.1-XXXXXX)
+curl --fail --location --proto '=https' --tlsv1.2 \
+  https://www.kernel.org/pub/software/scm/git/git-2.34.1.tar.xz \
+  -o "$build/git-2.34.1.tar.xz"
+shasum -a 256 "$build/git-2.34.1.tar.xz"
+tar -xJf "$build/git-2.34.1.tar.xz" -C "$build"
+make -C "$build/git-2.34.1" -j4 prefix="$build/install" \
+  NO_GETTEXT=YesPlease NO_TCLTK=YesPlease NO_OPENSSL=YesPlease \
+  NO_CURL=YesPlease NO_EXPAT=YesPlease all install > "$build/build.log" 2>&1
+"$build/install/bin/git" --version
+P0_GIT="$build/install/bin/git" node experiments/p0/c-tools/run.mjs
+```
+
+本机安装前缀为 `/tmp/pi-p0-git-2.34.1-24czjc/install`，构建日志保留在同级的 `build.log`。使用已有的 Apple clang、make 和系统库；关闭 gettext、GUI 和网络传输相关的可选依赖，未安装新依赖。这不影响本条测试的本地仓库、diff、filter、fsmonitor、pager 和外部签名验证调用。没有使用 brew、替换系统 git、修改全局 git 配置或持久 `PATH`。
+
 ### 实测结果
 
 固定前缀与 [architecture.md「agora_git 的加固」](../../../docs/architecture.md#agora_git-的加固) 一致：
@@ -222,19 +246,27 @@ The powershell tool is only available on Windows.
 -c filter.evil.clean= -c filter.evil.smudge= -c filter.evil.process=
 ```
 
-| 调用 | git 2.56.0 的结果 | 恶意标记 |
-| --- | --- | --- |
-| `status` 固定 argv | 接受；输出 `MM tracked.txt` | 0 |
-| 工作区 `diff` | 接受；包含暂存版本与工作区内容的差异 | 0 |
-| `diff --cached` | 接受；包含 HEAD 与暂存版本的差异 | 0 |
-| `diff HEAD~1..HEAD` | 接受；包含两个提交的差异 | 0 |
-| `log -p -n 2` | 接受；含补丁输出 | 0 |
-| `show HEAD` | 接受；含补丁输出 | 0 |
-| 删除 process 配置后保留恶意 clean/smudge，再运行工作区 `diff` | 接受 | 0 |
+| 调用 | git 2.34.1 | git 2.56.0 | 恶意标记（各版本） |
+| --- | --- | --- | --- |
+| `status` 固定 argv | 接受；输出 `MM tracked.txt` | 接受；输出相同 | 0 |
+| 工作区 `diff` | 接受；包含暂存版本与工作区内容的差异 | 接受；差异相同 | 0 |
+| `diff --cached` | 接受；包含 HEAD 与暂存版本的差异 | 接受；差异相同 | 0 |
+| `diff HEAD~1..HEAD` | 接受；包含两个提交的差异 | 接受；差异相同 | 0 |
+| `log -p -n 2` | 接受；含补丁输出 | 接受；含补丁输出 | 0 |
+| `show HEAD` | 接受；含补丁输出 | 接受；含补丁输出 | 0 |
+| 删除 process 配置后保留恶意 clean/smudge，再运行工作区 `diff`（两轮） | 接受 | 接受 | 0 |
 
-实际 provider 发出 `agora_git status`，同样得到 `MM tracked.txt`。其余固定命令直接调用该工具使用的同一个 `hardenedGit` 实现；所有 argv 都写入 `observations.json`。
+两个版本上，实际 provider 发出 `agora_git status`，均得到 `MM tracked.txt`，且工具结果中的 executable 与所选 git 一致。其余固定命令直接调用该工具使用的同一个 `hardenedGit` 实现；所有 argv 都写入 `observations.json`，并记录 stderr。上表所有调用和 provider 调用均退出成功、stderr 为空。
 
-本机 git 2.56.0 中，把仓库 filter 的 `clean`、`smudge`、`process` 以 `-c` 覆盖为空，没有触发恶意程序。该结论限于已测的默认非 required filter 配置，不包括任意 git 版本和任意 filter 组合。
+git `2.34.1` 和 `2.56.0` 中，把仓库 filter 的 `clean`、`smudge`、`process` 以 `-c` 覆盖为空，均没有触发恶意程序。该结论限于这两个版本和已测的默认非 required filter 配置，不包括任意 git 版本和任意 filter 组合。
+
+### fsmonitor 的版本差异
+
+git `2.34.1` 把 `core.fsmonitor=false` 解析为 hook 路径 `false`，没有将其解析为禁用 fsmonitor 的布尔值。Trace2 在直接加固调用中记录了 10 次 `false` 子进程调用，argv 分别以 `false 2` 和 `false 1` 开头；hook 失败后 git 继续扫描工作区，最终命令退出成功，恶意 fsmonitor 标记为 0。git `2.56.0` 的对应 Trace2 子进程列表为空。`observations.json` 的 `hardenedChildArgv` 保存了该差异；它在正控之前采样，不包括真实 provider 的独立进程。
+
+因此不能把 `core.fsmonitor=false` 在 git `2.34.1` 上的表现描述为“完全不启动 fsmonitor 子进程”。它在本机覆盖了恶意 hook，但会执行从 `PATH` 解析的 `false`。建议后续统一评估 `-c core.fsmonitor=`：2.34.1 源码 `config.c` 的 `git_config_get_fsmonitor()` 将空字符串转为 `NULL`，可避免依赖外部 `false`；替换固定前缀前仍须在两个支持版本上验证。本实验按架构规定保留 `core.fsmonitor=false`，没有修改前缀或放宽断言。
+
+### 参数与正控
 
 假 provider 真正尝试以下 12 类白名单外选项，全部收到 `isError: true`、`option not allowed`：
 
@@ -250,14 +282,17 @@ The powershell tool is only available on Windows.
 ```text
 hardenedMarkers = 0
 positiveMarkers = [textconv, external, fsmonitor, clean, process, smudge, gpg, pager]
-minimumGitVersionTested = false
+minimumGitVersion = 2.34
+minimumGitVersionTested = true  # git 2.34.1 的记录运行
 ```
+
+`minimumGitVersionTested` 表示该轮是否运行 2.34.x，因此单独的 git `2.56.0` 运行记录为 `false`，不代表本条缺少最低版本验证。两个版本的八类正控均实际产生标记；12 类白名单外参数全部拒绝，额外的命令、revision、路径和环境清理断言也通过。
 
 ### 结论
 
-**部分通过**。本机 git 2.56.0 的固定 argv、安全标记和参数拒绝通过。最低支持版本由主人确定，本轮不测，也没有运行第二个 git 版本，因此不能据此满足 roadmap #19 的全部条件。关联位置是 architecture.md「agora_git 的加固」固定 argv 后的版本要求。
+**通过**（macOS，本条不以 Windows 为通过前提）。最低支持 git `2.34` 系列的 `2.34.1` 与本机 `2.56.0` 均接受架构规定的固定 argv，加固调用的恶意标记均为 0，白名单外参数全部拒绝，满足 roadmap #19 的通过标准。`core.fsmonitor=false` 在 2.34.1 上仍调用名为 `false` 的 hook，该语义差异和后续建议见上节，不能把本结论扩展为“git 从不派生子进程”。
 
-Windows：待测。Linux：待测。最低 git 版本：待测。
+Windows 和 Linux 平台适配仍待测，不属于本条最低版本补测的验收前提；没有据此宣称这两个平台已经验证。
 
 ## Harness 与现场清理
 
@@ -267,17 +302,17 @@ Windows：待测。Linux：待测。最低 git 版本：待测。
 
 本组仍补充 ready/ticket 监督、MCP 日志条件等待和退出后的精确 PID 检查。共用工具不覆盖完整独立子进程组清理；本次 MCP 由 pi 正常 shutdown 关闭，逐 PID 检查均未发现遗留。
 
-最后一次完整运行保留三个预期需要复查的现场，绝对路径只适用于本机：
+仓库证据对应的 git `2.34.1` 完整运行保留三个预期需要复查的现场，绝对路径只适用于本机。git `2.56.0` 对应的三个现场见其证据目录内的 `observations.json.retained`：
 
 | 现场 | 原因 |
 | --- | --- |
-| `/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-WPxgVd` | 裸 `tool_call` 抛错没有 RPC `extension_error`。 |
-| `/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-ADV144` | macOS 原始 pi 显式声明 PowerShell、执行时拒绝。 |
-| `/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-MMlU6u` | TOCTOU 读到受保护 fixture。 |
+| `/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-sOv7Vo` | 裸 `tool_call` 抛错没有 RPC `extension_error`。 |
+| `/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-1M2U39` | macOS 原始 pi 显式声明 PowerShell、执行时拒绝。 |
+| `/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-Gu8G9w` | TOCTOU 读到受保护 fixture。 |
 
 每个现场保留 `requests.jsonl`、`rpc-1.jsonl`、guard 日志和隔离配置。早期探查中有两次外层命令超时、若干正控和断言调整；相应临时现场没有删除，也没有据此修改或回滚 pi、harness、设计文档。初次 MCP/PowerShell/裸异常/TOCTOU 的异常观察已向主 Agent 报告。
 
-最后一次测试的 `observations.json.cleanup` 中，所有记录的 `remaining` 都为空。所有正常 git/Python 控制进程都等待退出；最后额外按本组脚本路径检查进程表，也没有找到本组进程。**没有遗留进程**。除保留现场外，成功 fixture 在测试结束时删除。没有推送或发起 PR，也没有修改 `docs/`。
+两个版本完整测试的 `observations.json.cleanup` 中，所有记录的 `remaining` 都为空。所有正常 git/Python 控制进程都等待退出；最后额外按本组脚本路径检查进程表，也没有找到本组进程。**没有遗留进程**。除保留现场外，成功 fixture 在测试结束时删除。没有推送或发起 PR，也没有修改 `docs/`。
 
 ## 源码依据
 
