@@ -26,7 +26,7 @@ node --test --test-name-pattern='process:' experiments/p0/e-hostkit/hostkit.test
 - 第一行 `E_HOSTKIT_FIXTURE` 给出本轮总目录，包含 `observations.jsonl`、`evidence.jsonl`、`fixtures.txt`、`owned-identities.json` 和原生构建产物。
 - 每个 pi 的现场由共用 harness 创建，包含隔离的 `HOME`、`PI_CODING_AGENT_DIR`、会话、假 provider 请求、RPC 记录和故障注入文件。脚本不删除现场。
 - 本目录的 `evidence.jsonl` 是报告对应完整运行的观察记录副本，不含 provider 的完整提示词。默认运行只写临时目录；设置 `P0_RECORD=1` 且测试、清理均通过时才原子替换仓库证据。
-- 每个测试和 pi 现场在启动进程前登记应急清理。`finally` 停止 tracker，并读取该现场的 oracle，按 PID 与创建时间核对、逐个终止本轮进程；`after` hook 作为幂等兜底。清理结果保存在现场的 `emergency-cleanup.json`，不按名称终止进程。
+- 每个测试和 pi 现场在启动进程前登记应急清理。`finally` 停止 tracker，并读取该现场的 oracle，按 PID 与创建时间核对、逐个终止本轮进程；`after` hook 作为幂等兜底。清理必须在 5 秒截止前确认至少 250 毫秒静默，否则报“清理不完整”，即使最后一轮没有残留。现场的 `emergency-cleanup.json` 记录静默时长和超时状态；不按名称终止进程。
 - 两个盲窗实验断言“能够复现一个残留”，随后记录并清理该残留。因此测试运行全绿不代表设计全部通过；设计结论以 `RESULTS.md` 为准。
 
 刷新完整证据：
@@ -35,7 +35,7 @@ node --test --test-name-pattern='process:' experiments/p0/e-hostkit/hostkit.test
 P0_RECORD=1 node --test experiments/p0/e-hostkit/hostkit.test.mjs
 ```
 
-`cleanup failure:` 用例在正常 oracle 登记前注入异常，分别覆盖 `nohup` 后代、native `setsid` 孤儿和 `daemon.json` 尚未生成的 daemon/pi 子进程。它们验证异常仍会执行应急清理；不会给被测 `ProcessTracker` 补入 oracle 身份。机制和边界见 [RESULTS.md 的清理与边界](RESULTS.md#清理与边界)。
+`cleanup failure:` 用例在正常 oracle 登记前注入异常，分别覆盖 `nohup` 后代、native `setsid` 孤儿和 `daemon.json` 尚未生成的 daemon/pi 子进程。它们验证异常仍会执行应急清理；不会给被测 `ProcessTracker` 补入 oracle 身份。`cleanup deadline:` 用可控时钟确定性验证：临近截止才出现身份、未满足静默窗口时必须失败，并以完整 250 毫秒静默作为成功对照。机制和边界见 [RESULTS.md 的清理与边界](RESULTS.md#清理与边界)。
 
 ## 文件
 

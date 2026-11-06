@@ -34,18 +34,18 @@ node --test experiments/p0/e-hostkit/hostkit.test.mjs
 报告对应的完整运行输出：
 
 ```text
-E_HOSTKIT_FIXTURE .../T/e-hostkit-jWY9sR
-ℹ tests 33
-ℹ pass 29
+E_HOSTKIT_FIXTURE .../T/e-hostkit-ATaalR
+ℹ tests 34
+ℹ pass 30
 ℹ fail 0
 ℹ cancelled 0
 ℹ skipped 4
-ℹ duration_ms 141361.585625
+ℹ duration_ms 141663.008625
 ```
 
 观察记录见 [evidence.jsonl](evidence.jsonl)。默认运行只写系统临时目录；上述完整运行通过 `P0_RECORD=1` 刷新仓库证据。只有测试和清理均通过才替换证据文件。运行方法和文件职责见 [README.md](README.md)。每节列出的测试名称均在 `hostkit.test.mjs` 中，可用 `--test-name-pattern` 单独重跑。
 
-本机保留的总现场为 `/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/e-hostkit-jWY9sR`，其 `fixtures.txt` 列出每个 pi 现场。总目录还包含 `observations.jsonl`、`evidence.jsonl`、`owned-identities.json`、helper 和 N-API 构建产物。完整终端输出位于 `/tmp/e-hostkit-cleanup-record.log`。这些临时文件未删除，也未纳入提交。
+本机保留的总现场为 `/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/e-hostkit-ATaalR`，其 `fixtures.txt` 列出每个 pi 现场。总目录还包含 `observations.jsonl`、`evidence.jsonl`、`owned-identities.json`、helper 和 N-API 构建产物。完整终端输出位于 `/tmp/e-hostkit-quiescence-record.log`。这些临时文件未删除，也未纳入提交。
 
 ## 原生能力
 
@@ -104,17 +104,17 @@ pi 由 `process.execPath` 直接运行其 CLI 入口，以 `detached: true` 启�
 
 ```text
 process-parent-exit round=1 recorded=4 reportLeftovers=0 oracleLeftovers=[]
-  SIGKILL descendants: [17556]
+  SIGKILL descendants: [29276]
 process-pi-SIGKILL round=1 recorded=2 reportLeftovers=0 oracleLeftovers=[]
-  SIGKILL descendants: [17873]
+  SIGKILL descendants: [29588]
 process-escape-between-snapshots
-  round=1 reportLeftovers=0 oracleLeftovers=[18028]
-  round=2 reportLeftovers=0 oracleLeftovers=[18132]
-  round=3 reportLeftovers=0 oracleLeftovers=[18232]
+  round=1 reportLeftovers=0 oracleLeftovers=[29751]
+  round=2 reportLeftovers=0 oracleLeftovers=[29854]
+  round=3 reportLeftovers=0 oracleLeftovers=[29956]
 process-nohup-before-first-snapshot
-  round=1 recorded=1 reportLeftovers=0 oracleLeftovers=[18242]
-  round=2 recorded=1 reportLeftovers=0 oracleLeftovers=[18263]
-  round=3 recorded=1 reportLeftovers=0 oracleLeftovers=[18284]
+  round=1 recorded=1 reportLeftovers=0 oracleLeftovers=[29963]
+  round=2 recorded=1 reportLeftovers=0 oracleLeftovers=[29984]
+  round=3 recorded=1 reportLeftovers=0 oracleLeftovers=[30005]
 ```
 
 **设计差异与影响**：
@@ -153,11 +153,11 @@ leftovers: []
 
 **通过标准**：每轮仅一个成功；杀掉赢家后重新取得同一锁；锁文件 inode 不变。
 
-**实测结果**：两类场景各 3/3 只有一个赢家。SIGKILL 后首次成功重取锁的观测耗时为 21.36–22.39 毫秒。轮询间隔为 20 毫秒，该数值包含轮询和调度，不能当作内核释放本身的耗时。六轮 inode 均未变化。
+**实测结果**：两类场景各 3/3 只有一个赢家。SIGKILL 后首次成功重取锁的观测耗时为 21.49–22.32 毫秒。轮询间隔为 20 毫秒，该数值包含轮询和调度，不能当作内核释放本身的耗时。六轮 inode 均未变化。
 
 ```json
-{"name":"lock-instance","round":1,"winners":1,"releaseMs":21.48,"sameInode":true}
-{"name":"lock-session","round":3,"winners":1,"releaseMs":22.32,"sameInode":true}
+{"name":"lock-instance","round":1,"winners":1,"releaseMs":21.9,"sameInode":true}
+{"name":"lock-session","round":3,"winners":1,"releaseMs":22.25,"sameInode":true}
 ```
 
 会话路径通过真实路径、大小写折叠和 NFC 生成 SHA-256 key。现有文件和不存在文件的符号链接、大小写、Unicode 别名得到相同 key，见路径测试。
@@ -189,11 +189,11 @@ EOF 测试直接关闭宿主到 helper 的管道，验证的是管道断开的�
 
 **通过标准**：旧宿主活着时新宿主取锁失败；旧宿主死后，新宿主先确认并停止旧 writer，再启动新 writer；会话内没有旧、新宿主交错写入；双向均成立。
 
-**实测结果**：两个方向均通过。正常竞争者返回 `busy`；恢复者读到旧 writer 后执行信号停止，再创建新 pi。每个方向保留 21 条 `host-writer` 标记，切换后没有旧宿主标记。共享记录最终为 `released`，停止报告无已记录残留。
+**实测结果**：两个方向均通过。正常竞争者返回 `busy`；恢复者读到旧 writer 后执行信号停止，再创建新 pi。两个方向分别保留 21、22 条 `host-writer` 标记，切换后没有旧宿主标记。共享记录最终为 `released`，停止报告无已记录残留。
 
 ```text
 pi-pane -> pi-agora: oldStoppedBeforeNew=true markerCount=21 interleaved=false
-pi-agora -> pi-pane: oldStoppedBeforeNew=true markerCount=21 interleaved=false
+pi-agora -> pi-pane: oldStoppedBeforeNew=true markerCount=22 interleaved=false
 ```
 
 **结论：通过。** 测试：`cross-host: ... spawn window=false`。这是无额外脱离后代的会话写者恢复；不覆盖前节已证实会遗漏的命令树，也不代表完整 pane/agora 产品已集成。
@@ -268,14 +268,14 @@ pi-agora -> pi-pane: result=failed newWriterStarted=false
 **实测结果**：
 
 - 使用 `pbi_start_tvsec` 和 `pbi_start_tvusec`，按字符串 `秒.六位微秒` 保存，没有转换为毫秒。
-- 12 个连续启动的子进程有 12 个不同时间戳，最小观测间隔 543 微秒。这是样本间隔，不是对内核时钟准确度的测量。
+- 12 个连续启动的子进程有 12 个不同时间戳，最小观测间隔 532 微秒。这是样本间隔，不是对内核时钟准确度的测量。
 - 对活进程伪造 `startTime: "0.000001"` 返回 `gone`，停止函数拒绝发 SIGKILL；真实身份仍为 `alive`。
 - 只改 runId/instanceId、保留 PID 与创建时间，仍返回 `alive`。这两个字段属于宿主记录，内核没有对应字段可用于校验。
 - 没有为了强迫 PID 回绕而大量创建进程，也没有真实重启机器。真实 PID 复用、机器重启和检查到发信号之间的竞态均未实测。
 
 ```json
 {"simulatedMismatchRejected":true,"realPidReuse":"not forced","metadataNotKernelIdentity":true}
-{"count":12,"unique":12,"minimumObservedDeltaUs":543}
+{"count":12,"unique":12,"minimumObservedDeltaUs":532}
 ```
 
 **结论：部分通过。** 测试：`identity:`、`identity precision:`。Windows `GetProcessTimes`、Linux `/proc` 的精度和身份行为待测。
@@ -421,7 +421,9 @@ exec 门闩 helper 已证明机制可运行，但没有被计入 N-API 成品能
 
 每个测试在启动进程前建立清理作用域，每个 harness 现场创建后立即登记 `after` hook。测试主体由 `try/finally` 包围；`withTracker()` 的 `finally` 停掉定时快照并将已有记录交给应急集合，测试的 `finally` 执行现场清理。没有 pi fixture 的锁、RPC 模拟进程、身份和 gate 用例也受测试级作用域保护。重复调用清理返回同一个 Promise。
 
-`test-cleanup.mjs` 在成功和失败路径均读取本现场的 `oracle.jsonl`、`cleanup-oracle.jsonl` 和已存在的 `daemon.json`。host 在 spawn writer 后、daemon 扩展和 worker 在 spawn daemon/pi 子进程后写入清理日志，不依赖就绪消息或 `daemon.json`。清理把日志身份与 tracker 已有身份合并，用快照补充仍可追溯的后代，再按 **PID + 创建时间**逐个 SIGKILL；重复读取日志以收集清理期间的追加记录。最长等待 5 秒，并要求至少 250 毫秒没有新增身份、活进程、僵尸或解析错误。每个作用域保留 `emergency-cleanup.json`。
+`test-cleanup.mjs` 在成功和失败路径均读取本现场的 `oracle.jsonl`、`cleanup-oracle.jsonl` 和已存在的 `daemon.json`。host 在 spawn writer 后、daemon 扩展和 worker 在 spawn daemon/pi 子进程后写入清理日志，不依赖就绪消息或 `daemon.json`。清理把日志身份与 tracker 已有身份合并，用快照补充仍可追溯的后代，再按 **PID + 创建时间**逐个 SIGKILL；重复读取日志以收集清理期间的追加记录。清理预算为 5 秒，必须在截止前通过扫描确认至少 250 毫秒没有新增身份、活进程、僵尸或解析错误。成功只由显式的 `quiesced: true` 判定；到达截止时未确认静默，即使 `remaining=[]`、`parseErrors=[]`，也报“清理不完整”。
+
+每个作用域保留 `emergency-cleanup.json`：`quiesced` 表示是否在截止前确认静默，`quietMs` 是最后一次完成扫描时确认的连续静默毫秒数（新增身份或其他异常使其归零），`timedOut` 表示未静默即耗尽预算，`elapsedMs` 记录清理耗时。最后一次等待跨过截止时，不把未再扫描的等待时长计入 `quietMs`。
 
 这套逻辑只用于测试回收；`prototype.mjs` 的停止流程不读取 oracle。两种快照盲窗仍各断言并记录一个实际残留，随后才由测试清理六个残留。没有使用 `pkill`、`killall` 或按名称终止进程。
 
@@ -437,6 +439,18 @@ exec 门闩 helper 已证明机制可运行，但没有被计入 N-API 成品能
 
 三个现场的 `remaining` 均为 `[]`，清理后再按身份确认后代退出。该验证覆盖可执行 `finally` 的测试异常，不覆盖测试 runner 被 SIGKILL、系统崩溃或身份日志尚未落盘且后代已无法追溯的窗口，也不扩大产品停止算法的保证。
 
+### 静默截止条件
+
+`cleanup deadline:` 注入可控时钟和等待函数，预算与静默阈值仍为 5000/250 毫秒。测试使用空进程快照，将 oracle 中的身份视为已退出进程；不启动进程、不发送信号，也不依赖真实调度命中截止窗口。
+
+| 场景 | 最后一次扫描确认的静默 | 结果 |
+| --- | --- | --- |
+| 无新身份，完整观察 250 毫秒 | `quietMs=250` | `quiesced=true`、`timedOut=false`，成功。 |
+| 在 4950 毫秒才写入身份 | `quietMs=0` | 5000 毫秒截止，`quiesced=false`、`timedOut=true`，拒绝成功。 |
+| 在 4700 毫秒才写入身份 | `quietMs=200` | 5000 毫秒截止，`quiesced=false`、`timedOut=true`，拒绝成功；没有把最后的等待算作已确认静默。 |
+
+三个场景的 `remaining`、`parseErrors` 均为空。测试核对 Promise 的成功或拒绝、重复调用的幂等性，以及落盘报告中的状态和时长。该结果验证清理循环的截止判定，不代替前述真实进程故障注入。
+
 ### 全量运行复查
 
 完整证据运行共登记 **123 个进程身份**，最终 hook 输出：
@@ -450,6 +464,8 @@ exec 门闩 helper 已证明机制可运行，但没有被计入 N-API 成品能
 ```json
 {"recorded":123,"remaining":[]}
 ```
+
+复查 65 份测试级和现场级清理报告，均为 `quiesced=true`、`quietMs>=250`、`timedOut=false`；确定性测试单独目录中的预期超时报告不计入这 65 份。
 
 另用 `ps -axo pid=,ppid=,pgid=,stat=,command=` 检查 E 组 worker/host、临时 helper、该 worktree 的 fake-provider 参数和现场路径，没有匹配的实验进程。名称和路径仅用于检查，不用于发信号。
 
