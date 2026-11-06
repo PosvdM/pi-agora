@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.os }}, ${{ matrix.containment }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        containment: [auto]
+        include:
+          # Linux 的第二轮覆盖进程快照模式。
+          - os: ubuntu-latest
+            containment: snapshot
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    env:
+      HOSTKIT_TEST_CONTAINMENT: ${{ matrix.containment }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: 安装 pi 1.5.0
+        run: npm install -g @earendil-works/pi-coding-agent@1.5.0
+      - name: 启动 Linux 用户 systemd 实例
+        if: runner.os == 'Linux'
+        run: |
+          sudo loginctl enable-linger "$USER"
+          uid=$(id -u)
+          for i in $(seq 1 50); do
+            [ -S "/run/user/$uid/bus" ] && break
+            sleep 0.2
+          done
+          echo "XDG_RUNTIME_DIR=/run/user/$uid" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus" >> "$GITHUB_ENV"
+          if [ "${{ matrix.containment }}" = auto ]; then echo "HOSTKIT_TEST_REQUIRE_CGROUP=1" >> "$GITHUB_ENV"; fi
+      - run: npm test

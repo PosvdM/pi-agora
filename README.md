@@ -2,7 +2,38 @@
 
 pi-agora 是 [pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) 编码智能体的协作引擎。主代理用它把任务派给子代理、召开多模型会议，所有协作会话的完整对话都会永久保存。
 
-> **当前状态：设计阶段，还没有代码。** 本仓库目前只有设计文档，接口和默认值都是草案，P0 验证后冻结。
+> **当前状态：切片 1a（最小任务闭环）。** 提供 daemon、pi 扩展和 CLI，支持派出只读子代理、查询状态与结果、停止任务，以及持久化完成通知。完整任务动作、worktree、review / implement、提问、存档读取、board、会议和 pi-pane 插件仍在后续切片中；下方“功能”描述完整设计目标。
+
+## 使用
+
+需要 Node.js 24 及以上、pi 1.5.x，以及编译 pi-hostkit 原生模块的工具链（Python 3 和 C/C++ 编译器；Windows 使用 Visual Studio Build Tools）。仓库不发布到 npm，从源码安装：
+
+```sh
+npm install
+npm run build
+```
+
+在仓库根目录启动装有 agora 扩展的 pi：
+
+```sh
+pi -e ./packages/extension/dist/index.js
+```
+
+向主代理提出任务，并要求使用 `agora_task` 的 `spawn`，指定完整模型名（`provider/id`）、`profile: "explore"` 和任务书。可用动作是 `spawn`、`status`、`result`、`stop`；子代理不能再派子代理。只读档位提供 `read`、`grep`、`find`、`ls`，文件访问限定在任务工作目录内，并拒绝凭证目录；这属于工具层权限，不是操作系统沙箱。
+
+扩展会自动启动后台 daemon。CLI 也可手动启动和查看：
+
+```sh
+node packages/cli/dist/main.js daemon start
+node packages/cli/dist/main.js status
+node packages/cli/dist/main.js ls
+node packages/cli/dist/main.js show <任务或会话 ID>
+node packages/cli/dist/main.js shutdown
+```
+
+可用 `npm link --workspace @pi-agora/cli` 注册 `agora` 命令。默认数据目录为 `~/.pi/agora`；设置 `AGORA_HOME` 或给 CLI 传 `--home <目录>` 可改用其他本地目录。关闭主会话不会停止 daemon 或正在运行的子代理；恢复原主会话后会补收尚未确认的通知。通知只有在主会话文件中找到完整记录后才确认。
+
+`shutdown` 排空运行中的任务；`--timeout <秒>` 默认 600，超时后保留 daemon，需用户显式重试 `shutdown --force`。强制关闭会中断任务并清理受管进程。停止报告会说明覆盖范围：Windows Job Object、Linux cgroup，或 macOS / Linux 的进程快照；快照的空残留列表不能证明整棵进程树均已退出。1a 不提供中断任务的 resume 动作。
 
 ## 功能
 
@@ -57,7 +88,16 @@ packages/
   protocol/      协议类型与 schema
 ```
 
-运行环境（计划）：Node.js 24 及以上（使用内置 `node:sqlite`），pi 1.5.x；Windows、macOS、Linux 同时支持。pi 依次从配置项 `piPath`、pi 官方安装脚本的安装目录、全局 npm 目录查找，见 [pi-hostkit 的“定位 pi”](https://github.com/PosvdM/pi-hostkit/blob/main/docs/design.md#定位-pi)。
+运行环境：Node.js 24 及以上（使用内置 `node:sqlite`），pi 1.5.x；Windows、macOS、Linux 同时支持。pi 依次从配置项 `piPath`、pi 官方安装脚本的安装目录、全局 npm 目录查找，见 [pi-hostkit 的“定位 pi”](https://github.com/PosvdM/pi-hostkit/blob/main/docs/design.md#定位-pi)。
+
+## 开发
+
+```sh
+npm run build    # tsc project references 构建四个工作区
+npm test         # 构建后用 node --test 验证，真实 pi 测试要求 1.5.0
+```
+
+依赖 pi-hostkit 的固定提交 `ec911be`。测试使用本地假 provider，不访问模型服务，并把 HOME、agent 配置、数据和锁目录隔离到临时目录。CI 覆盖 Windows、macOS、Linux（cgroup 和快照两种模式）。构建、测试映射和限制见 [docs/development.md](docs/development.md)。
 
 ## 文档
 

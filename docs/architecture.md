@@ -129,7 +129,7 @@ node <pi>/dist/bundle/cli.js --mode rpc
 
 1. 扩展加载后立即用 launch ticket 换连接 token（ticket 绑定 runId，见 [security.md](security.md#协作会话)）。
 2. 就绪等待：MCP 工具注册是异步的，在 `session_start` 时可能尚未完成。扩展必须等 MCP 工具注册完成（或等到超时按 fail closed 处理），生成工具清单前按平台过滤（macOS 和 Linux 上不列 `powershell`），再向 daemon 报告就绪：`POST /v1/runs/:runId/ready`，带完整的 `pi.getActiveTools()` 结果、当前模型和 thinking 级别、扩展版本（依据：`dist/core/extensions/types.d.ts` 的 `getActiveTools`、`getThinkingLevel`）。
-3. daemon 核对：活动工具集合与档位白名单完全一致；模型和 thinking 与 `LaunchSpec` 一致，并用 RPC `get_state` 再核对一次模型；扩展版本与 daemon 兼容。全部通过后 run 进入 `ready`，daemon 才发送任务书或会议消息。
+3. daemon 核对：活动工具集合与档位白名单完全一致；模型和 thinking 与 `LaunchSpec` 一致；扩展版本与 daemon 兼容。HTTP 就绪响应确认这些上报字段，扩展收到响应后结束 `session_start`。daemon 随后通过 RPC `get_available_models` 和 `get_state` 核对模型、thinking 和会话文件；全部通过后 run 才进入 `ready`，daemon 才发送任务书或会议消息。pi 1.5.0 在 `session_start` 结束后才开始读取 RPC 输入，因此 HTTP 就绪处理器不能等待 RPC 核对，否则会互相等待。
 4. 就绪前，扩展的 `tool_call` 钩子拒绝一切工具调用。钩子内部必须显式用 `try/catch` 包住，出异常时自行记录 fatal 诊断并返回 `{ block: true }` 拒绝调用，不依赖 pi 对抛出异常的处理方式（实测裸钩子抛错时 pi 不发 RPC `extension_error`，进程不会自行退出；安全策略必须 fail closed 自行闭环）。
 5. 就绪超时（`readyTimeoutMs`，默认 30000）、核对失败、或运行期间收到来自 agora 扩展的 `extension_error` 事件（依据：`docs/json.md`），daemon 立即停止该 run，记录诊断；任务进入 `failed`（首次启动）或 `interrupted`（恢复时），并通知召集人。
 
