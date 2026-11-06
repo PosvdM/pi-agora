@@ -294,7 +294,7 @@ daemon-pty round=2 explicitHup=false terminalGone=true daemonAlive=true childAli
 daemon-pty round=3 explicitHup=true  terminalGone=true daemonAlive=true childAlive=true childIsPiRpc=true
 ```
 
-**结论：部分通过。** 测试：`daemon:`。PTY 内运行的是 RPC 模式，未实测 TUI 的界面生命周期。没有操作 Terminal、iTerm 等图形程序；真实关窗口需主人手动。Windows、Linux 待测。对应 agora `architecture.md` 的 daemon 生命周期和 roadmap #15。
+**结论：部分通过。** 测试：`daemon:`。PTY 内运行的是 RPC 模式，未实测 TUI 的界面生命周期。没有操作 Terminal、iTerm 等图形程序；真实关窗口需主人手动，手动测试工具在 [manual-terminal-close/](manual-terminal-close/README.md)，以 TUI 模式运行 pi 并复用同一 daemon 原型，主人实测前本结论不变。Windows、Linux 待测。对应 agora `architecture.md` 的 daemon 生命周期和 roadmap #15。
 
 ## 路径规范化与权限
 
