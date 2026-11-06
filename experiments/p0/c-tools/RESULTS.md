@@ -261,7 +261,7 @@ Windows：待测。Linux：待测。最低 git 版本：待测。
 
 ## Harness 与现场清理
 
-共用 harness 没有修改。审查确认其 `stop()` 会在检查退出状态前发送信号，重复 `stop()`/`cleanup()` 有向已回收 PGID 发信号的风险；没有证据表明本实验实际误杀了进程。
+返工时没有修改共用 harness，使用的是本组防护。当时审查确认其 `stop()` 会在检查退出状态前发送信号，重复 `stop()`/`cleanup()` 有向已回收 PGID 发信号的风险；没有证据表明本实验实际误杀了进程。合并后的共用 harness 也已修复（发信号前先检查子进程退出状态，并缓存 stop Promise），本组包装仍保留。
 
 本组 `safe-harness.mjs` 复制共用入口并包装每个驱动：先检查 child 的退出状态，已退出时只等待 exit；首次停止的 Promise 被缓存，并发或重复调用共用该 Promise。单元测试用会抛错的已退出驱动证明原始 stop 调用次数为 0；用显式 release barrier 证明并发和后续 stop 只调用原实现一次。没有使用固定延时作为同步。
 

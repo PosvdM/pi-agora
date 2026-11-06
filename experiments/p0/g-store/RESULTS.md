@@ -321,7 +321,7 @@ pi 等待异步工厂函数完成（`dist/core/extensions/loader.js` 的 `await 
 ## harness 使用情况
 
 - 直接使用 `experiments/p0/harness/` 的 `createExperiment`、`readJsonl`，没有修改或复制 harness。
-- harness 的 `RpcDriver.stop()` 先向负 PID 发 `SIGTERM`，再判断进程是否已退出；`e.stop()`、`e.cleanup()` 会对现场启动过的所有 driver 再调用一次。本组不调用 `e.stop()` 和 `e.cleanup()`：自己记录启动过的 driver，收尾时只对仍在运行的 driver 调用 `stop()`，再自己删除现场目录（`lib.mjs` 的 `stopDriver`、`teardownExperiment`）。`lib.mjs` 管理的其他子进程在已退出时也不再发信号。
+- 返工时 harness 的 `RpcDriver.stop()` 先向负 PID 发 `SIGTERM`，再判断进程是否已退出；`e.stop()`、`e.cleanup()` 会对现场启动过的所有 driver 再调用一次。因此返工时使用本组防护：本组不调用 `e.stop()` 和 `e.cleanup()`：自己记录启动过的 driver，收尾时只对仍在运行的 driver 调用 `stop()`，再自己删除现场目录（`lib.mjs` 的 `stopDriver`、`teardownExperiment`）。`lib.mjs` 管理的其他子进程在已退出时也不再发信号。合并后的共用 harness 也已修复（发信号前先检查子进程退出状态，并缓存 stop Promise），本组包装仍保留。
 - 其他使用中注意到的行为：现场的 `cwd` 位于 `os.tmpdir()`，macOS 上是符号链接 `/var/…`，pi 进程内看到的是 `/private/var/…`，比较路径时需要先解析。
 - `node:sqlite` 实验不需要 pi，使用本目录的 `lib.mjs` 管理子进程。
 

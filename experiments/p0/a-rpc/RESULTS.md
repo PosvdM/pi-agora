@@ -330,9 +330,9 @@ P0_RECORD=1 node --test --test-reporter=tap experiments/p0/a-rpc/*.test.mjs > ex
 
 ## harness 边界与现场
 
-没有修改共用 harness。`experiment.mjs` 包装了两项已从源码核实的行为：
+返工时没有修改共用 harness，使用的是本组防护。`experiment.mjs` 包装了两项当时从源码核实的行为：
 
-1. harness 的 `stop()` 在检查进程是否已关闭之前先给进程组发信号。本组包装在 `exitInfo` 已存在时直接返回，避免重复清理已回收的进程组。
+1. 返工时 harness 的 `stop()` 在检查进程是否已关闭之前先给进程组发信号。本组包装在 `exitInfo` 已存在时直接返回，避免重复清理已回收的进程组。合并后的共用 harness 也已修复（发信号前先检查子进程退出状态，并缓存 stop Promise），本组包装仍保留。
 2. harness 的 `killGroup()` 使用负 PID。Windows 包装分支改为仅给已知子进程发信号；本组不启动 shell 或工具后代进程，该分支仍标为待测，不代表验证了 Windows 进程树终止。
 
 A14 为测试用户扩展自动发现，用临时 `NODE_OPTIONS --import` preload 从 pi 的 argv 中移除默认 `--no-extensions`。它只作用于该隔离现场，不修改 harness 或全局安装。
