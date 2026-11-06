@@ -1,18 +1,21 @@
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile, writeFile, mkdir, symlink, unlink, access, utimes } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, mkdtemp, cp, realpath, symlink, utimes } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { existsSync, watch } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { createExperiment, readJsonl } from '../harness/index.mjs';
+import { createExperiment, readJsonl, guardStop } from './safe-harness.mjs';
 import { hardenedGit, gitEnv } from './git-policy.mjs';
 import { canonicalPath } from './path-policy.mjs';
 const exec = promisify(execFile);
 const here = dirname(fileURLToPath(import.meta.url));
 const baseTools = ['read', 'grep', 'find', 'ls', 'agora_canary'];
-const observations = { platform: process.platform, node: process.version, cases: [], retained: [], cleanup: [] };
+const evidenceDir = process.env.P0_C_TOOLS_OUTPUT ?? await mkdtemp(join(tmpdir(), 'pi-p0-c-tools-run-'));
+const observations = { platform: process.platform, node: process.version, evidenceDir, cases: [], retained: [], cleanup: [], archived: [] };
+console.log('evidence:', evidenceDir);
 const reply = (name, args = {}) => ({ segments: [{ type: 'toolCall', name, arguments: args }] });
 const done = { segments: [{ type: 'text', text: 'done' }] };
 const textOf = result => result?.content?.filter(x => x.type === 'text').map(x => x.text).join('\n') ?? '';
@@ -32,7 +35,7 @@ async function waitMcp(e) {
   });
 }
 
-async function fixture(t, { fault, profile = 'explore', tools, args = [], settings, mcp = false, expectedTools } = {}) {
+async function fixture(t, { fault, profile = 'explore', tools, args = [], settings, mcp = false, expectedTools, projectTrust = 'deny' } = {}) {
   const e = await createExperiment({ settings });
   let passed = false;
   let retained = false;
@@ -49,6 +52,11 @@ async function fixture(t, { fault, profile = 'explore', tools, args = [], settin
       // Only stop exact PIDs started by this fixture, including MCP's independent groups.
       for (const pid of remaining) { try { process.kill(pid, 'SIGKILL'); } catch {} }
       e.retain('process remained after harness stop: ' + remaining.join(','));
+    }
+    if (e.archiveLabel) {
+      const target = join(evidenceDir, e.archiveLabel);
+      await cp(e.root, target, { recursive: true });
+      observations.archived.push({ fixture: e.root, path: target });
     }
     if (!passed || retained) console.log('fixture:', e.root);
     else await e.cleanup();
@@ -67,7 +75,7 @@ async function fixture(t, { fault, profile = 'explore', tools, args = [], settin
     await writeFile(join(e.agentDir, 'mcp.json'), JSON.stringify({ mcpServers }));
   }
   e.startManaged = async (extraArgs = []) => {
-    e.rpc = await e.start({ args: ['-e', join(here, 'managed-extension.ts'), '--tools', selected, '--no-approve', ...args, ...extraArgs], env: { C_TOOLS_CONTROL: e.root, AGORA_LAUNCH_TICKET: 'p0-ticket', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(e.root, 'empty.gitconfig') } });
+    e.rpc = await e.start({ args: ['-e', join(here, 'managed-extension.ts'), '--tools', selected, ...(projectTrust === 'saved' ? [] : ['--no-approve']), ...args, ...extraArgs], env: { C_TOOLS_CONTROL: e.root, AGORA_LAUNCH_TICKET: 'p0-ticket', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(e.root, 'empty.gitconfig') } });
     return e.rpc;
   };
   e.approve = async () => {
@@ -87,20 +95,53 @@ async function fixture(t, { fault, profile = 'explore', tools, args = [], settin
   return e;
 }
 
-test('#3 explicit tools, -ne, untrusted project defaultTools, real forbidden calls', async t => {
-  const e = await fixture(t, { mcp: true });
-  await e.write('.pi/settings.json', JSON.stringify({ defaultTools: ['bash', 'codemode', 'write', 'mcp__denied__ping'] }));
+test('local stop guard never signals an exited child and coalesces concurrent stops', async () => {
+  let calls = 0;
+  const exited = guardStop({ child: { exitCode: 0, signalCode: null }, exit: Promise.resolve({ code: 0 }), stop() { calls++; throw new Error('stale PID signal'); } });
+  await Promise.all([exited.stop(), exited.stop()]);
+  assert.equal(calls, 0);
+  let release;
+  const barrier = new Promise(resolve => { release = resolve; });
+  const live = guardStop({ child: { exitCode: null, signalCode: null }, stop() { calls++; return barrier; } });
+  const first = live.stop();
+  const second = live.stop();
+  assert.equal(first, second);
+  await Promise.resolve();
+  assert.equal(calls, 1);
+  release({ code: 143 });
+  await Promise.all([first, second, live.stop()]);
+  assert.equal(calls, 1);
+  logCase({ cleanupGuard: true, exitedSignals: 0, liveStopCalls: calls });
+});
+
+for (const trust of ['deny', 'saved']) test('#3 explicit tools with project settings: ' + trust, async t => {
+  const globalThinking = 'low', projectThinking = 'high';
+  const e = await fixture(t, { mcp: true, projectTrust: trust, settings: { defaultThinkingLevel: globalThinking, defaultProjectTrust: 'never' } });
+  e.archiveLabel = 'project-settings-' + trust;
+  const projectTools = ['bash', 'edit', 'write', 'codemode', 'mcp__denied__ping'];
+  await e.write('.pi/settings.json', JSON.stringify({ defaultThinkingLevel: projectThinking, defaultTools: projectTools }));
+  await writeFile(join(e.agentDir, 'trust.json'), JSON.stringify({ [await realpath(e.cwd)]: true }));
   await e.startManaged();
-  assert.equal((await e.approve()).accepted, true);
-  for (const [tool, input] of [['bash', { command: 'echo forbidden' }], ['codemode', { code: 'text(1)' }], ['mcp__allowed__ping', {}], ['mcp__denied__ping', {}], ['powershell', { command: 'echo forbidden' }]]) {
+  const before = await e.rpc.command({ type: 'get_state' });
+  assert.equal(before.success, true);
+  const expectedThinking = trust === 'saved' ? projectThinking : globalThinking;
+  assert.equal(before.data.thinkingLevel, expectedThinking, 'independent marker proves project settings loading');
+  const approval = await e.approve();
+  assert.equal(approval.accepted, true);
+  assert.equal(approval.report.thinking, expectedThinking);
+  logCase({ group: 3, trust, savedTrust: true, trustFlag: trust === 'saved' ? null : '--no-approve', globalThinking, projectThinking, actualThinking: before.data.thinkingLevel, readyThinking: approval.report.thinking, projectSettingsLoaded: trust === 'saved', projectTools });
+  for (const [tool, input] of [['bash', { command: 'echo forbidden' }], ['edit', { path: 'blocked.txt', oldText: 'a', newText: 'b' }], ['write', { path: 'blocked.txt', content: 'forbidden' }], ['codemode', { code: 'text(1)' }], ['mcp__allowed__ping', {}], ['mcp__denied__ping', {}], ['powershell', { command: 'echo forbidden' }]]) {
     const result = await e.call(tool, input);
     assert.equal(result.isError, true);
-    logCase({ group: 3, mode: 'explore', tool, isError: result.isError, text: textOf(result.result) });
+    assert.equal(textOf(result.result), `Tool ${tool} not found`);
+    logCase({ group: 3, trust, mode: 'explore', tool, isError: result.isError, text: textOf(result.result) });
   }
   const requests = await e.requests();
-  assert.deepEqual(requests[0].tools.map(x => x.name).sort(), [...baseTools].sort());
+  assert.ok(requests.length > 0);
+  for (const request of requests) assert.deepEqual(request.tools.map(x => x.name).sort(), [...baseTools].sort());
+  assert.equal(existsSync(join(e.cwd, 'blocked.txt')), false);
   assert.equal(existsSync(join(e.root, 'mcp.jsonl')), false);
-  logCase({ group: 3, declarations: requests[0].tools.map(x => x.name), mcpSpawns: 0 });
+  logCase({ group: 3, trust, declarations: requests[0].tools.map(x => x.name), checkedRequests: requests.length, mcpSpawns: 0, archivedAt: join(evidenceDir, e.archiveLabel) });
   e.pass();
 });
 
@@ -409,5 +450,7 @@ test('#19 hostile git config, fixed argv, real provider invocation, rejects', as
 
 after(async () => {
   observations.timestamp = new Date().toISOString();
-  if (process.env.C_TOOLS_RECORD === '1') await writeFile(join(here, 'observations.json'), JSON.stringify(observations, null, 2) + '\n');
+  const evidence = JSON.stringify(observations, null, 2) + '\n';
+  await writeFile(join(evidenceDir, 'observations.json'), evidence);
+  if (process.env.P0_RECORD === '1') await writeFile(join(here, 'observations.json'), evidence);
 });
