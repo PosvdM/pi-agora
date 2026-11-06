@@ -72,11 +72,11 @@ daemon 从 RPC 事件流里收到 `message_update` 增量（依据：`docs/json.
 
 | 投影 | 内容 | 用途 |
 | --- | --- | --- |
-| ① 原始存档 | 会话文件中的全部条目，带稳定的 entryId，含废弃分支和自定义条目 | 完整性校验、导出 |
+| ① 原始存档 | 会话文件中的全部条目（含废弃分支和自定义条目；v2/v3 具有稳定 entryId，v1 因缺 id 在解析时派生，不可作为跨进程的持久键） | 完整性校验、导出 |
 | ② 用户聊天视图 | 从当前叶子沿 `parentId` 回到根的整条活动分支，包括压缩前的内容；压缩条目作为分隔标记保留 | 会话查看（CLI、pi-pane） |
 | ③ 模型当前上下文 | 压缩和 context edit 之后实际发给模型的消息 | 诊断 |
 
-`packages/archive` 导出②的投影函数（输入条目列表和叶子 id，输出活动分支上的条目，保持 pi 的原始形状）。daemon 在线时对 `get_entries` 的结果、adapter 离线时对只读解析的结果调用同一个函数，所以在线和离线返回的视图相同。接口见 [integration.md](integration.md#会话视图)。
+`packages/archive` 导出②的投影函数（输入条目列表和叶子 id，输出活动分支上的条目，保持 pi 的原始形状）。在线和离线算叶子节点采用同一套规则（以文件中最后一个有效条目为叶子）；daemon 在线时对 `get_entries` 的结果、adapter 离线时对只读解析的结果调用同一个函数，所以在重新打开语义下在线和离线返回的视图相同。接口见 [integration.md](integration.md#会话视图)。
 
 ## 继承关系
 
@@ -101,7 +101,7 @@ daemon 从 RPC 事件流里收到 `message_update` 增量（依据：`docs/json.
 
 校验内容：
 
-1. 会话文件存在、每行都是可解析的 JSON。
+1. 会话文件存在。除末尾截断外，若由于 pi 加载未尾换行文件时补换行导致文件中间出现一行不完整的 JSON，跳过并记录在诊断中，不当成文件损坏（不直接判为 suspect）。其余各行均应为可解析的 JSON。
 2. 文件里的消息条目数 ≥ daemon 在该会话所有 run 中观察到的 `message_end` 次数（自定义消息和压缩会引起差异，比较规则在 P0 按实际文件确定）。
 3. daemon 记录的最后一条 `message_end` 消息（角色 + 时间戳）能在文件里找到。
 4. 计算文件 sha256，写入 `agora_sessions.archive_hash`。之后再校验时哈希变化而文件只是追加（前缀不变）视为正常，前缀变化视为被改动。
@@ -181,8 +181,9 @@ export interface Page<T> { items: T[]; nextCursor?: string }
 
 实现约束：
 
-- 用 `node:sqlite` 以只读方式打开 `agora.db`（`readOnly` 选项，Node 24；daemon 同时在写时依赖 WAL 的读写并发，P0 验证）。
-- **会话文件只读解析**：按 pi 的 JSONL 格式（`docs/session-format.md`）自行解析，旧版本格式在内存里迁移，绝不写回。不用 pi 导出的 `SessionManager.open()`：它在文件为空或需要从旧格式迁移时会调用 `_rewriteFile()` 重写文件（依据：`dist/core/session-manager.js:666–727`）。最后一行不完整（进程在写入中途退出）时忽略该行，并在 `archive_state` 的校验中记录。解析结果的条目保持 pi `SessionEntry` 的原始形状。
+- 用 `node:sqlite` 以只读方式打开 `agora.db`（`readOnly` 选项，Node 24；daemon 同时在写时依赖 WAL 的读写并发）。注意：以只读方式打开 WAL 数据库时同样会尝试创建或读写 `-wal` 和 `-shm` 文件，因此数据库所在目录（`AGORA_HOME`）必须可写，否则打开失败。
+- **会话文件只读解析**：按 pi 的 JSONL 格式（`docs/session-format.md`）自行解析，旧版本格式在内存里迁移，绝不写回。不用 pi 导出的 `SessionManager.open()`：它在文件为空或需要从旧格式迁移时会调用 `_rewriteFile()` 重写文件（依据：`dist/core/session-manager.js:666–727`）。末尾未写完的截断行或中间补换行留下的不完整行直接跳过并记录，不当成损坏。解析结果的条目保持 pi `SessionEntry` 的原始形状。
+- **条目键与叶子节点**：v1 会话文件的条目 id 在 pi 迁移或解析时动态生成，不具备跨重启的稳定性，不能作为持久化键；在线与离线计算叶子节点使用统一规则（以最后一个有效条目为准）。
 - 只接受 `AGORA_HOME` 下的路径：从数据库读出的 `session_file` 先做真实路径解析，不在数据目录内的拒绝读取。
 - adapter 不暴露 SQLite 表结构。数据库迁移时同步更新 adapter；`apiVersion` 只在返回结构不兼容时递增，旧版本保留至少一个大版本。
 - 不读取、不返回密封草稿。

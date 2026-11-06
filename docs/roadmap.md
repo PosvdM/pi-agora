@@ -4,30 +4,30 @@
 
 ## P0 验证项
 
-P0 只做小实验，验证设计依赖的 pi 行为和平台行为，结论写回对应文档后冻结接口。任何一项不通过，先改设计再进入 MVP。目标 pi 版本为 1.5.x，实验在 pi 1.5.0 上进行，Windows、macOS、Linux 都要跑。
+P0 验证设计依赖的 pi 行为和平台行为，目标 pi 版本为 1.5.x，在 macOS（pi 1.5.0）上进行原型实测，Windows、Linux 待测项移入公开发布前的跨平台测试。各实验组详细结论与原始依据见对应链接。
 
-| # | 验证内容 | 通过标准 | 影响的文档 |
-| --- | --- | --- | --- |
-| 1 | RPC 生命周期：`prompt`、`steer`、`follow_up`、`clear_queue`、`abort`（含超时）、`get_state`、`get_last_assistant_text`；`agent_end` 与 `agent_settled` 的先后和含义 | 能可靠判定“本次运行结束”；steer 在工具执行完后送达；`clear_queue` 返回的文本与排队内容一致 | tasks.md |
-| 2 | 会话落盘：`--session <预先分配的不存在路径>` 新建会话后文件写在该路径；`--session <file>` 重新拉起后上下文完整；`get_entries` 的 `since` 和 `leafId`；`message_end` 之后用 `get_entries since` 取到对应条目 | `get_state.sessionFile` 与磁盘一致；恢复后模型能看到之前的对话；daemon 的会话模型与会话文件一致，无重复或缺失 | architecture.md、archive.md、integration.md |
-| 3 | 工具与资源限制：`--tools read,grep,find,ls,agora_*` + `-ne -e <agora> -ns -np --no-approve` 时，模型看不到也调不到 `bash`、`codemode`、MCP 工具；项目 `.pi/settings.json` 的 `defaultTools` 不会绕过；implement 加 `-e builtin:mcp` 和 `mcp__<server>__*` 时只声明白名单服务器的工具，未列入的服务器是否仍会连接 | 逐项尝试调用均失败；记录 MCP 服务器的实际连接情况 | architecture.md |
-| 4 | 受管扩展 fail closed：agora 扩展加载失败、`tool_call` 钩子抛出异常、launch ticket 过期或被重放、就绪报告的工具集合不符 | 每种情况下任务书都没有发出，任何工具都没有执行，run 被结束并留下诊断 | architecture.md |
-| 5 | 路径校验与命令工具：`tool_call` 钩子能拿到文件类工具的路径参数并拒绝；搜索根是受保护目录的祖先、嵌套的受保护目录、符号链接、junction、校验后切换链接、`write` 新文件、大小写和 Unicode 变体。`powershell` 只在原生 Windows 且配置允许时提供，其他情况下模型看不到也调不到；`bash`、`powershell` 不承诺命令的路径隔离，只验证是否提供 | 越界的文件类工具调用全部被拒；记录链接切换（TOCTOU）的实际表现；`powershell` 的提供与否符合配置 | architecture.md、hostkit.md |
-| 6 | pi-hostkit：原生部分的形态；进程树终止（含 `bash` 工具的独立进程组、后台进程、父进程先退出、pi 被 SIGKILL 后的孤儿进程）；单实例锁与会话写锁的争抢和强杀后释放、会话写锁的取锁时机（`--session <不存在的路径>`、`session_before_switch` 取消、`session_shutdown` 的 `targetSessionFile`）、跨宿主恢复（pi-pane 被杀后 pi-agora 打开同一会话，及反向）；进程身份与 PID 复用；`icacls`；路径规范化用例。详见 [hostkit.md](hostkit.md#p0-验证项)，与 pi-pane 共用 | 三个平台全部按 hostkit.md 的设计工作；残留情况有实测记录 | hostkit.md |
-| 7 | 通知送达：`pi.sendMessage(..., { triggerTurn: true, deliverAs: "followUp" })` 在主代理空闲、忙碌、执行工具时的行为；以会话条目确认；`triggerTurn: false` 的静默注入；用户 `clear_queue` 清掉排队中的通知 | 空闲时立即开始新一轮；忙碌时排队；被清掉的通知在 `agent_settled` 后重新注入；同一 `dedupeKey` 在会话里只出现一次 | tasks.md、board.md |
-| 8 | 通知故障注入：在扩展的 `message_end` 回调中杀掉 pi；`message_end` 已发出、写入会话文件前杀掉 pi；静默注入后立即杀掉 pi；新会话尚未出现任何对话消息时静默注入通知、再杀掉 pi；ack 请求发出前杀掉 daemon | 每种情况下通知最终恰好在会话里出现一次，outbox 不会在通知写入会话文件之前被确认 | tasks.md |
-| 9 | `node:sqlite`：WAL 模式下 daemon 写、archive adapter 以 `readOnly` 读；事务内写 outbox 和 `changes`；`backup()` 在写入进行中的一致性和 `PRAGMA integrity_check` | 并发读写无错误；崩溃后数据一致；备份可打开且校验通过 | architecture.md、archive.md |
-| 10 | 只读解析：pi 1.5.0 支持的各版本会话文件、空文件、最后一行被截断的文件 | 解析出的活动分支与 `get_entries` + 叶子计算的结果一致；解析前后文件哈希不变 | archive.md |
-| 11 | 资源实测：空闲 pi RPC 进程的内存；8 个进程同时存在时的总内存 | 得到实测值替换“100–300 MiB”估算 | architecture.md |
-| 12 | prompt cache：同一会话连续追加 board 增量时，各模型的 `usage.cacheRead`；`cache_warming_decision` 返回 `stop` 后不再产生 warming 用量 | 记录各模型的实际命中情况；warming 被关闭 | board.md、meetings.md |
-| 13 | 软上限记账的准确度：两席会议跑到触及上限，对比账本的记账值与会话文件中的用量记录、模型服务返回的用量；分别统计 pi 自动重试、模型服务 SDK 内部重试、上下文压缩、停止前已发出的请求造成的差额 | 记录各类差额的实际大小，写回 meetings.md 作为“可能略超”的量级说明；记账值不少于会话文件中记录的用量 | meetings.md |
-| 14 | launch ticket：扩展删除 `process.env.AGORA_LAUNCH_TICKET` 后，`bash` 子进程是否还能看到；implement 加载白名单扩展和 `builtin:mcp` 时，扩展工厂函数是否按 `-e` 顺序执行、MCP 服务器进程是否在删除前启动并继承该变量 | `bash` 看不到；记录其他扩展和 MCP 服务器的实际可见范围，写回 security.md | security.md |
-| 15 | daemon 存活：由终端里的 pi 扩展自动拉起（detached、`windowsHide`）的 daemon，在关闭终端窗口、SIGHUP 后是否存活 | 三个平台上关闭终端后 daemon 和子进程继续运行 | architecture.md |
-| 16 | 设备签名：pi-pane 生成的 ECDSA P-256 签名在 daemon 中按 RFC 8785 规范 JSON 和 `dsaEncoding: "ieee-p1363"` 验证；挑战重放、过期、参数被改、公钥不符（与 pi-pane P0 共用浏览器部分） | 合法签名通过；其余全部被拒 | security.md |
-| 17 | 子会话的扩展 UI：协作会话里的扩展调用 `ctx.ui.select` 等对话框 | daemon 立即回应取消，会话不挂起；`pending` 策略下超时后取消 | architecture.md |
-| 18 | steer 送达追踪：带 `steerId` 标注的返工消息在 `queue_update`、`message_end`、`clear_queue` 返回值中都能匹配 | 四种状态判定无误 | tasks.md |
-| 19 | `agora_git` 加固：用配置了恶意 textconv、`diff.external`、`core.fsmonitor`、`core.pager`、clean/smudge/process filter、`log.showSignature` + `gpg.program` 的测试仓库，在工作区状态信息过期时对 `status`、`diff`（工作区、`--cached`、提交之间）、`log -p`、`show` 逐一运行；在支持的最低 git 版本上核实固定 argv；尝试白名单外的参数 | 恶意程序一次都未执行（以标记文件判断）；固定 argv 都被接受；白名单外参数全部被拒 | architecture.md |
-| 20 | 协作会话禁止会话替换：implement 档位按白名单加载一个会调用 `newSession`、`fork`、`switchSession` 的测试扩展；RPC 直接发 `new_session` | 替换全部被取消，会话文件不变；收到意外的 `session_shutdown` 时 run 被停止 | architecture.md、hostkit.md |
+| # | 状态 | 验证内容 | 通过标准 | 结论与后续 | 影响的文档 |
+| --- | --- | --- | --- | --- | --- |
+| 1 | - [x] | RPC 生命周期：`prompt`、`steer`、`follow_up`、`clear_queue`、`abort`（含超时）、`get_state`、`get_last_assistant_text`；`agent_end` 与 `agent_settled` 的先后和含义 | 能可靠判定“本次运行结束”；steer 在工具执行完后送达；`clear_queue` 返回的文本与排队内容一致 | **通过**。macOS 实测通过，依据见 [A 组 RESULTS.md](../experiments/p0/a-rpc/RESULTS.md)。Windows/Linux 待测移入公开发布前跨平台测试。 | tasks.md |
+| 2 | - [x] | 会话落盘：`--session <预先分配的不存在路径>` 新建会话后文件写在该路径；`--session <file>` 重新拉起后上下文完整；`get_entries` 的 `since` 和 `leafId`；`message_end` 之后用 `get_entries since` 取到对应条目 | `get_state.sessionFile` 与磁盘一致；恢复后模型能看到之前的对话；daemon 的会话模型与会话文件一致，无重复或缺失 | **通过**。macOS 实测通过，依据见 [A 组 RESULTS.md](../experiments/p0/a-rpc/RESULTS.md)。Windows/Linux 待测移入公开发布前跨平台测试。 | architecture.md、archive.md、integration.md |
+| 3 | - [x] | 工具与资源限制：`--tools read,grep,find,ls,agora_*` + `-ne -e <agora> -ns -np --no-approve` 时，模型看不到也调不到 `bash`、`codemode`、MCP 工具；项目 `.pi/settings.json` 的 `defaultTools` 不会绕过；implement 加 `-e builtin:mcp` 和 `mcp__<server>__*` 时只声明白名单服务器的工具，未列入的服务器是否仍会连接 | 逐项尝试调用均失败；记录 MCP 服务器的实际连接情况 | **通过**（含受信任项目）。MCP 白名单只限制工具暴露不限制服务器连接，未列入的服务器仍会连接，设计改为由 agora 单独生成只含白名单服务器的 MCP 配置以彻底避免启动。依据见 [C 组 RESULTS.md](../experiments/p0/c-tools/RESULTS.md)。Windows/Linux 待测移入公开发布前跨平台测试。 | architecture.md |
+| 4 | - [x] | 受管扩展 fail closed：agora 扩展加载失败、`tool_call` 钩子抛出异常、launch ticket 过期或被重放、就绪报告的工具集合不符 | 每种情况下任务书都没有发出，任何工具都没有执行，run 被结束并留下诊断 | **通过**（受管原型范围）。五类故障均未发送任务书且进程终止留诊断。依据见 [C 组 RESULTS.md](../experiments/p0/c-tools/RESULTS.md)。Windows/Linux 待测移入公开发布前跨平台测试。 | architecture.md |
+| 5 | - [ ] | 路径校验与命令工具：`tool_call` 钩子能拿到文件类工具的路径参数并拒绝；搜索根是受保护目录的祖先、嵌套的受保护目录、符号链接、junction、校验后切换链接、`write` 新文件、大小写和 Unicode 变体。`powershell` 只在原生 Windows 且配置允许时提供，其他情况下模型看不到也调不到；`bash`、`powershell` 不承诺命令的路径隔离，只验证是否提供 | 越界的文件类工具调用全部被拒；记录链接切换（TOCTOU）的实际表现；`powershell` 的提供与否符合配置 | **部分通过**。macOS 静态文件路径检查全部通过；TOCTOU 为明示剩余风险；Windows 原生 PowerShell 和 junction 待测，移入公开发布前跨平台测试。依据见 [C 组 RESULTS.md](../experiments/p0/c-tools/RESULTS.md)。 | architecture.md、hostkit.md |
+| 6 | - [ ] | pi-hostkit：原生部分的形态；进程树终止（含 `bash` 工具的独立进程组、后台进程、父进程先退出、pi 被 SIGKILL 后的孤儿进程）；单实例锁与会话写锁的争抢和强杀后释放、会话写锁的取锁时机（`--session <不存在的路径>`、`session_before_switch` 取消、`session_shutdown` 的 `targetSessionFile`）、跨宿主恢复（pi-pane 被杀后 pi-agora 打开同一会话，及反向）；进程身份与 PID 复用；`icacls`；路径规范化用例。详见 [hostkit.md](hostkit.md#p0-验证项)，与 pi-pane 共用 | 三个平台全部按 hostkit.md 的设计工作；残留情况有实测记录 | **部分通过**。原生形态定为 N-API 预编译模块；锁、会话事件、双向恢复在 macOS 原型通过；快照存在两种漏杀盲窗（两次快照间 setsid 退出后 SIGKILL pi，以及首次快照前退出的 nohup 后台进程），Linux 有 cgroup v2 时默认开启，macOS 收窄承诺并增加 `StopReport.coverage` 字段，bash 启动上报 pgid 列入 P1 调研；N-API 三平台构建与 CI 打包移入 pi-hostkit 阶段；Windows/Linux 待测移入公开发布前跨平台测试。依据见 [E 组 RESULTS.md](../experiments/p0/e-hostkit/RESULTS.md)。 | hostkit.md |
+| 7 | - [ ] | 通知送达：`pi.sendMessage(..., { triggerTurn: true, deliverAs: "followUp" })` 在主代理空闲、忙碌、执行工具时的行为；以会话条目确认；`triggerTurn: false` 的静默注入；用户 `clear_queue` 清掉排队中的通知 | 空闲时立即开始新一轮；忙碌时排队；被清掉的通知在 `agent_settled` 后重新注入；同一 `dedupeKey` 在会话里只出现一次 | **部分通过**。基本送达与 `clear_queue` 路径通过；仅 `abort` 时未清自定义队列导致重投重复，重投规则改为会话 settled 后查 `dedupeKey` 未写入才重投（见 tasks.md）；Windows/Linux 待测移入公开发布前跨平台测试。依据见 [D 组 RESULTS.md](../experiments/p0/d-notify/RESULTS.md)。 | tasks.md、board.md |
+| 8 | - [x] | 通知故障注入：在扩展的 `message_end` 回调中杀掉 pi；`message_end` 已发出、写入会话文件前杀掉 pi；静默注入后立即杀掉 pi；新会话尚未出现任何对话消息时静默注入通知、再杀掉 pi；ack 请求发出前杀掉 daemon | 每种情况下通知最终恰好在会话里出现一次，outbox 不会在通知写入会话文件之前被确认 | **通过**（限 pi 内部派发和强杀两种情况，恢复后恰好落盘一次）。依据见 [D 组 RESULTS.md](../experiments/p0/d-notify/RESULTS.md)。Windows/Linux 待测移入公开发布前跨平台测试。 | tasks.md |
+| 9 | - [x] | `node:sqlite`：WAL 模式下 daemon 写、archive adapter 以 `readOnly` 读；事务内写 outbox 和 `changes`；`backup()` 在写入进行中的一致性和 `PRAGMA integrity_check` | 并发读写无错误；崩溃后数据一致；备份可打开且校验通过 | **通过**（macOS 进程崩溃恢复通过；备份限制为同一连接或一步复制全部页；断电操作系统崩溃待后续测试）。依据见 [G 组 RESULTS.md](../experiments/p0/g-store/RESULTS.md)。Windows/Linux 待测移入公开发布前跨平台测试。 | architecture.md、archive.md |
+| 10 | - [x] | 只读解析：pi 1.5.0 支持的各版本会话文件、空文件、最后一行被截断的文件 | 解析出的活动分支与 `get_entries` + 叶子计算的结果一致；解析前后文件哈希不变 | **通过**（macOS 文件重新打开语义通过；v1 id 不稳定、截断行留在文件中间作为设计约束）。依据见 [G 组 RESULTS.md](../experiments/p0/g-store/RESULTS.md)。Windows/Linux 待测移入公开发布前跨平台测试。 | archive.md |
+| 11 | - [ ] | 资源实测：空闲 pi RPC 进程的内存；8 个进程同时存在时的总内存 | 得到实测值替换“100–300 MiB”估算 | **推迟**。维持推迟至真实负载阶段。 | architecture.md |
+| 12 | - [ ] | prompt cache：同一会话连续追加 board 增量时，各模型的 `usage.cacheRead`；`cache_warming_decision` 返回 `stop` 后不再产生 warming 用量 | 记录各模型的实际命中情况；warming 被关闭 | **推迟**。维持推迟至切片 3（会议）。 | board.md、meetings.md |
+| 13 | - [ ] | 软上限记账的准确度：两席会议跑到触及上限，对比账本的记账值与会话文件中的用量记录、模型服务返回的用量；分别统计 pi 自动重试、模型服务 SDK 内部重试、上下文压缩、停止前已发出的请求造成的差额 | 记录各类差额的实际大小，写回 meetings.md 作为“可能略超”的量级说明；记账值不少于会话文件中记录的用量 | **推迟**。维持推迟至切片 3（会议）。 | meetings.md |
+| 14 | - [x] | launch ticket：扩展删除 `process.env.AGORA_LAUNCH_TICKET` 后，`bash` 子进程是否还能看到；implement 加载白名单扩展和 `builtin:mcp` 时，扩展工厂函数是否按 `-e` 顺序执行、MCP 服务器进程是否在删除前启动并继承该变量 | `bash` 看不到；记录其他扩展和 MCP 服务器的实际可见范围，写回 security.md | **通过**。删除扩展排首位时后续扩展、MCP 进程、bash 均看不到 ticket。依据见 [B 组 RESULTS.md](../../pi-pane/experiments/p0/b-bridge/RESULTS.md)。Windows/Linux 待测移入公开发布前跨平台测试。 | security.md |
+| 15 | - [ ] | daemon 存活：由终端里的 pi 扩展自动拉起（detached、`windowsHide`）的 daemon，在关闭终端窗口、SIGHUP 后是否存活 | 三个平台上关闭终端后 daemon 和子进程继续运行 | **部分通过**：伪终端测试通过，真实关窗口待主人手动测一次；Windows/Linux 待测移入公开发布前跨平台测试。依据见 [E 组 RESULTS.md](../experiments/p0/e-hostkit/RESULTS.md)。 | architecture.md |
+| 16 | - [x] | 设备签名：pi-pane 生成的 ECDSA P-256 签名在 daemon 中按 RFC 8785 规范 JSON 和 `dsaEncoding: "ieee-p1363"` 验证；挑战重放、过期、参数被改、公钥不符（与 pi-pane P0 共用浏览器部分） | 合法签名通过；其余全部被拒 | **通过**。合法签名通过，重放、过期、参数篡改等均被拒。依据见 [F 组 RESULTS.md](../../pi-pane/experiments/p0/f-browser/RESULTS.md)。Windows/Linux 待测移入公开发布前跨平台测试。 | security.md |
+| 17 | - [x] | 子会话的扩展 UI：协作会话里的扩展调用 `ctx.ui.select` 等对话框 | daemon 立即回应取消，会话不挂起；`pending` 策略下超时后取消 | **通过**。立即取消与 pending 超时取消均生效，会话不挂起。依据见 [A 组 RESULTS.md](../experiments/p0/a-rpc/RESULTS.md)。Windows/Linux 待测移入公开发布前跨平台测试。 | architecture.md |
+| 18 | - [x] | steer 送达追踪：带 `steerId` 标注的返工消息在 `queue_update`、`message_end`、`clear_queue` 返回值中都能匹配 | 四种状态判定无误 | **通过**。四种状态判定无误。依据见 [A 组 RESULTS.md](../experiments/p0/a-rpc/RESULTS.md)。Windows/Linux 待测移入公开发布前跨平台测试。 | tasks.md |
+| 19 | - [ ] | `agora_git` 加固：用配置了恶意 textconv、`diff.external`、`core.fsmonitor`、`core.pager`、clean/smudge/process filter、`log.showSignature` + `gpg.program` 的测试仓库，在工作区状态信息过期时对 `status`、`diff`（工作区、`--cached`、提交之间）、`log -p`、`show` 逐一运行；在支持的最低 git 版本上核实固定 argv；尝试白名单外的参数 | 恶意程序一次都未执行（以标记文件判断）；固定 argv 都被接受；白名单外参数全部被拒 | **部分通过**。git 2.56.0 固定 argv 接受且安全标记为 0；最低支持版本定为 2.34（Ubuntu 22.04 LTS 自带版本），在该版本上的核实结果见 [C 组 RESULTS.md](../experiments/p0/c-tools/RESULTS.md)，补测正在另外进行，先保持部分通过；Windows/Linux 待测移入公开发布前跨平台测试。 | architecture.md |
+| 20 | - [x] | 协作会话禁止会话替换：implement 档位按白名单加载一个会调用 `newSession`、`fork`、`switchSession` 的测试扩展；RPC 直接发 `new_session` | 替换全部被取消，会话文件不变；收到意外的 `session_shutdown` 时 run 被停止 | **通过**。替换请求全部取消，意外 shutdown 时 run 被停止。依据见 [A 组 RESULTS.md](../experiments/p0/a-rpc/RESULTS.md)。Windows/Linux 待测移入公开发布前跨平台测试。 | architecture.md、hostkit.md |
 
 ## MVP 切分
 
@@ -42,7 +42,7 @@ pi-agora 和 pi-pane 的 MVP 按同样的三个切片推进，两仓的 roadmap 
 ### 切片 1：agora 任务核心
 
 - daemon：单实例（hostkit 锁）、`host.key` 握手、主会话注册与恢复、控制租约、launch ticket、受管扩展就绪检查、排空关闭、版本协商、数据库迁移与一致性备份。
-- 进程监管：`RpcSubprocessDriver`（hostkit 的 RPC 传输与进程树终止）、会话写锁、并发上限与名额、空闲回收、崩溃诊断、无进展看门狗、重启时清理旧进程、子会话扩展 UI 的处理。
+- 进程监管：`RpcSubprocessDriver`（hostkit 的 RPC 传输与进程树终止，Linux cgroup v2 默认开启支持；`StopReport` 覆盖范围标注）、会话写锁、并发上限与名额、空闲回收、崩溃诊断、无进展看门狗、重启时清理旧进程、子会话扩展 UI 的处理。
 - 任务：`agora_task` 全部动作、状态机、generation、串行控制队列与条件迁移、steer 送达追踪、outbox 与可靠通知（以会话条目确认）、worktree（仓库外）、三个权限档位（含路径校验和 `agora_git` 加固）。
 - 提问：`agora_request`、转给用户、`agora pending`。
 - 安全：子 Agent 级、主 Agent 级与用户级的划分，主 Agent 的封顶（`agentLimitCap`）、资源级访问控制、待确认、设备登记与验签、`everPaired`、离线命令、启动时的安全状态检查、`userConfirmation`、审计。浏览器侧的确认在切片 2 接入；切片 1 用测试签名器验证验签流程，只用终端时用离线命令关闭保护后验收。
@@ -73,8 +73,8 @@ pi-agora 和 pi-pane 的 MVP 按同样的三个切片推进，两仓的 roadmap 
 
 | 阶段 | 内容 | 人日（粗估） |
 | --- | --- | --- |
-| P0 | 上表验证项（含 hostkit 的三平台验证，与 pi-pane 共担的部分计在这里） | 5–7 |
-| pi-hostkit | 原生部分与三平台构建、进程树终止、锁、路径规范化、测试用例 | 5–7 |
+| P0 | 上表验证项（原型在 macOS 上实测，部分通过项与平台支持移入后续阶段） | 已完成（5–7） |
+| pi-hostkit | 原生部分（N-API 预编译模块）与三平台构建、CI 打包、进程树终止（Linux cgroup v2 默认开启）、锁、路径规范化、测试用例 | 5–7 |
 | 切片 1 | 见上 | 14–18 |
 | 切片 2 | daemon 变更流与 pane 插件 | 4–6 |
 | 切片 3 | board 与会议（两步） | 7–10 |
@@ -140,14 +140,15 @@ pi-pane 的估算见其 `docs/roadmap.md`（18–26 人日，P0 后重估）；�
 - 按 loopback 连接的对端进程 PID 判断请求是否来自受管会话的进程树，作为额外的审计信息和门槛（见 [security.md](security.md#以后可能做)）。
 - 子代理再派子代理。
 - 会议预算的硬上限：关闭模型服务 SDK 的内部重试并由 daemon 批准每次请求，或经由记账网关转发模型请求（见 [meetings.md](meetings.md#以后可能做)）。
+- P1 调研项：在 pi 里用扩展包住 bash 工具，命令启动时上报进程组以兜住早退后台进程（见 [hostkit.md](hostkit.md#进程树终止)）。
 
 ## 主要风险
 
 | 风险 | 影响 | 应对 |
 | --- | --- | --- |
 | pi RPC 行为与文档不一致，或 pi 升级后变化 | 完成判定、通知注入、恢复失效 | P0 逐项验证；限定 pi 版本为 1.5.x；对关键行为写集成测试，升级支持的版本前先跑 |
-| pi-hostkit 原生部分的构建与分发 | 某个平台装不上或行为不一致 | P0 决定形态；三平台 CI；失败时拒绝启动并说明原因，不降级到不安全的实现 |
-| POSIX 上的孤儿进程 | 停止后残留进程，占用资源 | pi 自身的 SIGTERM 清理、运行期间记录进程组、停止时按快照清理；Linux 可选 cgroup；残留写入诊断 |
+| pi-hostkit 原生部分的构建与分发 | 某个平台装不上或行为不一致 | 形态定为 N-API 预编译模块；三平台 CI 打包与构建验证（P1）；失败时拒绝启动并说明原因，不降级到不安全的实现 |
+| POSIX 上的孤儿进程 | 停止后残留进程，占用资源 | Linux cgroup v2 默认开启（`systemd-run --user --scope`），无 cgroup 则退回快照；macOS 收窄承诺并在 `StopReport` 注明覆盖范围；运行期快照记录进程组；P1 调研 bash 命令启动上报进程组 |
 | 多进程内存占用超出预期 | 8 个会话同时运行时机器吃紧 | 并发上限、空闲回收；P0 实测后调整默认值 |
 | 会议不收敛或“伪共识” | 浪费额度，或拿回看似一致的错误方案 | 认可绑定版本、逐项回应、核对者列已验证项和风险、阶段 fencing、循环上限交召集人；试运行后调整阈值 |
 | 预算是软上限 | 实际用量略超上限 | 文档和纪要写明“软上限、记账值”；P0 第 13 项测量差额；硬上限列入以后可能做 |
