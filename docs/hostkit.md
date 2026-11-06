@@ -237,7 +237,7 @@ pi 在打开已有会话文件时就可能改写它：文件为空时写入会�
 | ② 拉起 pi 新建会话 | 宿主预先分配一个确定的路径（会话目录下的新文件名），取得该路径的锁后用 `--session <该路径>` 拉起。路径含 `/` 或以 `.jsonl` 结尾时，pi 把参数当作路径；文件不存在时 pi 新建会话并沿用这个路径（依据：`dist/main.js` 的 `resolveSessionPath`、`dist/core/session-manager.js` 的 `_setSessionFile` 的 else 分支）。不用 `--session-id` 让 pi 自己生成路径 | 换一个路径重试 |
 | ③ 进程内切换到已有会话（RPC `switch_session`，或扩展调用 `switchSession`，即 `reason = "resume"`） | 宿主自己发 RPC 时，在发送之前取得目标文件的锁；由扩展发起时，宿主放在 pi 里的桥接扩展在 `session_before_switch`（带 `targetSessionFile`）里同步请求宿主取锁 | 桥接扩展返回 `{ cancel: true }`，切换不发生 |
 | ④ 进程内新建或分叉（RPC `new_session`、`fork`、`clone`，或扩展调用 `newSession`、`fork`） | 新文件的路径由 pi 生成（会话目录下的 `<时间>_<新会话 id>.jsonl`），`session_before_switch`（`reason = "new"`）和 `session_before_fork` 都不带这个路径；最早在 `session_shutdown` 的 `targetSessionFile` 里出现。宿主（经桥接扩展）在 `session_shutdown` 时取得新路径的锁 | 见下文 |
-| ⑤ 宿主在自己进程内预先建文件，再拉起 pi 打开它（如 pi-pane 只读视图的“Fork 为新会话”用 `SessionManager.forkFrom()` 复制出新文件，依据：`dist/core/session-manager.js` 的 `forkFrom`） | 先写后锁：`forkFrom` 以新生成的会话 id 命名并用排他方式创建新文件，宿主在它返回后取得新文件的锁，再按①拉起 pi。理由同④中带叶子的 fork：新文件名是新生成的，其他宿主不会预先持有它的锁 | 不拉起，删除刚建的文件或保留并告诉使用方 |
+| ⑤ 宿主在自己进程内预先建文件，再拉起 pi 打开它（如 pi-pane 只读视图的“Fork 为新会话”用 `SessionManager.forkFrom()` 复制出新文件，依据：`dist/core/session-manager.js` 的 `forkFrom`。`forkFrom()` 会改动源文件（见 earendil-works/pi#11867），所以 pi-pane 对源文件的临时副本调用它，并在取锁前把新文件会话头的 `parentSession` 修正为原始源文件路径，细节见 pi-pane [`docs/architecture.md` 的“拉起”](https://github.com/PosvdM/pi-pane/blob/main/docs/architecture.md#拉起)） | 先写后锁：`forkFrom` 以新生成的会话 id 命名并用排他方式创建新文件，宿主在它返回后取得新文件的锁，再按①拉起 pi。理由同④中带叶子的 fork：新文件名是新生成的，其他宿主不会预先持有它的锁 | 不拉起，删除刚建的文件或保留并告诉使用方 |
 
 关于④：
 
