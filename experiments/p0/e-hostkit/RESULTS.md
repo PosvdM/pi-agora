@@ -34,18 +34,18 @@ node --test experiments/p0/e-hostkit/hostkit.test.mjs
 报告对应的完整运行输出：
 
 ```text
-E_HOSTKIT_FIXTURE .../T/e-hostkit-ixVCYg
-ℹ tests 30
-ℹ pass 26
+E_HOSTKIT_FIXTURE .../T/e-hostkit-jWY9sR
+ℹ tests 33
+ℹ pass 29
 ℹ fail 0
 ℹ cancelled 0
 ℹ skipped 4
-ℹ duration_ms 130176.670792
+ℹ duration_ms 141361.585625
 ```
 
-观察记录见 [evidence.jsonl](evidence.jsonl)。运行方法和文件职责见 [README.md](README.md)。每节列出的测试名称均在 `hostkit.test.mjs` 中，可用 `--test-name-pattern` 单独重跑。
+观察记录见 [evidence.jsonl](evidence.jsonl)。默认运行只写系统临时目录；上述完整运行通过 `P0_RECORD=1` 刷新仓库证据。只有测试和清理均通过才替换证据文件。运行方法和文件职责见 [README.md](README.md)。每节列出的测试名称均在 `hostkit.test.mjs` 中，可用 `--test-name-pattern` 单独重跑。
 
-本机保留的总现场为 `/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/e-hostkit-ixVCYg`，其 `fixtures.txt` 列出每个 pi 现场。总目录还包含 `observations.jsonl`、`owned-identities.json`、helper 和 N-API 构建产物。完整终端输出位于 `/tmp/e-hostkit-sa-dcadd98c-verified.log`。这些临时文件未删除，也未纳入提交。
+本机保留的总现场为 `/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/e-hostkit-jWY9sR`，其 `fixtures.txt` 列出每个 pi 现场。总目录还包含 `observations.jsonl`、`evidence.jsonl`、`owned-identities.json`、helper 和 N-API 构建产物。完整终端输出位于 `/tmp/e-hostkit-cleanup-record.log`。这些临时文件未删除，也未纳入提交。
 
 ## 原生能力
 
@@ -85,7 +85,7 @@ pi 由 `process.execPath` 直接运行其 CLI 入口，以 `detached: true` 启�
 
 快照记录 PID、PGID 和创建时间。组长已退出时，以仍存活、创建时间与 PGID 一致的已记录成员确认该组身份。所有信号只发送给实验启动并记录的进程或进程组。
 
-另有独立的 `oracle.jsonl`：后代自己写出身份，供测试判断实际残留。停止算法不读取它；只有停止结果记录完毕后，测试清理才使用它。这避免用测试已知的后代 PID 掩盖快照算法的遗漏。
+另有独立的 `oracle.jsonl`：后代自己写出身份，供测试判断实际残留。停止算法不读取它；正常路径在停止结果记录完毕后清理，异常路径由测试的 `finally` 读取并清理。oracle 身份只进入测试应急集合，不进入被测 tracker，避免掩盖快照算法的遗漏。
 
 ### 分项结果
 
@@ -104,17 +104,17 @@ pi 由 `process.execPath` 直接运行其 CLI 入口，以 `detached: true` 启�
 
 ```text
 process-parent-exit round=1 recorded=4 reportLeftovers=0 oracleLeftovers=[]
-  SIGKILL descendants: [81743]
+  SIGKILL descendants: [17556]
 process-pi-SIGKILL round=1 recorded=2 reportLeftovers=0 oracleLeftovers=[]
-  SIGKILL descendants: [82046]
+  SIGKILL descendants: [17873]
 process-escape-between-snapshots
-  round=1 reportLeftovers=0 oracleLeftovers=[82201]
-  round=2 reportLeftovers=0 oracleLeftovers=[82311]
-  round=3 reportLeftovers=0 oracleLeftovers=[82413]
+  round=1 reportLeftovers=0 oracleLeftovers=[18028]
+  round=2 reportLeftovers=0 oracleLeftovers=[18132]
+  round=3 reportLeftovers=0 oracleLeftovers=[18232]
 process-nohup-before-first-snapshot
-  round=1 recorded=1 reportLeftovers=0 oracleLeftovers=[82420]
-  round=2 recorded=1 reportLeftovers=0 oracleLeftovers=[82442]
-  round=3 recorded=1 reportLeftovers=0 oracleLeftovers=[82463]
+  round=1 recorded=1 reportLeftovers=0 oracleLeftovers=[18242]
+  round=2 recorded=1 reportLeftovers=0 oracleLeftovers=[18263]
+  round=3 recorded=1 reportLeftovers=0 oracleLeftovers=[18284]
 ```
 
 **设计差异与影响**：
@@ -153,11 +153,11 @@ leftovers: []
 
 **通过标准**：每轮仅一个成功；杀掉赢家后重新取得同一锁；锁文件 inode 不变。
 
-**实测结果**：两类场景各 3/3 只有一个赢家。SIGKILL 后首次成功重取锁的观测耗时为 20.34–21.70 毫秒。轮询间隔为 20 毫秒，该数值包含轮询和调度，不能当作内核释放本身的耗时。六轮 inode 均未变化。
+**实测结果**：两类场景各 3/3 只有一个赢家。SIGKILL 后首次成功重取锁的观测耗时为 21.36–22.39 毫秒。轮询间隔为 20 毫秒，该数值包含轮询和调度，不能当作内核释放本身的耗时。六轮 inode 均未变化。
 
 ```json
-{"name":"lock-instance","round":1,"winners":1,"releaseMs":21.7,"sameInode":true}
-{"name":"lock-session","round":3,"winners":1,"releaseMs":20.34,"sameInode":true}
+{"name":"lock-instance","round":1,"winners":1,"releaseMs":21.48,"sameInode":true}
+{"name":"lock-session","round":3,"winners":1,"releaseMs":22.32,"sameInode":true}
 ```
 
 会话路径通过真实路径、大小写折叠和 NFC 生成 SHA-256 key。现有文件和不存在文件的符号链接、大小写、Unicode 别名得到相同 key，见路径测试。
@@ -268,14 +268,14 @@ pi-agora -> pi-pane: result=failed newWriterStarted=false
 **实测结果**：
 
 - 使用 `pbi_start_tvsec` 和 `pbi_start_tvusec`，按字符串 `秒.六位微秒` 保存，没有转换为毫秒。
-- 12 个连续启动的子进程有 12 个不同时间戳，最小观测间隔 366 微秒。这是样本间隔，不是对内核时钟准确度的测量。
+- 12 个连续启动的子进程有 12 个不同时间戳，最小观测间隔 543 微秒。这是样本间隔，不是对内核时钟准确度的测量。
 - 对活进程伪造 `startTime: "0.000001"` 返回 `gone`，停止函数拒绝发 SIGKILL；真实身份仍为 `alive`。
 - 只改 runId/instanceId、保留 PID 与创建时间，仍返回 `alive`。这两个字段属于宿主记录，内核没有对应字段可用于校验。
 - 没有为了强迫 PID 回绕而大量创建进程，也没有真实重启机器。真实 PID 复用、机器重启和检查到发信号之间的竞态均未实测。
 
 ```json
 {"simulatedMismatchRejected":true,"realPidReuse":"not forced","metadataNotKernelIdentity":true}
-{"count":12,"unique":12,"minimumObservedDeltaUs":366}
+{"count":12,"unique":12,"minimumObservedDeltaUs":543}
 ```
 
 **结论：部分通过。** 测试：`identity:`、`identity precision:`。Windows `GetProcessTimes`、Linux `/proc` 的精度和身份行为待测。
@@ -417,18 +417,40 @@ exec 门闩 helper 已证明机制可运行，但没有被计入 N-API 成品能
 
 ## 清理与边界
 
-完整运行共登记 **115 个进程身份**。两种盲窗的六个残留在记录观察后，按独立 oracle 中的 PID 和创建时间逐个 SIGKILL。没有使用 `pkill`、`killall` 或按名称终止进程。
+### 测试专用的应急清理
 
-最终 hook 的输出：
+每个测试在启动进程前建立清理作用域，每个 harness 现场创建后立即登记 `after` hook。测试主体由 `try/finally` 包围；`withTracker()` 的 `finally` 停掉定时快照并将已有记录交给应急集合，测试的 `finally` 执行现场清理。没有 pi fixture 的锁、RPC 模拟进程、身份和 gate 用例也受测试级作用域保护。重复调用清理返回同一个 Promise。
+
+`test-cleanup.mjs` 在成功和失败路径均读取本现场的 `oracle.jsonl`、`cleanup-oracle.jsonl` 和已存在的 `daemon.json`。host 在 spawn writer 后、daemon 扩展和 worker 在 spawn daemon/pi 子进程后写入清理日志，不依赖就绪消息或 `daemon.json`。清理把日志身份与 tracker 已有身份合并，用快照补充仍可追溯的后代，再按 **PID + 创建时间**逐个 SIGKILL；重复读取日志以收集清理期间的追加记录。最长等待 5 秒，并要求至少 250 毫秒没有新增身份、活进程、僵尸或解析错误。每个作用域保留 `emergency-cleanup.json`。
+
+这套逻辑只用于测试回收；`prototype.mjs` 的停止流程不读取 oracle。两种快照盲窗仍各断言并记录一个实际残留，随后才由测试清理六个残留。没有使用 `pkill`、`killall` 或按名称终止进程。
+
+### 登记前失败注入
+
+`cleanup failure:` 的三个用例使用与正常测试相同的 `withCleanup()`，在 oracle 身份尚未加入应急集合时抛出指定异常，并断言该异常原样传回；若清理另有错误，测试不能通过。
+
+| 现场 | 注入时点 | 结果 |
+| --- | --- | --- |
+| `nohup` 后台 worker | shell 已退出、oracle 已落盘，但测试尚未读取身份 | 一个独立进程组后代被清理；tracker 定时器已停止，tracker 未得到 oracle 身份。 |
+| native `setsid` 孤儿 | helper 父进程已退出、oracle 已落盘，但测试尚未读取身份 | 一个独立进程组后代被清理；tracker 定时器已停止，tracker 未得到 oracle 身份。 |
+| PTY 启动的 daemon 与 pi 子进程 | 清理日志已落盘，worker 被门闩保持在写 `daemon.json` 之前 | 两个独立进程组身份被补入并清理；`daemon.json` 始终不存在。 |
+
+三个现场的 `remaining` 均为 `[]`，清理后再按身份确认后代退出。该验证覆盖可执行 `finally` 的测试异常，不覆盖测试 runner 被 SIGKILL、系统崩溃或身份日志尚未落盘且后代已无法追溯的窗口，也不扩大产品停止算法的保证。
+
+### 全量运行复查
+
+完整证据运行共登记 **123 个进程身份**，最终 hook 输出：
 
 ```json
-{"recorded":115,"beforeCleanup":[],"leftovers":[],"zombies":[]}
+{"recorded":123,"beforeCleanup":[],"leftovers":[],"zombies":[],"recoveryErrors":[]}
 ```
 
-测试结束后再次加载保存的 `owned-identities.json`，与新一次原生进程快照按 PID 和创建时间比对：
+测试结束后再次加载 `owned-identities.json`，与新一次原生进程快照按 PID 和创建时间比对：
 
 ```json
-{"recorded":115,"remaining":[]}
+{"recorded":123,"remaining":[]}
 ```
 
-**结论：通过。** 没有登记身份对应的遗留活进程或僵尸进程。现场目录与构建产物仍保留。没有安装全局或本地 npm 依赖，没有改系统设置，没有自动操作图形终端，也没有修改 `docs/`、harness、其他组或 pi-pane 仓库。
+另用 `ps -axo pid=,ppid=,pgid=,stat=,command=` 检查 E 组 worker/host、临时 helper、该 worktree 的 fake-provider 参数和现场路径，没有匹配的实验进程。名称和路径仅用于检查，不用于发信号。
+
+**结论：通过。** 本轮成功路径和三个登记前失败现场均无已登记身份对应的遗留活进程或僵尸进程。现场目录与构建产物仍保留。没有安装全局或本地 npm 依赖，没有改系统设置，没有自动操作图形终端，也没有修改 `docs/`、harness、其他组或 pi-pane 仓库。

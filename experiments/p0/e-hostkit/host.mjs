@@ -1,4 +1,5 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, appendFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { loadNative, identity, sessionPaths, canonicalPath, atomicJson, spawnPi, ProcessTracker, isSameProcess } from './prototype.mjs';
 
@@ -26,6 +27,8 @@ let record = { version: 1, sessionFile: canonicalPath(config.session, config.fix
 atomicJson(paths.record, record);
 const rpc = spawnPi(config.fixture, ['--session', config.session, '-e', config.extension], { E_HOST_APP: config.app });
 const writer = identity(native, rpc.child.pid, randomUUID(), instanceId);
+// Cleanup-only journal; it is not consulted by lock recovery or ProcessTracker.
+appendFileSync(join(config.fixture.root, 'cleanup-oracle.jsonl'), `${JSON.stringify(writer)}\n`);
 const tracker = new ProcessTracker(native, writer); tracker.start();
 if (config.window) {
   process.send({ state: 'spawn-window', writer });
