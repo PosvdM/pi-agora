@@ -10,8 +10,9 @@ const validIdentity = id => id && Number.isInteger(id.pid) && id.pid > 1 && id.p
 export class FixtureCleanup {
   identities = new Map();
   trackers = new Set();
-  constructor(native, root, onIdentity = () => {}) {
+  constructor(native, root, onIdentity = () => {}, { now = Date.now, wait = delay } = {}) {
     this.native = native; this.root = root; this.onIdentity = onIdentity;
+    this.now = now; this.wait = wait;
   }
   remember(id) {
     if (!validIdentity(id)) throw new Error(`Invalid cleanup identity: ${JSON.stringify(id)}`);
@@ -49,8 +50,8 @@ export class FixtureCleanup {
       tracker.pause();
       for (const id of tracker.records.values()) this.remember(id);
     }
-    const deadline = Date.now() + 5000;
-    let quietSince, parseErrors = [], remaining = [];
+    const startedAt = this.now(); const deadline = startedAt + 5000;
+    let quietSince, quietMs = 0, quiesced = false, parseErrors = [], remaining = [];
     do {
       const count = this.identities.size;
       parseErrors = this.collectOracles();
@@ -60,14 +61,20 @@ export class FixtureCleanup {
       // Stop known spawners and children by identity, then reread journals for late arrivals.
       for (const id of active) signalIdentity(this.native, id, 'SIGKILL');
       remaining = snapshot(this.native).filter(p => this.identities.has(key(p)));
+      const checkedAt = this.now();
       if (remaining.length || parseErrors.length || count !== this.identities.size) quietSince = undefined;
-      else quietSince ??= Date.now();
-      if (quietSince !== undefined && Date.now() - quietSince >= 250) break;
-      await delay(50);
-    } while (Date.now() < deadline);
-    const report = { identities: [...this.identities.values()], remaining, parseErrors, trackersPaused: this.trackers.size };
+      else quietSince ??= checkedAt;
+      // Only a completed scan can establish quiescence; elapsed waiting alone cannot.
+      quietMs = quietSince === undefined ? 0 : Math.max(0, checkedAt - quietSince);
+      if (checkedAt >= deadline) break;
+      if (quietMs >= 250) { quiesced = true; break; }
+      await this.wait(50);
+    } while (this.now() < deadline);
+    const elapsedMs = this.now() - startedAt;
+    const timedOut = !quiesced && elapsedMs >= 5000;
+    const report = { identities: [...this.identities.values()], remaining, parseErrors, trackersPaused: this.trackers.size, quiesced, quietMs, timedOut, elapsedMs };
     writeFileSync(join(this.root, 'emergency-cleanup.json'), JSON.stringify(report, null, 2));
-    if (remaining.length || parseErrors.length) throw new Error(`Emergency cleanup incomplete: ${this.root}; ${JSON.stringify({ remaining, parseErrors })}`);
+    if (!quiesced || remaining.length || parseErrors.length) throw new Error(`Emergency cleanup incomplete: ${this.root}; ${JSON.stringify({ remaining, parseErrors, quiesced, quietMs, timedOut, elapsedMs })}`);
     return report;
   }
 }

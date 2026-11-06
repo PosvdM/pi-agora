@@ -192,6 +192,39 @@ for (const scenario of ['independent', 'nohup', 'parent-exit', 'pi-SIGKILL', 'es
   }
 });
 
+mt('cleanup deadline: late identity must not succeed without 250ms quiescence', async () => {
+  const outcomes = [];
+  for (const arrivalMs of [null, 4950, 4700]) {
+    const dir = mkdtempSync(join(root, 'deadline-')); let clock = 0, appended = false;
+    // An empty process table models an already-exited identity; no signals are sent.
+    const id = { pid: 424242, startTime: '0.000001' };
+    const cleanup = new FixtureCleanup({ snapshot: () => '[]' }, dir, () => {}, {
+      now: () => clock,
+      wait: async ms => {
+        clock = clock === 0 && arrivalMs !== null ? arrivalMs : clock + ms;
+        if (arrivalMs !== null && !appended) {
+          appendFileSync(join(dir, 'oracle.jsonl'), `${JSON.stringify(id)}\n`);
+          appended = true;
+        }
+      },
+    });
+    const pending = cleanup.run();
+    assert.equal(cleanup.run(), pending);
+    if (arrivalMs === null) await pending;
+    else await assert.rejects(pending, /Emergency cleanup incomplete:.*"quiesced":false.*"timedOut":true/);
+    const report = jsonFile(join(dir, 'emergency-cleanup.json'));
+    assert.deepEqual(report.remaining, []);
+    assert.deepEqual(report.parseErrors, []);
+    assert.equal(report.quiesced, arrivalMs === null);
+    assert.equal(report.timedOut, arrivalMs !== null);
+    assert.equal(report.elapsedMs, arrivalMs === null ? 250 : 5000);
+    assert.equal(report.quietMs, arrivalMs === null ? 250 : arrivalMs === 4950 ? 0 : 200);
+    assert.deepEqual(report.identities, arrivalMs === null ? [] : [id]);
+    outcomes.push({ arrivalMs, quiesced: report.quiesced, quietMs: report.quietMs, timedOut: report.timedOut, elapsedMs: report.elapsedMs, remaining: report.remaining });
+  }
+  note('cleanup-deadline', { clock: 'controlled', outcomes });
+});
+
 for (const scenario of ['nohup', 'native-escape']) mt(`cleanup failure: ${scenario} throws before oracle registration`, async () => {
   const e = await fixture(); const oracle = join(e.root, 'oracle.jsonl');
   const command = scenario === 'nohup'
