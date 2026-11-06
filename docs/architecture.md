@@ -313,7 +313,7 @@ P0 测试用例：搜索根是受保护目录的祖先、受保护目录嵌套�
   | `log` | `<前缀> log --no-ext-diff --no-textconv --no-color --no-show-signature [白名单选项] [<提交范围>] -- [<路径>…]` |
   | `show` | `<前缀> show --no-ext-diff --no-textconv --no-color --no-show-signature [白名单选项] <提交> -- [<路径>…]` |
 
-  `status` 不接受 `--no-color`，颜色由全局的 `-c color.ui=never` 关闭；`--no-optional-locks` 是全局选项，不能放在子命令之后。git 最低支持版本定为 **2.34**（覆盖主流仍在维护的 LTS 发行版如 Ubuntu 22.04 自带版本），在该版本上的核实结果见 `experiments/p0/c-tools/RESULTS.md`（补测正在另外进行，roadmap #19 先保持部分通过，姐姐之后会补结果）。
+  `status` 不接受 `--no-color`，颜色由全局的 `-c color.ui=never` 关闭；`--no-optional-locks` 是全局选项，不能放在子命令之后。git 最低支持版本定为 **2.34**（覆盖主流仍维护的 LTS 发行版如 Ubuntu 22.04 自带版本，补测已在 git 2.34.1 与 2.56.0 上通过，见 `experiments/p0/c-tools/RESULTS.md`）。实测差异：git 2.34 会将 `core.fsmonitor=false` 解释为执行名为 `false` 的 hook（执行从 PATH 解析的 false 退出，无害且恶意 fsmonitor 未触发），后续评估统一改用 `-c core.fsmonitor=` 并双版本验证。
 - **环境变量**：在继承的环境上设 `GIT_CONFIG_NOSYSTEM=1`、`GIT_PAGER=cat`、`PAGER=cat`、`GIT_EXTERNAL_DIFF=`（空）、`GIT_TERMINAL_PROMPT=0`，并去掉 `GIT_DIR`、`GIT_WORK_TREE`、`GIT_CONFIG_PARAMETERS`、`GIT_CONFIG_COUNT` 及 `GIT_CONFIG_KEY_*` / `GIT_CONFIG_VALUE_*`。
 - **白名单选项**：模型只能传白名单内的选项（如 `--stat`、`--name-only`、`--name-status`、`-n <数字>`、`--oneline`、`--format=<固定几种>`、`-U<数字>`、`--cached`（仅 `diff`））、提交号和提交范围，以及 `--` 之后的路径。其余一律拒绝，尤其是 `-c`、`--output`、`--exec`、`--git-dir`、`--work-tree`、`-C`、`--ext-diff`、`--textconv`、`--show-signature`、`--config-env`、`--color` 和任何会写文件或改引用的选项。提交号和范围用正则校验（十六进制、分支名字符、`..`、`~n`、`^`），不允许以 `-` 开头，不允许包含 `:`（防止 `<提交>:<路径>` 形式读取任意 blob 时触发 textconv）。
 - **路径限定**：`--` 之后的路径用 `canonicalPath` 规范化，必须在任务工作目录内，同时受“受保护目录”规则约束。
