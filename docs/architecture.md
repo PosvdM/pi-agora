@@ -269,7 +269,7 @@ node <pi>/dist/bundle/cli.js --mode rpc
 执行方式：
 
 1. **工具白名单**：`--tools` 用明确的工具名列表，例如 explore 为 `read,grep,find,ls,agora_*`。列明工具名时会替换整个默认选择，`codemode` 不在列表里就不会启用（依据：`docs/cli.md` 的 Tools 一节）。就绪检查再核对一次实际的活动工具集合。
-2. **MCP**：协作会话因 `-ne` 默认没有 MCP。implement 需要 MCP 时显式加 `-e builtin:mcp`，并在 `--tools` 里只列白名单服务器的工具（如 `mcp__radius__*`）。P0 实测表明：MCP 白名单只限制工具能否调用，不限制服务器启动（未列入的服务器仍会被拉起并初始化）。为防止未列入的服务器启动造成副作用或凭证泄露，agora 为每个子代理单独生成一份只含白名单服务器的 MCP 配置文件。就绪检查必须等待异步 MCP 工具注册完成后才发任务书。
+2. **MCP**：协作会话因 `-ne` 默认没有 MCP。implement 需要 MCP 时显式加 `-e builtin:mcp`，并在 `--tools` 里只列白名单服务器的工具（如 `mcp__radius__*`）。P0 实测表明：MCP 白名单只限制工具能否调用，不限制服务器启动（未列入的服务器仍会被拉起并初始化）。为防止未列入的服务器启动造成副作用或凭证泄露，agora 为每个子代理单独生成一份只含白名单服务器的 MCP 配置文件。生成的 MCP 配置必须使白名单工具的有效 exposure 为 `"direct"`：设置服务器 `exposure: "direct"`，并移除或覆盖与之冲突的 `toolExposure` 配置。pi 默认的 exposure 是 `codemode`（依据：`docs/mcp.md` 的 Control tool exposure 一节），P0 实测在默认 exposure 下白名单内的工具也无法调用。仍不启用 `codemode`。完成异步注册后，核对实际活动工具集合，再发送任务书。
 3. **路径校验**：比较路径前两端先调用 realpath（解决如 macOS 上系统临时目录 `event.cwd` 在 `/private/var` 与 `/var` 的不一致）。详见下节。
 4. **不依赖工具注解**：`readOnlyHint` 等注解未经验证（依据：`docs/extensions.md`），不作为放行依据。
 5. **恢复不提权**：重新拉起进程时档位从 SQLite 读取，不接受客户端传入。
@@ -317,7 +317,7 @@ P0 测试用例：搜索根是受保护目录的祖先、受保护目录嵌套�
 - **环境变量**：在继承的环境上设 `GIT_CONFIG_NOSYSTEM=1`、`GIT_PAGER=cat`、`PAGER=cat`、`GIT_EXTERNAL_DIFF=`（空）、`GIT_TERMINAL_PROMPT=0`，并去掉 `GIT_DIR`、`GIT_WORK_TREE`、`GIT_CONFIG_PARAMETERS`、`GIT_CONFIG_COUNT` 及 `GIT_CONFIG_KEY_*` / `GIT_CONFIG_VALUE_*`。
 - **白名单选项**：模型只能传白名单内的选项（如 `--stat`、`--name-only`、`--name-status`、`-n <数字>`、`--oneline`、`--format=<固定几种>`、`-U<数字>`、`--cached`（仅 `diff`））、提交号和提交范围，以及 `--` 之后的路径。其余一律拒绝，尤其是 `-c`、`--output`、`--exec`、`--git-dir`、`--work-tree`、`-C`、`--ext-diff`、`--textconv`、`--show-signature`、`--config-env`、`--color` 和任何会写文件或改引用的选项。提交号和范围用正则校验（十六进制、分支名字符、`..`、`~n`、`^`），不允许以 `-` 开头，不允许包含 `:`（防止 `<提交>:<路径>` 形式读取任意 blob 时触发 textconv）。
 - **路径限定**：`--` 之后的路径用 `canonicalPath` 规范化，必须在任务工作目录内，同时受“受保护目录”规则约束。
-- **filter**：`status` 和对工作区的 `diff` 在文件状态信息过期时可能对工作区文件运行 `filter.<driver>.clean` 或 `process`。每次执行前用 `git config --get-regexp "^filter\."` 读出仓库配置的 filter（读配置不执行代码），对每个 driver 在前缀中用 `-c` 把 `clean`、`smudge`、`process` 覆盖为空。空值是否等于禁用 filter **未核实**；P0 不通过则 review 档位不提供 `status` 和工作区 `diff`（只保留针对提交的 `diff`、`log`、`show`）。
+- **filter**：`status` 和对工作区的 `diff` 在文件状态信息过期时可能对工作区文件运行 `filter.<driver>.clean` 或 `process`。每次执行前用 `git config --get-regexp "^filter\."` 读出仓库配置的 filter（读配置不执行代码），对每个 driver 在前缀中用 `-c` 把 `clean`、`smudge`、`process` 覆盖为空。已在 git 2.34.1、2.56.0 的默认非 required filter 配置下验证，覆盖为空未触发恶意程序；不外推到任意版本和 filter 组合。
 
 P0 用一个带恶意配置的测试仓库验证：仓库配置了 textconv、`diff.external`、`core.fsmonitor`、`core.pager`、clean/smudge/process filter、`log.showSignature` + `gpg.program`，并让工作区文件的状态信息过期；对 `status`、`diff`（工作区、`--cached`、两个提交之间）、`log`（含 `-p`）、`show` 的每一种调用都检查，这些程序一次都不会执行（用写标记文件的脚本判断）。
 
