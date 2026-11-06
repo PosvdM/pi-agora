@@ -7,7 +7,7 @@
 | 路线图项目 | 结论 | 依据 |
 | --- | --- | --- |
 | agora #6、pane #10：pi-hostkit | 部分通过 | macOS 原生能力、锁、会话事件、双向恢复、权限和路径用例有可运行原型；进程树的两个快照盲窗会遗漏进程。Windows、Linux 待测。 |
-| agora #15：daemon 存活 | 部分通过 | macOS 的 PTY 关闭和 SIGHUP 实验通过；真实关闭图形终端窗口需主人手动。Windows、Linux 待测。 |
+| agora #15：daemon 存活 | 通过（macOS） | macOS 的 PTY 关闭和 SIGHUP 实验通过；2026-11-06 在 Terminal.app 中以 TUI 模式运行 pi，真实关闭窗口后 daemon 和 pi 子进程都存活、心跳继续增长。iTerm2 未测。Windows、Linux 待测。 |
 
 **不能把测试全绿理解为设计全部通过。** 两个故障注入测试断言“重现残留”，所以能在保留失败事实的同时检查实验是否可重跑。
 
@@ -294,7 +294,17 @@ daemon-pty round=2 explicitHup=false terminalGone=true daemonAlive=true childAli
 daemon-pty round=3 explicitHup=true  terminalGone=true daemonAlive=true childAlive=true childIsPiRpc=true
 ```
 
-**结论：部分通过。** 测试：`daemon:`。PTY 内运行的是 RPC 模式，未实测 TUI 的界面生命周期。没有操作 Terminal、iTerm 等图形程序；真实关窗口需主人手动，手动测试工具在 [manual-terminal-close/](manual-terminal-close/README.md)，以 TUI 模式运行 pi 并复用同一 daemon 原型，主人实测前本结论不变。Windows、Linux 待测。对应 agora `architecture.md` 的 daemon 生命周期和 roadmap #15。
+**真实关窗口实测（2026-11-06）**：用 [manual-terminal-close/](manual-terminal-close/README.md) 的工具，在 Terminal.app（`TERM_PROGRAM=Apple_Terminal` 488）中以 TUI 模式启动 pi，扩展拉起同一 daemon 原型。就绪后关闭窗口（AppleScript 关闭窗口，在「终止进程？」确认框中点「终止」，与手动点关闭按钮走同一路径）。关闭后约 2 秒和 60 秒各检查一次：终端侧 pi 已退出；daemon 存活，父进程变为 1；pi 子进程存活；心跳持续增长。清理后三个进程按身份确认全部退出。记录见 [manual-terminal-close/evidence.jsonl](manual-terminal-close/evidence.jsonl)。
+
+```text
+终端侧 pi（PID 73357）已退出：是
+daemon 存活：是（PID 73433，创建时间 1793948743.992659，当前父进程 1）
+pi 子进程存活：是（PID 73434，创建时间 1793948744.099553）
+心跳增长：是（1.5 秒内 77868 → 78477 字节，最后一次心跳在 44 毫秒前）
+结论：通过——关闭窗口后 daemon 和 pi 子进程都存活，心跳在增长。
+```
+
+**结论：通过（macOS）。** 测试：`daemon:`（PTY 与 SIGHUP，RPC 模式）和上面的真实关窗口实测（TUI 模式，Terminal.app）。iTerm2 未测。Windows、Linux 待测。对应 agora `architecture.md` 的 daemon 生命周期和 roadmap #15。
 
 ## 路径规范化与权限
 
@@ -376,7 +386,7 @@ daemon-pty round=3 explicitHup=true  terminalGone=true daemonAlive=true childAli
 | Linux cgroup v2 / child subreaper | 能记录和回收脱离后代 | 待测 | macOS 上无法验证 |
 | Windows、Linux daemon 终端关闭 | daemon 和子进程继续存活 | 待测 | macOS 上无法验证 |
 
-macOS 图形终端真正关窗口一项属于需主人手动，结论并入 daemon 的“部分通过”。远程文件系统一项属于无挂载现场，结论并入本地磁盘检测的“部分通过”，不称为 macOS 不具备验证能力。
+macOS 图形终端真正关窗口一项已于 2026-11-06 用手动测试工具在 Terminal.app 中实测通过，见“daemon 存活”。远程文件系统一项属于无挂载现场，结论并入本地磁盘检测的“部分通过”，不称为 macOS 不具备验证能力。
 
 ## 原生部分的形态：比较与推荐
 
