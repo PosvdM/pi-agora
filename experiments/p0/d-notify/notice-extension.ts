@@ -18,6 +18,20 @@ export default function (pi) {
   const injected = new Set();
   const acknowledged = new Set();
   let armed = true;
+  async function waitForRelease(name, signal) {
+    const deadline = Date.now() + 12000;
+    while (!existsSync(join(root, name))) {
+      signal?.throwIfAborted();
+      if (Date.now() >= deadline) throw new Error(`P0 barrier ${name} timed out`);
+      await delay(10);
+    }
+  }
+  pi.on('provider_stream_event', async (event, context) => {
+    if (!control().busyBarrier || event.data.type !== 'text_end' || event.data.content !== 'P0 busy held') return;
+    log({ kind: 'busy_blocked' });
+    await waitForRelease('release-busy', context.signal);
+    log({ kind: 'busy_released' });
+  });
   function killAt(point, extra = {}) {
     if (!armed || control().fault !== point) return;
     armed = false;
@@ -61,7 +75,7 @@ export default function (pi) {
       if (control().fault === 'daemon-before-ack' && armed) {
         armed = false;
         log({ kind: 'before_ack', dedupeKey: key, entryId: entry.id, onDisk: true });
-        while (!existsSync(join(root, 'release-ack'))) await delay(10);
+        await waitForRelease('release-ack');
       }
       await api('/ack', { dedupeKey: key, entryId: entry.id, sessionFile });
       acknowledged.add(key);

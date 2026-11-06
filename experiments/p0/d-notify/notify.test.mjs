@@ -1,9 +1,10 @@
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { fork } from 'node:child_process';
-import { readFile, writeFile, rename } from 'node:fs/promises';
+import { copyFile, mkdtemp, readFile, writeFile, rename } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { createExperiment } from '../harness/index.mjs';
@@ -24,7 +25,9 @@ function track(rpc) {
   allChildren.push(rpc.child);
   return rpc;
 }
-const output = fileURLToPath(new URL('./observations.json', import.meta.url));
+const evidenceDir = await mkdtemp(join(tmpdir(), 'pi-p0-d-notify-run-'));
+const output = join(evidenceDir, 'observations.json');
+const record = process.env.P0_RECORD === '1';
 async function until(fn, timeout = 12000) {
   const end = Date.now() + timeout;
   while (Date.now() < end) {
@@ -97,6 +100,13 @@ async function fixture(t) {
       assert.equal(result.success, true, JSON.stringify(result));
     },
     async create(key, silent = false) { await api('/create', { dedupeKey: key, silent }); },
+    async redeliver(rpc, key) {
+      const from = (await f.ext()).length;
+      await until(async () => {
+        await f.poll(rpc);
+        return (await f.ext()).slice(from).some(e => e.kind === 'deduped' && e.dedupeKey === key && e.inFlight);
+      });
+    },
     async acked(key) { return (await api('/state')).find(row => row.dedupeKey === key)?.ackedAt; },
     async capture(name, details = {}) {
       const snapshot = await drivers.at(-1).command({ type: 'prompt', message: '/p0-snapshot' });
@@ -146,14 +156,19 @@ for (const mode of ['idle', 'busy', 'tool', 'silent', 'silent-new', 'silent-busy
     const before = (await f.e.requests()).length;
     let from = rpc.cursor;
     if (mode === 'busy' || mode === 'clear_queue' || mode === 'silent-busy') {
-      await f.e.setScript({ fallback: plain.fallback, routes: [{ when: { lastUser: 'P0 busy' }, reply: { segments: [mode === 'busy' ? { type: 'text', text: 'P0 busy done', delayMs: 900 } : { type: 'hang' }] } }] });
+      if (mode === 'busy') await f.control({ busyBarrier: true });
+      await f.e.setScript({ fallback: plain.fallback, routes: [{ when: { lastUser: 'P0 busy' }, reply: { segments: [mode === 'busy' ? { type: 'text', text: 'P0 busy held' } : { type: 'hang' }] } }] });
       assert.equal((await rpc.command({ type: 'prompt', message: 'P0 busy' })).success, true);
-      await f.e.waitForProvider(e => mode === 'busy' ? e.kind === 'request' && e.lastUser === 'P0 busy' : e.kind === 'hang');
+      if (mode === 'busy') {
+        await until(async () => (await f.ext()).some(e => e.kind === 'busy_blocked'));
+        await rpc.waitFor(e => e.type === 'message_update' && e.assistantMessageEvent?.delta === 'P0 busy held', { from });
+        assert.equal((await rpc.command({ type: 'get_state' })).data.isStreaming, true);
+      } else await f.e.waitForProvider(e => e.kind === 'hang');
     }
     if (mode === 'tool') {
       await f.e.write('tool-input.txt', 'local P0 input\n');
       await f.e.setScript({ fallback: plain.fallback, routes: [{ when: { request: before + 1 }, reply: { segments: [{ type: 'toolCall', name: 'p0_gate', arguments: {} }] } }] });
-      const gate = await f.e.write('tool-gate.ts', `import { existsSync, writeFileSync, readFileSync } from 'node:fs';\nimport { setTimeout as delay } from 'node:timers/promises';\nexport default function(pi) { pi.registerTool({ name:'p0_gate', label:'P0 gate', description:'Read a local fixture after a barrier', parameters:{type:'object',properties:{},required:[]}, async execute() { writeFileSync(${JSON.stringify(join(f.e.root, 'entered-tool'))}, '1'); while(!existsSync(${JSON.stringify(join(f.e.root, 'release-tool'))})) await delay(10); return {content:[{type:'text',text:readFileSync('tool-input.txt','utf8')}],details:{}}; } }); }`);
+      const gate = await f.e.write('tool-gate.ts', `import { existsSync, writeFileSync, readFileSync } from 'node:fs';\nimport { setTimeout as delay } from 'node:timers/promises';\nexport default function(pi) { pi.registerTool({ name:'p0_gate', label:'P0 gate', description:'Read a local fixture after a barrier', parameters:{type:'object',properties:{},required:[]}, async execute() { writeFileSync(${JSON.stringify(join(f.e.root, 'entered-tool'))}, '1'); const deadline=Date.now()+12000; while(!existsSync(${JSON.stringify(join(f.e.root, 'release-tool'))})) { if(Date.now()>=deadline) throw new Error('P0 tool barrier timed out'); await delay(10); } return {content:[{type:'text',text:readFileSync('tool-input.txt','utf8')}],details:{}}; } }); }`);
       // Reloading is unnecessary: restart the same session with the tool barrier extension.
       await rpc.stop();
       const next = await f.e.start({ args: ['--session', f.sessionFile, '-e', extension, '-e', gate, '--no-approve'], env: { P0_NOTIFY_ROOT: f.e.root } });
@@ -180,10 +195,9 @@ for (const mode of ['idle', 'busy', 'tool', 'silent', 'silent-new', 'silent-busy
     if (mode === 'busy' || mode === 'clear_queue') {
       assert.equal((await f.notices()).length, 0);
       assert.equal(await f.acked(key), null);
-      // Expire the lease and redeliver while still queued to exercise the in-flight set.
-      await delay(300);
-      await f.poll(rpc);
-      assert.ok((await f.ext()).some(e => e.kind === 'deduped' && e.inFlight));
+      // Wait for actual redelivery while the run remains held behind its barrier.
+      await f.redeliver(rpc, key);
+      assert.equal((await rpc.command({ type: 'get_state' })).data.isStreaming, true);
       if (mode === 'clear_queue') {
         const clear = await rpc.command({ type: 'clear_queue' });
         assert.equal(clear.success, true);
@@ -193,6 +207,8 @@ for (const mode of ['idle', 'busy', 'tool', 'silent', 'silent-new', 'silent-busy
         assert.ok((await f.ext()).some(e => e.kind === 'reset_inflight' && e.dedupeKey === key));
         await f.control({ auto: true });
       } else {
+        await writeFile(join(f.e.root, 'release-busy'), '1');
+        await until(async () => (await f.ext()).some(e => e.kind === 'busy_released'));
         await rpc.waitFor('agent_settled', { from });
       }
     }
@@ -211,6 +227,7 @@ for (const mode of ['idle', 'busy', 'tool', 'silent', 'silent-new', 'silent-busy
       await seed(f, rpc);
     } else if (mode === 'silent') {
       assert.equal((await f.e.requests()).length, before);
+      await rpc.waitFor(e => e.type === 'message_end' && e.message.customType === 'agora:notice', { from });
       assert.equal(rpc.events.slice(from).filter(r => r.event.type === 'message_end' && r.event.message.customType === 'agora:notice').length, 1);
       assert.equal((await f.ext()).filter(e => e.kind === 'extension_message_end').length, 0);
     }
@@ -291,8 +308,7 @@ for (let attempt = 1; attempt <= repeat; attempt++) {
     await f.e.waitForProvider(e => e.kind === 'hang');
     await f.create(key);
     await f.poll(rpc);
-    await delay(300);
-    await f.poll(rpc);
+    await f.redeliver(rpc, key);
     await f.e.setScript(plain);
     await rpc.command({ type: 'abort' });
     assert.ok((await f.ext()).some(e => e.kind === 'reset_inflight' && e.dedupeKey === key));
@@ -309,5 +325,7 @@ for (let attempt = 1; attempt <= repeat; attempt++) {
 after(async () => {
   const lingering = allChildren.filter(child => child.exitCode === null && child.signalCode === null).map(child => child.pid);
   await writeFile(output, JSON.stringify({ platform: process.platform, node: process.version, repeat, lingering, retainedFixtures, observations }, null, 2) + '\n');
+  if (record) await copyFile(output, fileURLToPath(new URL('./observations.json', import.meta.url)));
+  console.log(`P0 evidence: ${output}${record ? ' (P0_RECORD=1: repository observations refreshed)' : ''}`);
   assert.deepEqual(lingering, [], 'No live owned child processes');
 });
