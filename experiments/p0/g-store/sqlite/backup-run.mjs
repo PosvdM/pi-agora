@@ -30,9 +30,11 @@ if (mode === 'same') {
 }
 
 const started = performance.now();
+summary.startedAt = Date.now(); // 与 writer.mjs 的 committed 时间戳比较，统计备份期间另一进程的提交
 // 父进程在超时后发 SIGTERM：输出当时的进度再退出，用来判断备份是否在反复重新开始。
 process.once('SIGTERM', () => {
   summary.ms = Math.round(performance.now() - started);
+  summary.endedAt = Date.now();
   summary.error = 'terminated before completion';
   summary.lastProgress = lastProgress;
   writeSync(1, `${JSON.stringify(summary)}\n`);
@@ -54,6 +56,7 @@ try {
   summary.error = `${error.code ?? ''} ${error.message}`;
 }
 summary.ms = Math.round(performance.now() - started);
+summary.endedAt = Date.now();
 clearInterval(timer);
 db.close();
 writeSync(1, `${JSON.stringify(summary)}\n`);

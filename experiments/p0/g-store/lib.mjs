@@ -1,9 +1,10 @@
 // G 组实验共用的小工具：受控子进程、临时目录、文件哈希。
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 export const PI_ROOT = process.env.P0_PI_ROOT ?? '/opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent';
 
@@ -51,8 +52,12 @@ export function spawnTracked(command, args, options = {}) {
   return { child, lines, waitLine, exit, get stderr() { return stderr; } };
 }
 
-/** 向子进程所在进程组发信号（POSIX）；Windows 上只能对单个进程发。 */
+/**
+ * 向子进程所在进程组发信号（POSIX）；Windows 上只能对单个进程发。
+ * 子进程已退出时不发信号：它的 PID 可能已被回收并复用。
+ */
 export function signalGroup(child, signal) {
+  if (child.exitCode !== null || child.signalCode !== null) return false;
   try {
     if (process.platform === 'win32') child.kill(signal);
     else process.kill(-child.pid, signal);
@@ -69,9 +74,9 @@ export async function killAllTracked() {
   for (const child of [...children]) {
     if (signalGroup(child, 'SIGKILL')) killed.push(child.pid);
   }
+  // 已退出但 close 尚未触发的子进程也等到 close，保证 stdout 已读完。
   await Promise.all([...children].map((child) => new Promise((resolve) => {
-    if (child.exitCode !== null || child.signalCode !== null) resolve();
-    else child.once('close', resolve);
+    child.once('close', resolve);
   })));
   return killed;
 }
@@ -89,3 +94,44 @@ export function sha256File(path) {
 }
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * 共用 harness 的现场收尾。harness 的 RpcDriver.stop() 先向负 PID 发 SIGTERM 再判断是否已退出，
+ * e.stop()/e.cleanup() 会对所有曾经启动的 driver 再发一次；这里只停止仍在运行的 driver，
+ * 然后自己删除现场目录，不调用 e.stop()/e.cleanup()。
+ */
+export function driverRunning(driver) {
+  return driver.exitInfo === undefined && driver.child.exitCode === null && driver.child.signalCode === null;
+}
+
+export async function stopDriver(driver) {
+  if (driver && driverRunning(driver)) await driver.stop();
+}
+
+export async function teardownExperiment(experiment, drivers, { remove }) {
+  for (const driver of drivers) await stopDriver(driver);
+  if (remove) rmSync(experiment.root, { recursive: true, force: true });
+}
+
+/**
+ * 证据输出目录。默认在系统临时目录下为每次运行新建一个目录；设置 P0_RECORD=1 时写入
+ * 仓库里的 experiments/p0/g-store/evidence/，刷新已提交的证据。
+ */
+let evidenceRoot;
+export function evidenceDir() {
+  if (!evidenceRoot) {
+    if (process.env.P0_RECORD === '1') {
+      evidenceRoot = fileURLToPath(new URL('./evidence/', import.meta.url));
+      mkdirSync(evidenceRoot, { recursive: true });
+    } else {
+      evidenceRoot = mkdtempSync(join(tmpdir(), `g-store-evidence-${new Date().toISOString().replace(/[:.]/g, '-')}-`));
+    }
+  }
+  return evidenceRoot;
+}
+
+export function writeEvidence(name, data) {
+  const path = join(evidenceDir(), `${name}.json`);
+  writeFileSync(path, `${JSON.stringify(data, null, 2)}\n`);
+  return path;
+}

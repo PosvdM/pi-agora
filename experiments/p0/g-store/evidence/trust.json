@@ -1,0 +1,1593 @@
+{
+  "node": "v26.12.0",
+  "platform": "darwin",
+  "startedAt": "2026-11-05T14:23:36.055Z",
+  "scenarios": [
+    {
+      "test": "A1 没有需要信任的资源：不询问，pi 直接信任，不触发 project_trust",
+      "pre": {
+        "hasResources": false,
+        "saved": null
+      },
+      "decisionSent": null,
+      "loaded": false,
+      "thinkingLevel": "medium",
+      "isProjectTrusted": true,
+      "trustBefore": null,
+      "trustAfter": null,
+      "bridgeLog": [
+        {
+          "at": 1793888616541,
+          "instance": 1,
+          "kind": "factory",
+          "exchanged": false,
+          "decisions": 0
+        },
+        {
+          "at": 1793888616555,
+          "instance": 1,
+          "kind": "session_start",
+          "reason": "startup",
+          "cwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-GR1N4f/cwd",
+          "isProjectTrusted": true,
+          "sessionFile": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-GR1N4f/agent/sessions/2026-11-05T14-23-36-404Z_01a1ac17-ffd4-76cb-b47e-7eb2fd8a87e3.jsonl"
+        }
+      ],
+      "otherLog": []
+    },
+    {
+      "test": "A2 没有资源但 trust.json 对该目录存了 false：记录 isProjectTrusted",
+      "pre": {
+        "hasResources": false,
+        "saved": false
+      },
+      "decisionSent": null,
+      "loaded": false,
+      "thinkingLevel": "medium",
+      "isProjectTrusted": false,
+      "trustBefore": {
+        "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-oM2YGR/cwd": false
+      },
+      "trustAfter": {
+        "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-oM2YGR/cwd": false
+      },
+      "bridgeLog": [
+        {
+          "at": 1793888616997,
+          "instance": 1,
+          "kind": "factory",
+          "exchanged": false,
+          "decisions": 0
+        },
+        {
+          "at": 1793888617010,
+          "instance": 1,
+          "kind": "session_start",
+          "reason": "startup",
+          "cwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-oM2YGR/cwd",
+          "isProjectTrusted": false,
+          "sessionFile": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-oM2YGR/agent/sessions/2026-11-05T14-23-36-869Z_01a1ac18-01a4-7450-818a-88e9eb90fc27.jsonl"
+        }
+      ],
+      "otherLog": []
+    },
+    {
+      "test": "A3 trust.json 对该目录存了 true：预判 saved=true，不询问，pane 返回 undecided，pi 加载",
+      "pre": {
+        "hasResources": true,
+        "saved": true
+      },
+      "decisionSent": null,
+      "loaded": true,
+      "thinkingLevel": "low",
+      "isProjectTrusted": true,
+      "trustBefore": {
+        "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-8huxQv/cwd": true
+      },
+      "trustAfter": {
+        "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-8huxQv/cwd": true
+      },
+      "bridgeLog": [
+        {
+          "at": 1793888617462,
+          "instance": 1,
+          "kind": "factory",
+          "exchanged": false,
+          "decisions": 0
+        },
+        {
+          "at": 1793888617463,
+          "instance": 1,
+          "kind": "project_trust",
+          "eventCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-8huxQv/cwd",
+          "ctxCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-8huxQv/cwd",
+          "canonicalCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-8huxQv/cwd",
+          "hasUI": false,
+          "mode": "rpc",
+          "uiConfirm": false,
+          "source": "no-bridge",
+          "result": {
+            "trusted": "undecided"
+          }
+        },
+        {
+          "at": 1793888617478,
+          "instance": 1,
+          "kind": "session_start",
+          "reason": "startup",
+          "cwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-8huxQv/cwd",
+          "isProjectTrusted": true,
+          "sessionFile": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-8huxQv/agent/sessions/2026-11-05T14-23-37-328Z_01a1ac18-0370-759a-8ebc-49c8f5da4803.jsonl"
+        }
+      ],
+      "otherLog": []
+    },
+    {
+      "test": "A4 父目录在 trust.json 里为 true：预判与 pi 都按最近的父目录决定加载",
+      "pre": {
+        "hasResources": true,
+        "saved": true
+      },
+      "decisionSent": null,
+      "loaded": true,
+      "thinkingLevel": "low",
+      "isProjectTrusted": true,
+      "trustBefore": {
+        "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-8flcCx": true
+      },
+      "trustAfter": {
+        "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-8flcCx": true
+      },
+      "bridgeLog": [
+        {
+          "at": 1793888617953,
+          "instance": 1,
+          "kind": "factory",
+          "exchanged": false,
+          "decisions": 0
+        },
+        {
+          "at": 1793888617953,
+          "instance": 1,
+          "kind": "project_trust",
+          "eventCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-8flcCx/cwd",
+          "ctxCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-8flcCx/cwd",
+          "canonicalCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-8flcCx/cwd",
+          "hasUI": false,
+          "mode": "rpc",
+          "uiConfirm": false,
+          "source": "no-bridge",
+          "result": {
+            "trusted": "undecided"
+          }
+        },
+        {
+          "at": 1793888617969,
+          "instance": 1,
+          "kind": "session_start",
+          "reason": "startup",
+          "cwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-8flcCx/cwd",
+          "isProjectTrusted": true,
+          "sessionFile": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-8flcCx/agent/sessions/2026-11-05T14-23-37-803Z_01a1ac18-054a-73ec-8a6a-a4fe8665f787.jsonl"
+        }
+      ],
+      "otherLog": []
+    },
+    {
+      "test": "A5 父目录 true、该目录 false：预判与 pi 都取该目录的 false",
+      "pre": {
+        "hasResources": true,
+        "saved": false
+      },
+      "decisionSent": null,
+      "loaded": false,
+      "thinkingLevel": "medium",
+      "isProjectTrusted": false,
+      "trustBefore": {
+        "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-1gl5T0": true,
+        "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-1gl5T0/cwd": false
+      },
+      "trustAfter": {
+        "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-1gl5T0": true,
+        "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-1gl5T0/cwd": false
+      },
+      "bridgeLog": [
+        {
+          "at": 1793888618423,
+          "instance": 1,
+          "kind": "factory",
+          "exchanged": false,
+          "decisions": 0
+        },
+        {
+          "at": 1793888618424,
+          "instance": 1,
+          "kind": "project_trust",
+          "eventCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-1gl5T0/cwd",
+          "ctxCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-1gl5T0/cwd",
+          "canonicalCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-1gl5T0/cwd",
+          "hasUI": false,
+          "mode": "rpc",
+          "uiConfirm": false,
+          "source": "no-bridge",
+          "result": {
+            "trusted": "undecided"
+          }
+        },
+        {
+          "at": 1793888618438,
+          "instance": 1,
+          "kind": "session_start",
+          "reason": "startup",
+          "cwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-1gl5T0/cwd",
+          "isProjectTrusted": false,
+          "sessionFile": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-1gl5T0/agent/sessions/2026-11-05T14-23-38-295Z_01a1ac18-0736-75e1-b17b-71e9d6280c9b.jsonl"
+        }
+      ],
+      "otherLog": []
+    },
+    {
+      "test": "A6 父目录 false、该目录 true：取该目录的 true",
+      "pre": {
+        "hasResources": true,
+        "saved": true
+      },
+      "decisionSent": null,
+      "loaded": true,
+      "thinkingLevel": "low",
+      "isProjectTrusted": true,
+      "trustBefore": {
+        "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-ePMyVJ": false,
+        "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-ePMyVJ/cwd": true
+      },
+      "trustAfter": {
+        "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-ePMyVJ": false,
+        "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-ePMyVJ/cwd": true
+      },
+      "bridgeLog": [
+        {
+          "at": 1793888618897,
+          "instance": 1,
+          "kind": "factory",
+          "exchanged": false,
+          "decisions": 0
+        },
+        {
+          "at": 1793888618898,
+          "instance": 1,
+          "kind": "project_trust",
+          "eventCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-ePMyVJ/cwd",
+          "ctxCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-ePMyVJ/cwd",
+          "canonicalCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-ePMyVJ/cwd",
+          "hasUI": false,
+          "mode": "rpc",
+          "uiConfirm": false,
+          "source": "no-bridge",
+          "result": {
+            "trusted": "undecided"
+          }
+        },
+        {
+          "at": 1793888618912,
+          "instance": 1,
+          "kind": "session_start",
+          "reason": "startup",
+          "cwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-ePMyVJ/cwd",
+          "isProjectTrusted": true,
+          "sessionFile": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-ePMyVJ/agent/sessions/2026-11-05T14-23-38-761Z_01a1ac18-0908-7096-909c-85f4e78f7428.jsonl"
+        }
+      ],
+      "otherLog": []
+    },
+    {
+      "test": "A7 trust.json 的键是未解析符号链接的路径（macOS 的 /var → /private/var）",
+      "pre": {
+        "hasResources": true,
+        "saved": null
+      },
+      "decisionSent": null,
+      "loaded": false,
+      "thinkingLevel": "medium",
+      "isProjectTrusted": false,
+      "trustBefore": {
+        "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-aswtox/cwd": true
+      },
+      "trustAfter": {
+        "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-aswtox/cwd": true
+      },
+      "bridgeLog": [
+        {
+          "at": 1793888619361,
+          "instance": 1,
+          "kind": "factory",
+          "exchanged": false,
+          "decisions": 0
+        },
+        {
+          "at": 1793888619362,
+          "instance": 1,
+          "kind": "project_trust",
+          "eventCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-aswtox/cwd",
+          "ctxCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-aswtox/cwd",
+          "canonicalCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-aswtox/cwd",
+          "hasUI": false,
+          "mode": "rpc",
+          "uiConfirm": false,
+          "source": "no-bridge",
+          "result": {
+            "trusted": "undecided"
+          }
+        },
+        {
+          "at": 1793888619374,
+          "instance": 1,
+          "kind": "session_start",
+          "reason": "startup",
+          "cwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-aswtox/cwd",
+          "isProjectTrusted": false,
+          "sessionFile": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-aswtox/agent/sessions/2026-11-05T14-23-39-228Z_01a1ac18-0adb-7398-846d-4d032a6782e9.jsonl"
+        }
+      ],
+      "otherLog": []
+    },
+    {
+      "test": "A8 只有祖先目录里有 .agents/skills：预判为需要信任",
+      "pre": {
+        "hasResources": true,
+        "saved": null
+      },
+      "decisionSent": {
+        "cwd": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-ZM1J4L/cwd",
+        "trusted": "no",
+        "remember": false
+      },
+      "loaded": false,
+      "thinkingLevel": "medium",
+      "isProjectTrusted": false,
+      "trustBefore": null,
+      "trustAfter": null,
+      "bridgeLog": [
+        {
+          "at": 1793888619967,
+          "instance": 1,
+          "kind": "factory",
+          "exchanged": false,
+          "decisions": 1
+        },
+        {
+          "at": 1793888619968,
+          "instance": 1,
+          "kind": "project_trust",
+          "eventCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-ZM1J4L/cwd",
+          "ctxCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-ZM1J4L/cwd",
+          "canonicalCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-ZM1J4L/cwd",
+          "hasUI": false,
+          "mode": "rpc",
+          "uiConfirm": false,
+          "source": "startup-config",
+          "result": {
+            "trusted": "no",
+            "remember": false
+          }
+        },
+        {
+          "at": 1793888619989,
+          "instance": 1,
+          "kind": "session_start",
+          "reason": "startup",
+          "cwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-ZM1J4L/cwd",
+          "isProjectTrusted": false,
+          "sessionFile": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-ZM1J4L/agent/sessions/2026-11-05T14-23-39-783Z_01a1ac18-0d06-765d-a3b4-4b04a6ad8a54.jsonl"
+        }
+      ],
+      "otherLog": []
+    },
+    {
+      "test": "B1 信任、不记住：处理器按启动配置返回，remember 决定是否写入 trust.json",
+      "pre": {
+        "hasResources": true,
+        "saved": null
+      },
+      "decisionSent": {
+        "cwd": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-yeeRtT/cwd",
+        "trusted": "yes",
+        "remember": false
+      },
+      "loaded": true,
+      "thinkingLevel": "low",
+      "isProjectTrusted": true,
+      "trustBefore": null,
+      "trustAfter": null,
+      "bridgeLog": [
+        {
+          "at": 1793888620601,
+          "instance": 1,
+          "kind": "factory",
+          "exchanged": false,
+          "decisions": 1
+        },
+        {
+          "at": 1793888620602,
+          "instance": 1,
+          "kind": "project_trust",
+          "eventCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-yeeRtT/cwd",
+          "ctxCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-yeeRtT/cwd",
+          "canonicalCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-yeeRtT/cwd",
+          "hasUI": false,
+          "mode": "rpc",
+          "uiConfirm": false,
+          "source": "startup-config",
+          "result": {
+            "trusted": "yes",
+            "remember": false
+          }
+        },
+        {
+          "at": 1793888620624,
+          "instance": 1,
+          "kind": "session_start",
+          "reason": "startup",
+          "cwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-yeeRtT/cwd",
+          "isProjectTrusted": true,
+          "sessionFile": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-yeeRtT/agent/sessions/2026-11-05T14-23-40-423Z_01a1ac18-0f86-71a2-ac2a-c8027cf288ee.jsonl"
+        }
+      ],
+      "otherLog": []
+    },
+    {
+      "test": "B2 信任并记住：处理器按启动配置返回，remember 决定是否写入 trust.json",
+      "pre": {
+        "hasResources": true,
+        "saved": null
+      },
+      "decisionSent": {
+        "cwd": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-sMqYBJ/cwd",
+        "trusted": "yes",
+        "remember": true
+      },
+      "loaded": true,
+      "thinkingLevel": "low",
+      "isProjectTrusted": true,
+      "trustBefore": null,
+      "trustAfter": {
+        "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-sMqYBJ/cwd": true
+      },
+      "bridgeLog": [
+        {
+          "at": 1793888621146,
+          "instance": 1,
+          "kind": "factory",
+          "exchanged": false,
+          "decisions": 1
+        },
+        {
+          "at": 1793888621146,
+          "instance": 1,
+          "kind": "project_trust",
+          "eventCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-sMqYBJ/cwd",
+          "ctxCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-sMqYBJ/cwd",
+          "canonicalCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-sMqYBJ/cwd",
+          "hasUI": false,
+          "mode": "rpc",
+          "uiConfirm": false,
+          "source": "startup-config",
+          "result": {
+            "trusted": "yes",
+            "remember": true
+          }
+        },
+        {
+          "at": 1793888621162,
+          "instance": 1,
+          "kind": "session_start",
+          "reason": "startup",
+          "cwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-sMqYBJ/cwd",
+          "isProjectTrusted": true,
+          "sessionFile": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-sMqYBJ/agent/sessions/2026-11-05T14-23-40-991Z_01a1ac18-11be-72ca-bfc4-6ccc40681c82.jsonl"
+        }
+      ],
+      "otherLog": []
+    },
+    {
+      "test": "B3 不信任并记住：处理器按启动配置返回，remember 决定是否写入 trust.json",
+      "pre": {
+        "hasResources": true,
+        "saved": null
+      },
+      "decisionSent": {
+        "cwd": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-AO0bBv/cwd",
+        "trusted": "no",
+        "remember": true
+      },
+      "loaded": false,
+      "thinkingLevel": "medium",
+      "isProjectTrusted": false,
+      "trustBefore": null,
+      "trustAfter": {
+        "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-AO0bBv/cwd": false
+      },
+      "bridgeLog": [
+        {
+          "at": 1793888621651,
+          "instance": 1,
+          "kind": "factory",
+          "exchanged": false,
+          "decisions": 1
+        },
+        {
+          "at": 1793888621652,
+          "instance": 1,
+          "kind": "project_trust",
+          "eventCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-AO0bBv/cwd",
+          "ctxCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-AO0bBv/cwd",
+          "canonicalCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-AO0bBv/cwd",
+          "hasUI": false,
+          "mode": "rpc",
+          "uiConfirm": false,
+          "source": "startup-config",
+          "result": {
+            "trusted": "no",
+            "remember": true
+          }
+        },
+        {
+          "at": 1793888621666,
+          "instance": 1,
+          "kind": "session_start",
+          "reason": "startup",
+          "cwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-AO0bBv/cwd",
+          "isProjectTrusted": false,
+          "sessionFile": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-AO0bBv/agent/sessions/2026-11-05T14-23-41-501Z_01a1ac18-13bc-7075-8bf3-63d842aa38b2.jsonl"
+        }
+      ],
+      "otherLog": []
+    },
+    {
+      "test": "B4 不信任、不记住：处理器按启动配置返回，remember 决定是否写入 trust.json",
+      "pre": {
+        "hasResources": true,
+        "saved": null
+      },
+      "decisionSent": {
+        "cwd": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-neXkPE/cwd",
+        "trusted": "no",
+        "remember": false
+      },
+      "loaded": false,
+      "thinkingLevel": "medium",
+      "isProjectTrusted": false,
+      "trustBefore": null,
+      "trustAfter": null,
+      "bridgeLog": [
+        {
+          "at": 1793888622175,
+          "instance": 1,
+          "kind": "factory",
+          "exchanged": false,
+          "decisions": 1
+        },
+        {
+          "at": 1793888622176,
+          "instance": 1,
+          "kind": "project_trust",
+          "eventCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-neXkPE/cwd",
+          "ctxCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-neXkPE/cwd",
+          "canonicalCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-neXkPE/cwd",
+          "hasUI": false,
+          "mode": "rpc",
+          "uiConfirm": false,
+          "source": "startup-config",
+          "result": {
+            "trusted": "no",
+            "remember": false
+          }
+        },
+        {
+          "at": 1793888622189,
+          "instance": 1,
+          "kind": "session_start",
+          "reason": "startup",
+          "cwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-neXkPE/cwd",
+          "isProjectTrusted": false,
+          "sessionFile": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-neXkPE/agent/sessions/2026-11-05T14-23-42-018Z_01a1ac18-15c1-77e8-9090-c99150304e67.jsonl"
+        }
+      ],
+      "otherLog": []
+    },
+    {
+      "test": "B5 更早的扩展返回 yes，pane 返回 no",
+      "pre": {
+        "hasResources": true,
+        "saved": null
+      },
+      "decisionSent": {
+        "cwd": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-MfS97F/cwd",
+        "trusted": "no",
+        "remember": false
+      },
+      "loaded": true,
+      "thinkingLevel": "low",
+      "isProjectTrusted": true,
+      "trustBefore": null,
+      "trustAfter": null,
+      "bridgeLog": [
+        {
+          "at": 1793888622663,
+          "instance": 1,
+          "kind": "factory",
+          "exchanged": false,
+          "decisions": 1
+        },
+        {
+          "at": 1793888622676,
+          "instance": 1,
+          "kind": "session_start",
+          "reason": "startup",
+          "cwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-MfS97F/cwd",
+          "isProjectTrusted": true,
+          "sessionFile": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-MfS97F/agent/sessions/2026-11-05T14-23-42-530Z_01a1ac18-17c1-762b-a489-6893e1df13a4.jsonl"
+        }
+      ],
+      "otherLog": [
+        {
+          "at": 1793888622664,
+          "kind": "early",
+          "eventCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-MfS97F/cwd",
+          "mode": "yes"
+        }
+      ]
+    },
+    {
+      "test": "B6 更早的扩展返回 no，pane 返回 yes",
+      "pre": {
+        "hasResources": true,
+        "saved": null
+      },
+      "decisionSent": {
+        "cwd": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-JLG9zH/cwd",
+        "trusted": "yes",
+        "remember": false
+      },
+      "loaded": false,
+      "thinkingLevel": "medium",
+      "isProjectTrusted": false,
+      "trustBefore": null,
+      "trustAfter": null,
+      "bridgeLog": [
+        {
+          "at": 1793888623098,
+          "instance": 1,
+          "kind": "factory",
+          "exchanged": false,
+          "decisions": 1
+        },
+        {
+          "at": 1793888623110,
+          "instance": 1,
+          "kind": "session_start",
+          "reason": "startup",
+          "cwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-JLG9zH/cwd",
+          "isProjectTrusted": false,
+          "sessionFile": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-JLG9zH/agent/sessions/2026-11-05T14-23-42-975Z_01a1ac18-197e-74e1-87e3-a73247aab816.jsonl"
+        }
+      ],
+      "otherLog": [
+        {
+          "at": 1793888623099,
+          "kind": "early",
+          "eventCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-JLG9zH/cwd",
+          "mode": "no"
+        }
+      ]
+    },
+    {
+      "test": "B7 更早的扩展抛出异常，pane 返回 yes",
+      "pre": {
+        "hasResources": true,
+        "saved": null
+      },
+      "decisionSent": {
+        "cwd": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-6HR7zA/cwd",
+        "trusted": "yes",
+        "remember": false
+      },
+      "loaded": true,
+      "thinkingLevel": "low",
+      "isProjectTrusted": true,
+      "trustBefore": null,
+      "trustAfter": null,
+      "bridgeLog": [
+        {
+          "at": 1793888623561,
+          "instance": 1,
+          "kind": "factory",
+          "exchanged": false,
+          "decisions": 1
+        },
+        {
+          "at": 1793888623562,
+          "instance": 1,
+          "kind": "project_trust",
+          "eventCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-6HR7zA/cwd",
+          "ctxCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-6HR7zA/cwd",
+          "canonicalCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-6HR7zA/cwd",
+          "hasUI": false,
+          "mode": "rpc",
+          "uiConfirm": false,
+          "source": "startup-config",
+          "result": {
+            "trusted": "yes",
+            "remember": false
+          }
+        },
+        {
+          "at": 1793888623574,
+          "instance": 1,
+          "kind": "session_start",
+          "reason": "startup",
+          "cwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-6HR7zA/cwd",
+          "isProjectTrusted": true,
+          "sessionFile": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-6HR7zA/agent/sessions/2026-11-05T14-23-43-425Z_01a1ac18-1b40-7321-bdba-cfa1b3a1befd.jsonl"
+        }
+      ],
+      "otherLog": [
+        {
+          "at": 1793888623562,
+          "kind": "early",
+          "eventCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-6HR7zA/cwd",
+          "mode": "throw"
+        }
+      ]
+    },
+    {
+      "test": "B8 更早的扩展返回 undecided，pane 返回 no",
+      "pre": {
+        "hasResources": true,
+        "saved": null
+      },
+      "decisionSent": {
+        "cwd": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-flJXVM/cwd",
+        "trusted": "no",
+        "remember": false
+      },
+      "loaded": false,
+      "thinkingLevel": "medium",
+      "isProjectTrusted": false,
+      "trustBefore": null,
+      "trustAfter": null,
+      "bridgeLog": [
+        {
+          "at": 1793888624009,
+          "instance": 1,
+          "kind": "factory",
+          "exchanged": false,
+          "decisions": 1
+        },
+        {
+          "at": 1793888624010,
+          "instance": 1,
+          "kind": "project_trust",
+          "eventCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-flJXVM/cwd",
+          "ctxCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-flJXVM/cwd",
+          "canonicalCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-flJXVM/cwd",
+          "hasUI": false,
+          "mode": "rpc",
+          "uiConfirm": false,
+          "source": "startup-config",
+          "result": {
+            "trusted": "no",
+            "remember": false
+          }
+        },
+        {
+          "at": 1793888624021,
+          "instance": 1,
+          "kind": "session_start",
+          "reason": "startup",
+          "cwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-flJXVM/cwd",
+          "isProjectTrusted": false,
+          "sessionFile": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-flJXVM/agent/sessions/2026-11-05T14-23-43-880Z_01a1ac18-1d07-70b9-9052-51841711eee6.jsonl"
+        }
+      ],
+      "otherLog": [
+        {
+          "at": 1793888624009,
+          "kind": "early",
+          "eventCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-flJXVM/cwd",
+          "mode": "undecided"
+        }
+      ]
+    },
+    {
+      "test": "B9 trust.json 已有 yes，pane 仍返回 no（不记住）：处理器优先，不加载，trust.json 不变",
+      "pre": {
+        "hasResources": true,
+        "saved": true
+      },
+      "decisionSent": {
+        "cwd": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-CHjHZb/cwd",
+        "trusted": "no",
+        "remember": false
+      },
+      "loaded": false,
+      "thinkingLevel": "medium",
+      "isProjectTrusted": false,
+      "trustBefore": {
+        "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-CHjHZb/cwd": true
+      },
+      "trustAfter": {
+        "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-CHjHZb/cwd": true
+      },
+      "bridgeLog": [
+        {
+          "at": 1793888624456,
+          "instance": 1,
+          "kind": "factory",
+          "exchanged": false,
+          "decisions": 1
+        },
+        {
+          "at": 1793888624456,
+          "instance": 1,
+          "kind": "project_trust",
+          "eventCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-CHjHZb/cwd",
+          "ctxCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-CHjHZb/cwd",
+          "canonicalCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-CHjHZb/cwd",
+          "hasUI": false,
+          "mode": "rpc",
+          "uiConfirm": false,
+          "source": "startup-config",
+          "result": {
+            "trusted": "no",
+            "remember": false
+          }
+        },
+        {
+          "at": 1793888624468,
+          "instance": 1,
+          "kind": "session_start",
+          "reason": "startup",
+          "cwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-CHjHZb/cwd",
+          "isProjectTrusted": false,
+          "sessionFile": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-CHjHZb/agent/sessions/2026-11-05T14-23-44-328Z_01a1ac18-1ec7-737a-baed-0562f3ca8211.jsonl"
+        }
+      ],
+      "otherLog": []
+    },
+    {
+      "test": "C1 pane undecided（用户未作答），trust.json 已有 yes → 加载",
+      "pre": {
+        "hasResources": true,
+        "saved": true
+      },
+      "decisionSent": null,
+      "loaded": true,
+      "thinkingLevel": "low",
+      "isProjectTrusted": true,
+      "trustBefore": {
+        "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-W1rSCc": true
+      },
+      "trustAfter": {
+        "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-W1rSCc": true
+      },
+      "bridgeLog": [
+        {
+          "at": 1793888624900,
+          "instance": 1,
+          "kind": "factory",
+          "exchanged": false,
+          "decisions": 0
+        },
+        {
+          "at": 1793888624901,
+          "instance": 1,
+          "kind": "project_trust",
+          "eventCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-W1rSCc/cwd",
+          "ctxCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-W1rSCc/cwd",
+          "canonicalCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-W1rSCc/cwd",
+          "hasUI": false,
+          "mode": "rpc",
+          "uiConfirm": false,
+          "source": "no-bridge",
+          "result": {
+            "trusted": "undecided"
+          }
+        },
+        {
+          "at": 1793888624913,
+          "instance": 1,
+          "kind": "session_start",
+          "reason": "startup",
+          "cwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-W1rSCc/cwd",
+          "isProjectTrusted": true,
+          "sessionFile": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-W1rSCc/agent/sessions/2026-11-05T14-23-44-775Z_01a1ac18-2087-73a0-bf36-b3e5a1347309.jsonl"
+        }
+      ],
+      "otherLog": []
+    },
+    {
+      "test": "C2 pane undecided，之后加载的扩展返回 yes → 加载",
+      "pre": {
+        "hasResources": true,
+        "saved": null
+      },
+      "decisionSent": null,
+      "loaded": true,
+      "thinkingLevel": "low",
+      "isProjectTrusted": true,
+      "trustBefore": null,
+      "trustAfter": null,
+      "bridgeLog": [
+        {
+          "at": 1793888625342,
+          "instance": 1,
+          "kind": "factory",
+          "exchanged": false,
+          "decisions": 0
+        },
+        {
+          "at": 1793888625345,
+          "instance": 1,
+          "kind": "project_trust",
+          "eventCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-WINAkg/cwd",
+          "ctxCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-WINAkg/cwd",
+          "canonicalCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-WINAkg/cwd",
+          "hasUI": false,
+          "mode": "rpc",
+          "uiConfirm": false,
+          "source": "no-bridge",
+          "result": {
+            "trusted": "undecided"
+          }
+        },
+        {
+          "at": 1793888625357,
+          "instance": 1,
+          "kind": "session_start",
+          "reason": "startup",
+          "cwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-WINAkg/cwd",
+          "isProjectTrusted": true,
+          "sessionFile": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-WINAkg/agent/sessions/2026-11-05T14-23-45-218Z_01a1ac18-2241-7305-837d-7fbef9cb8505.jsonl"
+        }
+      ],
+      "otherLog": [
+        {
+          "at": 1793888625345,
+          "kind": "late",
+          "eventCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-WINAkg/cwd",
+          "mode": "yes"
+        }
+      ]
+    },
+    {
+      "test": "C3 pane undecided，defaultProjectTrust = \"always\" → 加载",
+      "pre": {
+        "hasResources": true,
+        "saved": null
+      },
+      "decisionSent": null,
+      "loaded": true,
+      "thinkingLevel": "low",
+      "isProjectTrusted": true,
+      "trustBefore": null,
+      "trustAfter": null,
+      "bridgeLog": [
+        {
+          "at": 1793888625790,
+          "instance": 1,
+          "kind": "factory",
+          "exchanged": false,
+          "decisions": 0
+        },
+        {
+          "at": 1793888625791,
+          "instance": 1,
+          "kind": "project_trust",
+          "eventCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-45UUIZ/cwd",
+          "ctxCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-45UUIZ/cwd",
+          "canonicalCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-45UUIZ/cwd",
+          "hasUI": false,
+          "mode": "rpc",
+          "uiConfirm": false,
+          "source": "no-bridge",
+          "result": {
+            "trusted": "undecided"
+          }
+        },
+        {
+          "at": 1793888625803,
+          "instance": 1,
+          "kind": "session_start",
+          "reason": "startup",
+          "cwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-45UUIZ/cwd",
+          "isProjectTrusted": true,
+          "sessionFile": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-45UUIZ/agent/sessions/2026-11-05T14-23-45-664Z_01a1ac18-23ff-71a5-9e18-47fd01e79b4d.jsonl"
+        }
+      ],
+      "otherLog": []
+    },
+    {
+      "test": "C4 pane undecided，其余都没有决定（defaultProjectTrust 默认 ask，RPC 无 UI）→ 不加载",
+      "pre": {
+        "hasResources": true,
+        "saved": null
+      },
+      "decisionSent": null,
+      "loaded": false,
+      "thinkingLevel": "medium",
+      "isProjectTrusted": false,
+      "trustBefore": null,
+      "trustAfter": null,
+      "bridgeLog": [
+        {
+          "at": 1793888626232,
+          "instance": 1,
+          "kind": "factory",
+          "exchanged": false,
+          "decisions": 0
+        },
+        {
+          "at": 1793888626233,
+          "instance": 1,
+          "kind": "project_trust",
+          "eventCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-ZCrqhk/cwd",
+          "ctxCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-ZCrqhk/cwd",
+          "canonicalCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-ZCrqhk/cwd",
+          "hasUI": false,
+          "mode": "rpc",
+          "uiConfirm": false,
+          "source": "no-bridge",
+          "result": {
+            "trusted": "undecided"
+          }
+        },
+        {
+          "at": 1793888626245,
+          "instance": 1,
+          "kind": "session_start",
+          "reason": "startup",
+          "cwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-ZCrqhk/cwd",
+          "isProjectTrusted": false,
+          "sessionFile": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-ZCrqhk/agent/sessions/2026-11-05T14-23-46-109Z_01a1ac18-25bc-75e0-bf43-91119ee5828c.jsonl"
+        }
+      ],
+      "otherLog": []
+    },
+    {
+      "test": "C5 pane undecided，defaultProjectTrust = \"never\"、trust.json 有 yes → trust.json 优先，加载",
+      "pre": {
+        "hasResources": true,
+        "saved": true
+      },
+      "decisionSent": null,
+      "loaded": true,
+      "thinkingLevel": "low",
+      "isProjectTrusted": true,
+      "trustBefore": {
+        "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-Pt8s3A/cwd": true
+      },
+      "trustAfter": {
+        "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-Pt8s3A/cwd": true
+      },
+      "bridgeLog": [
+        {
+          "at": 1793888626666,
+          "instance": 1,
+          "kind": "factory",
+          "exchanged": false,
+          "decisions": 0
+        },
+        {
+          "at": 1793888626667,
+          "instance": 1,
+          "kind": "project_trust",
+          "eventCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-Pt8s3A/cwd",
+          "ctxCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-Pt8s3A/cwd",
+          "canonicalCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-Pt8s3A/cwd",
+          "hasUI": false,
+          "mode": "rpc",
+          "uiConfirm": false,
+          "source": "no-bridge",
+          "result": {
+            "trusted": "undecided"
+          }
+        },
+        {
+          "at": 1793888626680,
+          "instance": 1,
+          "kind": "session_start",
+          "reason": "startup",
+          "cwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-Pt8s3A/cwd",
+          "isProjectTrusted": true,
+          "sessionFile": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-Pt8s3A/agent/sessions/2026-11-05T14-23-46-547Z_01a1ac18-2772-75c2-9109-2fe9a37ccb78.jsonl"
+        }
+      ],
+      "otherLog": []
+    },
+    {
+      "test": "D1 服务端回答 yes（不记住）：切换到另一个有资源的目录时经回连询问",
+      "pre": {
+        "hasResources": true,
+        "saved": null
+      },
+      "decisionSent": {
+        "cwd": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-TztSQG/cwd",
+        "trusted": "yes",
+        "remember": false
+      },
+      "loaded": true,
+      "thinkingLevel": "low",
+      "isProjectTrusted": true,
+      "trustBefore": null,
+      "trustAfter": null,
+      "bridgeLog": [
+        {
+          "at": 1793888627118,
+          "instance": 1,
+          "kind": "factory",
+          "exchanged": false,
+          "decisions": 1
+        },
+        {
+          "at": 1793888627119,
+          "instance": 1,
+          "kind": "project_trust",
+          "eventCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-TztSQG/cwd",
+          "ctxCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-TztSQG/cwd",
+          "canonicalCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-TztSQG/cwd",
+          "hasUI": false,
+          "mode": "rpc",
+          "uiConfirm": false,
+          "source": "startup-config",
+          "result": {
+            "trusted": "yes",
+            "remember": false
+          }
+        },
+        {
+          "at": 1793888627132,
+          "instance": 1,
+          "kind": "session_start",
+          "reason": "startup",
+          "cwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-TztSQG/cwd",
+          "isProjectTrusted": true,
+          "sessionFile": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-TztSQG/agent/sessions/2026-11-05T14-23-46-986Z_01a1ac18-2929-7759-91a3-7493e1e89835.jsonl"
+        },
+        {
+          "at": 1793888627146,
+          "instance": 2,
+          "kind": "factory",
+          "exchanged": false,
+          "decisions": 1
+        },
+        {
+          "at": 1793888627157,
+          "instance": 2,
+          "kind": "project_trust",
+          "eventCwd": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-TztSQG/proj2",
+          "ctxCwd": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-TztSQG/proj2",
+          "canonicalCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-TztSQG/proj2",
+          "hasUI": false,
+          "mode": "rpc",
+          "uiConfirm": false,
+          "source": "bridge-answer",
+          "result": {
+            "trusted": "yes",
+            "remember": false
+          }
+        },
+        {
+          "at": 1793888627164,
+          "instance": 2,
+          "kind": "session_start",
+          "reason": "resume",
+          "cwd": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-TztSQG/proj2",
+          "isProjectTrusted": true,
+          "sessionFile": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-TztSQG/agent/sessions/proj2.jsonl"
+        },
+        {
+          "at": 1793888627164,
+          "instance": 1,
+          "kind": "switch",
+          "target": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-TztSQG/agent/sessions/proj2.jsonl",
+          "result": {
+            "cancelled": false
+          }
+        },
+        {
+          "at": 1793888627172,
+          "instance": 3,
+          "kind": "factory",
+          "exchanged": false,
+          "decisions": 1
+        },
+        {
+          "at": 1793888627177,
+          "instance": 3,
+          "kind": "session_start",
+          "reason": "resume",
+          "cwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-TztSQG/cwd",
+          "isProjectTrusted": true,
+          "sessionFile": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-TztSQG/agent/sessions/2026-11-05T14-23-46-986Z_01a1ac18-2929-7759-91a3-7493e1e89835.jsonl"
+        },
+        {
+          "at": 1793888627177,
+          "instance": 2,
+          "kind": "switch",
+          "target": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-TztSQG/agent/sessions/2026-11-05T14-23-46-986Z_01a1ac18-2929-7759-91a3-7493e1e89835.jsonl",
+          "result": {
+            "cancelled": false
+          }
+        }
+      ],
+      "otherLog": [],
+      "afterSwitch": {
+        "loaded": true,
+        "thinkingLevel": "low",
+        "requestIndex": 1
+      },
+      "afterSwitchBack": {
+        "loaded": true,
+        "thinkingLevel": "low",
+        "requestIndex": 2
+      },
+      "switchMs": 24
+    },
+    {
+      "test": "D2 服务端不回应，处理器超时返回 undecided：切换到另一个有资源的目录时经回连询问",
+      "pre": {
+        "hasResources": true,
+        "saved": null
+      },
+      "decisionSent": {
+        "cwd": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-U6nDQA/cwd",
+        "trusted": "yes",
+        "remember": false
+      },
+      "loaded": true,
+      "thinkingLevel": "low",
+      "isProjectTrusted": true,
+      "trustBefore": null,
+      "trustAfter": null,
+      "bridgeLog": [
+        {
+          "at": 1793888627596,
+          "instance": 1,
+          "kind": "factory",
+          "exchanged": false,
+          "decisions": 1
+        },
+        {
+          "at": 1793888627597,
+          "instance": 1,
+          "kind": "project_trust",
+          "eventCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-U6nDQA/cwd",
+          "ctxCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-U6nDQA/cwd",
+          "canonicalCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-U6nDQA/cwd",
+          "hasUI": false,
+          "mode": "rpc",
+          "uiConfirm": false,
+          "source": "startup-config",
+          "result": {
+            "trusted": "yes",
+            "remember": false
+          }
+        },
+        {
+          "at": 1793888627608,
+          "instance": 1,
+          "kind": "session_start",
+          "reason": "startup",
+          "cwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-U6nDQA/cwd",
+          "isProjectTrusted": true,
+          "sessionFile": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-U6nDQA/agent/sessions/2026-11-05T14-23-47-472Z_01a1ac18-2b0f-71b4-a9d8-7833c328a6ca.jsonl"
+        },
+        {
+          "at": 1793888627621,
+          "instance": 2,
+          "kind": "factory",
+          "exchanged": false,
+          "decisions": 1
+        },
+        {
+          "at": 1793888629123,
+          "instance": 2,
+          "kind": "project_trust",
+          "eventCwd": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-U6nDQA/proj2",
+          "ctxCwd": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-U6nDQA/proj2",
+          "canonicalCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-U6nDQA/proj2",
+          "hasUI": false,
+          "mode": "rpc",
+          "uiConfirm": false,
+          "source": "bridge-timeout",
+          "result": {
+            "trusted": "undecided"
+          }
+        },
+        {
+          "at": 1793888629131,
+          "instance": 2,
+          "kind": "session_start",
+          "reason": "resume",
+          "cwd": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-U6nDQA/proj2",
+          "isProjectTrusted": false,
+          "sessionFile": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-U6nDQA/agent/sessions/proj2.jsonl"
+        },
+        {
+          "at": 1793888629131,
+          "instance": 1,
+          "kind": "switch",
+          "target": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-U6nDQA/agent/sessions/proj2.jsonl",
+          "result": {
+            "cancelled": false
+          }
+        },
+        {
+          "at": 1793888629140,
+          "instance": 3,
+          "kind": "factory",
+          "exchanged": false,
+          "decisions": 1
+        },
+        {
+          "at": 1793888629146,
+          "instance": 3,
+          "kind": "session_start",
+          "reason": "resume",
+          "cwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-U6nDQA/cwd",
+          "isProjectTrusted": true,
+          "sessionFile": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-U6nDQA/agent/sessions/2026-11-05T14-23-47-472Z_01a1ac18-2b0f-71b4-a9d8-7833c328a6ca.jsonl"
+        },
+        {
+          "at": 1793888629146,
+          "instance": 2,
+          "kind": "switch",
+          "target": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-U6nDQA/agent/sessions/2026-11-05T14-23-47-472Z_01a1ac18-2b0f-71b4-a9d8-7833c328a6ca.jsonl",
+          "result": {
+            "cancelled": false
+          }
+        }
+      ],
+      "otherLog": [],
+      "afterSwitch": {
+        "loaded": false,
+        "thinkingLevel": "medium",
+        "requestIndex": 1
+      },
+      "afterSwitchBack": {
+        "loaded": true,
+        "thinkingLevel": "low",
+        "requestIndex": 2
+      },
+      "switchMs": 1516
+    },
+    {
+      "test": "D3 回连不可用（没有 bridgeUrl）：切换到另一个有资源的目录时经回连询问",
+      "pre": {
+        "hasResources": true,
+        "saved": null
+      },
+      "decisionSent": {
+        "cwd": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-QycE48/cwd",
+        "trusted": "yes",
+        "remember": false
+      },
+      "loaded": true,
+      "thinkingLevel": "low",
+      "isProjectTrusted": true,
+      "trustBefore": null,
+      "trustAfter": null,
+      "bridgeLog": [
+        {
+          "at": 1793888629571,
+          "instance": 1,
+          "kind": "factory",
+          "exchanged": false,
+          "decisions": 1
+        },
+        {
+          "at": 1793888629572,
+          "instance": 1,
+          "kind": "project_trust",
+          "eventCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-QycE48/cwd",
+          "ctxCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-QycE48/cwd",
+          "canonicalCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-QycE48/cwd",
+          "hasUI": false,
+          "mode": "rpc",
+          "uiConfirm": false,
+          "source": "startup-config",
+          "result": {
+            "trusted": "yes",
+            "remember": false
+          }
+        },
+        {
+          "at": 1793888629585,
+          "instance": 1,
+          "kind": "session_start",
+          "reason": "startup",
+          "cwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-QycE48/cwd",
+          "isProjectTrusted": true,
+          "sessionFile": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-QycE48/agent/sessions/2026-11-05T14-23-49-444Z_01a1ac18-32c4-777e-95c7-37b6111991bf.jsonl"
+        },
+        {
+          "at": 1793888629599,
+          "instance": 2,
+          "kind": "factory",
+          "exchanged": false,
+          "decisions": 1
+        },
+        {
+          "at": 1793888629599,
+          "instance": 2,
+          "kind": "project_trust",
+          "eventCwd": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-QycE48/proj2",
+          "ctxCwd": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-QycE48/proj2",
+          "canonicalCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-QycE48/proj2",
+          "hasUI": false,
+          "mode": "rpc",
+          "uiConfirm": false,
+          "source": "no-bridge",
+          "result": {
+            "trusted": "undecided"
+          }
+        },
+        {
+          "at": 1793888629606,
+          "instance": 2,
+          "kind": "session_start",
+          "reason": "resume",
+          "cwd": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-QycE48/proj2",
+          "isProjectTrusted": false,
+          "sessionFile": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-QycE48/agent/sessions/proj2.jsonl"
+        },
+        {
+          "at": 1793888629606,
+          "instance": 1,
+          "kind": "switch",
+          "target": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-QycE48/agent/sessions/proj2.jsonl",
+          "result": {
+            "cancelled": false
+          }
+        },
+        {
+          "at": 1793888629613,
+          "instance": 3,
+          "kind": "factory",
+          "exchanged": false,
+          "decisions": 1
+        },
+        {
+          "at": 1793888629618,
+          "instance": 3,
+          "kind": "session_start",
+          "reason": "resume",
+          "cwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-QycE48/cwd",
+          "isProjectTrusted": true,
+          "sessionFile": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-QycE48/agent/sessions/2026-11-05T14-23-49-444Z_01a1ac18-32c4-777e-95c7-37b6111991bf.jsonl"
+        },
+        {
+          "at": 1793888629618,
+          "instance": 2,
+          "kind": "switch",
+          "target": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-QycE48/agent/sessions/2026-11-05T14-23-49-444Z_01a1ac18-32c4-777e-95c7-37b6111991bf.jsonl",
+          "result": {
+            "cancelled": false
+          }
+        }
+      ],
+      "otherLog": [],
+      "afterSwitch": {
+        "loaded": false,
+        "thinkingLevel": "medium",
+        "requestIndex": 1
+      },
+      "afterSwitchBack": {
+        "loaded": true,
+        "thinkingLevel": "low",
+        "requestIndex": 2
+      },
+      "switchMs": 13
+    },
+    {
+      "test": "E1 project_trust 处理器运行时 pane-bridge 的工厂已执行、进程级连接对象已存在；记录实例序号",
+      "pre": {
+        "hasResources": true,
+        "saved": null
+      },
+      "decisionSent": {
+        "cwd": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-p5sBLs/cwd",
+        "trusted": "yes",
+        "remember": false
+      },
+      "loaded": true,
+      "thinkingLevel": "low",
+      "isProjectTrusted": true,
+      "trustBefore": null,
+      "trustAfter": null,
+      "bridgeLog": [
+        {
+          "at": 1793888630054,
+          "instance": 1,
+          "kind": "factory",
+          "exchanged": false,
+          "decisions": 1
+        },
+        {
+          "at": 1793888630055,
+          "instance": 1,
+          "kind": "project_trust",
+          "eventCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-p5sBLs/cwd",
+          "ctxCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-p5sBLs/cwd",
+          "canonicalCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-p5sBLs/cwd",
+          "hasUI": false,
+          "mode": "rpc",
+          "uiConfirm": false,
+          "source": "startup-config",
+          "result": {
+            "trusted": "yes",
+            "remember": false
+          }
+        },
+        {
+          "at": 1793888630068,
+          "instance": 1,
+          "kind": "session_start",
+          "reason": "startup",
+          "cwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-p5sBLs/cwd",
+          "isProjectTrusted": true,
+          "sessionFile": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-p5sBLs/agent/sessions/2026-11-05T14-23-49-925Z_01a1ac18-34a4-748a-bcd1-bf962562711b.jsonl"
+        }
+      ],
+      "otherLog": []
+    },
+    {
+      "test": "E2 工厂函数异步兑换 ticket（服务端延迟 300 ms 响应）后，project_trust 处理器拿到兑换响应里的启动配置",
+      "pre": {
+        "hasResources": true,
+        "saved": null
+      },
+      "decisionSent": null,
+      "loaded": true,
+      "thinkingLevel": "low",
+      "isProjectTrusted": true,
+      "trustBefore": null,
+      "trustAfter": null,
+      "bridgeLog": [
+        {
+          "at": 1793888630830,
+          "instance": 1,
+          "kind": "factory",
+          "exchanged": true,
+          "decisions": 1
+        },
+        {
+          "at": 1793888630831,
+          "instance": 1,
+          "kind": "project_trust",
+          "eventCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-u5dQDJ/cwd",
+          "ctxCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-u5dQDJ/cwd",
+          "canonicalCwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-u5dQDJ/cwd",
+          "hasUI": false,
+          "mode": "rpc",
+          "uiConfirm": false,
+          "source": "startup-config",
+          "result": {
+            "trusted": "yes",
+            "remember": false
+          }
+        },
+        {
+          "at": 1793888630845,
+          "instance": 1,
+          "kind": "session_start",
+          "reason": "startup",
+          "cwd": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-u5dQDJ/cwd",
+          "isProjectTrusted": true,
+          "sessionFile": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-u5dQDJ/agent/sessions/2026-11-05T14-23-50-388Z_01a1ac18-3673-708b-99fe-fea51b93154f.jsonl"
+        }
+      ],
+      "otherLog": []
+    }
+  ]
+}
