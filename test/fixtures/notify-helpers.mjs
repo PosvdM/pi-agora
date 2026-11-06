@@ -13,12 +13,12 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const productionExtension = fileURLToPath(new URL('../../packages/extension/dist/index.js', import.meta.url));
 const fixtureExtension = path.join(here, 'notify-extension.ts');
 const fixtureDaemon = path.join(here, 'notify-daemon.mjs');
-export const spawnPrompt = 'Start the isolated notification task';
-export const childResult = 'notification child completed';
+export const spawnPrompt = '启动隔离的通知任务';
+export const childResult = '通知测试子代理已完成';
 const script = {
   fallback: { segments: [{ type: 'text', text: childResult }] },
   routes: [{ when: { request: 2, lastUser: spawnPrompt }, reply: { segments: [{ type: 'toolCall', name: 'agora_task', arguments: {
-    action: 'spawn', title: 'Notification crash recovery', prompt: 'Return the isolated child result',
+    action: 'spawn', title: '通知崩溃恢复', prompt: '返回隔离子代理的结果',
     profile: 'explore', model: 'p0-fake/scripted', thinking: 'off', isolation: 'none', notify: 'wake',
   } }] } }],
 };
@@ -39,17 +39,17 @@ function track(child, stderrFile) {
   return { child, exit, get stderr() { return stderr; } };
 }
 export async function forceKill(handle) {
-  assert.equal(handle.child.exitCode, null, 'The owned process must still be running before SIGKILL');
+  assert.equal(handle.child.exitCode, null, '发送 SIGKILL 前，本测试拥有的进程必须仍在运行');
   assert.equal(handle.child.signalCode, null);
-  assert.equal(handle.child.kill('SIGKILL'), true, 'SIGKILL must be delivered to the owned child PID');
+  assert.equal(handle.child.kill('SIGKILL'), true, '必须向本测试拥有的子进程 PID 发出 SIGKILL');
   const result = await Promise.race([
     handle.exit,
     new Promise((_resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`SIGKILL timeout for PID ${handle.child.pid}`)), 10000);
+      const timer = setTimeout(() => reject(new Error(`等待 PID ${handle.child.pid} 被 SIGKILL 终止超时`)), 10000);
       timer.unref();
     }),
   ]);
-  assert.equal(result.signal, 'SIGKILL', `Expected force termination, got ${JSON.stringify(result)}`);
+  assert.equal(result.signal, 'SIGKILL', `进程必须被强制终止，实际退出信息：${JSON.stringify(result)}`);
   return result;
 }
 
@@ -85,7 +85,7 @@ export async function notificationFixture(t) {
     let next = 0;
     const pending = new Map();
     const ready = new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`daemon startup timed out: ${handle.stderr}`)), 25000);
+      const timer = setTimeout(() => reject(new Error(`daemon 启动超时：${handle.stderr}`)), 25000);
       child.on('message', (message) => {
         if (message.ready) { clearTimeout(timer); resolve(message); return; }
         const request = pending.get(message.seq);
@@ -96,14 +96,14 @@ export async function notificationFixture(t) {
       });
       handle.exit.then((result) => {
         clearTimeout(timer);
-        reject(new Error(`daemon exited ${JSON.stringify(result)}: ${handle.stderr}`));
-        for (const request of pending.values()) { clearTimeout(request.timer); request.reject(new Error('daemon exited')); }
+        reject(new Error(`daemon 已退出，退出信息 ${JSON.stringify(result)}：${handle.stderr}`));
+        for (const request of pending.values()) { clearTimeout(request.timer); request.reject(new Error('daemon 已退出')); }
         pending.clear();
       }, reject);
     });
     handle.call = (op, body = {}) => new Promise((resolve, reject) => {
       const seq = ++next;
-      const timer = setTimeout(() => { pending.delete(seq); reject(new Error(`daemon fixture IPC timed out: ${op}`)); }, 15000);
+      const timer = setTimeout(() => { pending.delete(seq); reject(new Error(`daemon 夹具的 IPC 操作超时：${op}`)); }, 15000);
       pending.set(seq, { resolve, reject, timer });
       child.send({ seq, op, body });
     });
@@ -123,18 +123,18 @@ export async function notificationFixture(t) {
     handle.events = [];
     handle.rpc.onEvent((event) => handle.events.push(event));
     const response = await handle.rpc.send({ type: 'get_state' }, { timeoutMs: 30000 });
-    assert.equal(response.success, true, `${JSON.stringify(response)}\n${handle.stderr}`);
+    assert.equal(response.success, true, `pi 启动状态请求失败：${JSON.stringify(response)}\n${handle.stderr}`);
     sessionFile = response.data.sessionFile;
-    assert.equal(sessionFile, base.sessionPath('principal'), 'Restart uses the original session path');
+    assert.equal(sessionFile, base.sessionPath('principal'), '重启必须使用原会话路径');
     handle.ready = await until(async () => (await ext()).slice(from).find((entry) => entry.kind === 'ready'), 10000);
-    assert.equal(handle.ready.principalEntries.length, 1, `Production principal binding failed: ${handle.stderr}`);
+    assert.equal(handle.ready.principalEntries.length, 1, `生产 principal 绑定失败：${handle.stderr}`);
     currentPi = handle;
     return handle;
   }
   async function prompt(handle, message) {
     const from = handle.events.length;
     const response = await handle.rpc.send({ type: 'prompt', message });
-    assert.equal(response.success, true, JSON.stringify(response));
+    assert.equal(response.success, true, `隔离会话的对话请求失败：${JSON.stringify(response)}`);
     await until(() => handle.events.slice(from).some((event) => event.type === 'agent_end'), 20000);
     await until(async () => !(await handle.rpc.send({ type: 'get_state' })).data.isStreaming, 10000);
     return response;
@@ -149,7 +149,7 @@ export async function notificationFixture(t) {
       }
       await handle.exit;
     }
-    if (!t.passed) console.error(`Notification fault fixture retained: ${base.root}`);
+    if (!t.passed) console.error(`通知故障测试现场已保留：${base.root}`);
     // piFixture 负责恢复父进程 HOME；失败现场保留便于检查。
     const keep = process.env.KEEP_FIXTURES;
     if (!t.passed) process.env.KEEP_FIXTURES = '1';

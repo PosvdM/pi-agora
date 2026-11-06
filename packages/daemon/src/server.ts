@@ -79,6 +79,7 @@ export function createHttpServer(context: ServerContext) {
       let result: Reply;
       const idempotent = method === "POST" && conn?.principalId && !authRoute && !url.pathname.endsWith("/ready") && !url.pathname.endsWith("/fatal") && !url.pathname.startsWith("/v1/lease/");
       if (key !== undefined && idempotent) {
+        if (conn!.type === "agent:main") context.auth.requireMain(conn!);
         if (typeof key !== "string" || !key.length || key.length > 256) invalid("幂等键无效");
         context.store.run("DELETE FROM operations WHERE created_at<?", Date.now() - 86_400_000);
         const fingerprint = createHash("sha256").update(stableJson([method, url.pathname + url.search, body])).digest("hex");

@@ -115,6 +115,29 @@ test('逆向扫描跨块Unicode、损坏行和伪造同id记录', async t => {
   assert.deepEqual([...(await persistedNotices(f.file, [entry]))], ['entry-1']);
 });
 
+test('超过4MiB的其他会话记录不阻断更早通知的磁盘核实', async t => {
+  const f = await fixture(t);
+  await f.delivery.accept([f.notice]);
+  await f.persist(f.entries[0]);
+  await appendFile(f.file, JSON.stringify({ type: 'message', id: 'large-image', content: 'x'.repeat(5 * 1024 * 1024) }) + '\n');
+  await f.delivery.confirm();
+  assert.equal(f.acks.length, 1);
+  assert.equal(f.acks[0].entryId, 'entry-1');
+});
+
+test('重复会话条目只ack一次，close之后排队操作不再注入', async t => {
+  const f = await fixture(t);
+  await f.delivery.accept([f.notice]);
+  f.entries.push({ ...f.entries[0], id: 'duplicate-entry' });
+  for (const entry of f.entries) await f.persist(entry);
+  await Promise.all([f.delivery.confirm(), f.delivery.accept([f.notice]), f.delivery.confirm()]);
+  assert.equal(f.acks.length, 1);
+  const pending = f.delivery.accept([{ ...f.notice, noticeId: 'other', dedupeKey: 'other' }]);
+  f.delivery.close();
+  await pending;
+  assert.equal(f.sends.length, 1);
+});
+
 test('注入失败释放在途标记且通知内容明确标注与截断', async t => {
   const f = await fixture(t);
   const original = f.pi.sendMessage;

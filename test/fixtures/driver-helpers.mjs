@@ -48,6 +48,9 @@ export async function piFixture(script = { turns: [] }) {
     PI_OFFLINE: "1", PI_SKIP_VERSION_CHECK: "1", PI_TELEMETRY: "0",
     FAKE_SCRIPT_PATH: scriptPath, FAKE_REQUEST_LOG: requestLog, DRIVER_TEST_ROOT: root,
   };
+  for (const name of ["XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"]) {
+    if (process.env[name]) env[name] = process.env[name];
+  }
   if (isWin) for (const name of ["SystemRoot", "SYSTEMROOT", "windir", "ComSpec", "PATHEXT", "ProgramFiles", "ProgramFiles(x86)"]) {
     if (process.env[name]) env[name] = process.env[name];
   }

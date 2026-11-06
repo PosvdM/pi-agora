@@ -47,6 +47,7 @@ export interface DriverDiagnostics {
   reason: string;
   code: number | null;
   signal: string | null;
+  cleanupConfirmed: boolean;
   events: RpcEvent[];
   activeTools: ActiveTool[];
   lastCompletedAction?: RpcEvent;
@@ -115,7 +116,9 @@ function sessionKey(file: string): string { return comparisonKey(realPathOrPendi
 
 /** 会话锁在写者放行前取得，直到停止报告及进程身份均通过检查后才释放。 */
 export class RpcSubprocessDriver implements SessionDriver {
-  private readonly recovering = new Set<string>();
+  private readonly recovering = new Map<string, Set<string>>();
+  private readonly recoveryOperations = new Map<string, Promise<StopReport>>();
+  private readonly retainedLocks = new Map<string, SessionWriterLock>();
   constructor(private readonly options: DriverOptions) {
     duration(options.readyTimeoutMs, 30_000);
     duration(options.heartbeatIntervalMs, 10_000);
@@ -125,12 +128,29 @@ export class RpcSubprocessDriver implements SessionDriver {
   }
   async recoverOldRun(identity: ProcessIdentity, sessionFile?: string): Promise<StopReport> {
     const key = sessionFile && sessionKey(sessionFile);
-    if (key) this.recovering.add(key);
-    // 即使 pi 已退出也执行，Linux 的旧 scope 仍可能有后代。
-    const report = await stopByIdentity(identity, this.options.stopOptions);
-    await verifyStopped(identity, report);
-    if (key) this.recovering.delete(key);
-    return report;
+    const processKey = `${identity.pid}:${identity.startTime}`;
+    const operationKey = `${key ?? ""}\n${processKey}`;
+    const existing = this.recoveryOperations.get(operationKey);
+    if (existing) return existing;
+    if (key) {
+      const pending = this.recovering.get(key) ?? new Set<string>();
+      pending.add(processKey);
+      this.recovering.set(key, pending);
+    }
+    const operation = (async () => {
+      // 即使 pi 已退出也执行，Linux 的旧 scope 仍可能有后代。
+      const report = await stopByIdentity(identity, this.options.stopOptions);
+      await verifyStopped(identity, report);
+      if (key) {
+        const pending = this.recovering.get(key)!;
+        pending.delete(processKey);
+        if (!pending.size) this.recovering.delete(key);
+      }
+      return report;
+    })();
+    this.recoveryOperations.set(operationKey, operation);
+    try { return await operation; }
+    finally { this.recoveryOperations.delete(operationKey); }
   }
   async start(spec: LaunchSpec): Promise<DriverHandle> {
     if (spec.profile !== "explore") throw failure("EAGORA_PROFILE", "此切片只支持 explore 档位");
@@ -146,12 +166,23 @@ export class RpcSubprocessDriver implements SessionDriver {
       app: "pi-agora", identity: currentProcessIdentity(spec.instanceId),
     });
     if (!isSessionWriterLock(lock)) throw failure("EAGORA_SESSION_BUSY", "会话已被其他宿主托管");
-    const recovery = await lock.recoverPreviousWriter();
-    if (recovery === "failed") throw failure("EAGORA_RECOVERY_FAILED", "上一个写者状态不明，不能启动会话");
-    // 恢复报告里的残留不能因新写者启动而被忽略。
-    if (lock.recoveryReports.some((report) => report.leftovers.length)) {
+    const recovery = await lock.recoverPreviousWriter(this.options.stopOptions);
+    if (recovery === "failed") {
+      throw Object.assign(failure("EAGORA_RECOVERY_FAILED", "上一个写者状态不明，不能启动会话"), { recoveryReports: lock.recoveryReports });
+    }
+    // hostkit 的恢复只要求覆盖范围内无残留，宿主还须拒绝快照探测不全。
+    const uncertainReport = lock.recoveryReports.find((report) => stopReportProblem(report));
+    if (uncertainReport) {
+      this.retainedLocks.set(key, lock);
+      const pending = this.recovering.get(key) ?? new Set<string>();
+      pending.add("unconfirmed-recovery");
+      this.recovering.set(key, pending);
+      throw Object.assign(failure("EAGORA_RECOVERY_FAILED", "上一个写者的清理尚未确认，保留会话写锁"),
+        { stopReport: uncertainReport, recoveryReports: lock.recoveryReports });
+    }
+    if (this.recovering.has(key)) {
       await lock.release();
-      throw failure("EAGORA_RECOVERY_FAILED", "上一个写者仍有遗留进程");
+      throw failure("EAGORA_RECOVERY_PENDING", "旧运行尚未确认退出，不能恢复会话");
     }
     const argv = [pi.cliEntry, "--mode", "rpc", "--session-dir", path.dirname(spec.sessionFile),
       "--session", spec.sessionFile, "--model", spec.model, "--thinking", spec.thinking,
@@ -167,21 +198,34 @@ export class RpcSubprocessDriver implements SessionDriver {
         snapshotIntervalMs: this.options.snapshotIntervalMs });
     } catch (error) {
       // spawnWriter 的失败路径自行停止进程；release 仍会核对写者，不能强行解锁。
-      await lock.release();
+      try { await lock.release(); }
+      catch (cleanup) {
+        throw new AggregateError([error, cleanup], `写者启动失败且会话锁未释放：${String(error)}；${String(cleanup)}`);
+      }
       throw error;
     }
     return new RpcDriverHandle(proc, lock, spec, this.options);
   }
 }
 
+function stopReportProblem(report: StopReport): string | undefined {
+  if (!["job_object", "cgroup", "snapshot_visible"].includes(report.coverage)) return "停止报告缺少有效的覆盖范围";
+  if (report.steps.some((step) => !step.ok && ["snapshot", "snapshot cleanup", "verify"].includes(step.step))) return "停止报告包含未确认的快照或退出复查";
+  if (report.leftovers.length) return "停止报告仍有遗留进程";
+  return undefined;
+}
 async function verifyStopped(identity: ProcessIdentity, report: StopReport): Promise<void> {
-  if (!["job_object", "cgroup", "snapshot_visible"].includes(report.coverage)) {
-    throw failure("EAGORA_STOP_COVERAGE", "停止报告缺少有效的覆盖范围");
+  const problem = stopReportProblem(report);
+  if (problem) {
+    const code = problem === "停止报告缺少有效的覆盖范围" ? "EAGORA_STOP_COVERAGE" : "EAGORA_STOP_INCOMPLETE";
+    throw Object.assign(failure(code, `${problem}，保留会话写锁`), { identity, stopReport: report });
   }
-  const uncertainSnapshot = report.steps.some((step) => !step.ok && ["snapshot", "snapshot cleanup", "verify"].includes(step.step));
-  if (uncertainSnapshot || report.leftovers.length || await isSameProcess(identity) !== "gone") {
-    throw failure("EAGORA_STOP_INCOMPLETE", "进程树尚未确认退出，保留会话写锁");
+  try {
+    if (await isSameProcess(identity) === "gone") return;
+  } catch (cause) {
+    throw Object.assign(failure("EAGORA_STOP_INCOMPLETE", "无法核对写者身份，保留会话写锁"), { cause, identity, stopReport: report });
   }
+  throw Object.assign(failure("EAGORA_STOP_INCOMPLETE", "写者尚未确认退出，保留会话写锁"), { identity, stopReport: report });
 }
 
 class RpcDriverHandle implements DriverHandle {
@@ -234,7 +278,7 @@ class RpcDriverHandle implements DriverHandle {
   }
   send(cmd: RpcCommand, opts?: { timeoutMs?: number }): Promise<RpcResponse> {
     if (this.stopping) return Promise.reject(failure("EAGORA_STOPPING", "运行正在停止"));
-    const allowed = ["get_state", "get_available_models", "get_entries", "get_last_assistant_text", "get_commands", "prompt", "steer", "follow_up", "clear_queue", "abort"];
+    const allowed = ["get_state", "get_available_models", "get_entries", "get_last_assistant_text", "get_session_stats", "get_commands", "prompt", "steer", "follow_up", "clear_queue", "abort"];
     if (!allowed.includes(cmd.type)) return Promise.reject(failure("EAGORA_RPC_FORBIDDEN", "不允许此 RPC 命令"));
     if (!this.ready && ["prompt", "steer", "follow_up"].includes(cmd.type)) {
       return Promise.reject(failure("EAGORA_NOT_READY", "受管扩展尚未就绪"));
@@ -299,7 +343,7 @@ class RpcDriverHandle implements DriverHandle {
   }
   diagnostics(): DriverDiagnostics {
     const activeTools = (this.interruptedTools ?? [...this.tools.values()]).map((tool) => ({ ...tool }));
-    return { identity: this.identity, reason: this.reason, ...this.exitInfo,
+    return { identity: this.identity, reason: this.reason, ...this.exitInfo, cleanupConfirmed: this.cleanupConfirmed,
       events: structuredClone(this.events), activeTools, lastCompletedAction: this.lastCompleted,
       possibleSideEffects: activeTools.filter((tool) => !["read", "grep", "find", "ls"].includes(tool.toolName)),
       stderr: this.proc.stderrTail(), stopReport: this.report, error: this.error,

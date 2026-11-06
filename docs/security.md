@@ -1,6 +1,6 @@
 # 安全模型
 
-> 状态：设计草案。接口、端点和默认值是草案，P0 验证后冻结。
+> 本文描述完整安全设计。切片 1a 实现主 / 子 Agent 级身份、握手、主会话恢复与租约、launch ticket 和只读权限；不开放用户级操作。用户确认、设备配对及相关接口按后续切片提供。
 
 本文定义 agora daemon 的身份、鉴权、用户确认、设备配对、资源访问控制、审计和剩余风险。进程与存储见 [architecture.md](architecture.md)，平台相关的实现（密钥目录权限、路径规范化）见 [pi-hostkit 设计文档](https://github.com/PosvdM/pi-hostkit/blob/main/docs/design.md)，HTTP 端点见 [integration.md](integration.md)。
 
@@ -63,6 +63,8 @@ CLI、pane 插件和主会话里的扩展用 `host.key` 与 daemon 双向握手�
 
 1. 客户端 `POST /v1/auth/challenge`，带随机 `clientNonce`；daemon 返回 `serverNonce`、`instanceId` 和 `serverProof = HMAC(hostKey, "server" | clientNonce | instanceId)`。客户端校验 `serverProof`，确认对方是同一数据目录的 daemon，防止端口被别的程序占用后冒充。
 2. 客户端 `POST /v1/auth/token`，带 `clientProof = HMAC(hostKey, "client" | serverNonce | instanceId)` 和想要的身份：`host:cli`、`host:pane`，或注册/认领主会话。daemon 校验后签发连接 token。
+
+握手证明的消息编码为 UTF-8 的 `JSON.stringify([方向, nonce, instanceId])`，HMAC 使用 SHA-256，证明以 base64url 编码。challengeId 标识有效期为 60 秒的一次性挑战，兑换时消费，失败后也不能重放。主会话恢复证明使用恢复凭证计算 `HMAC-SHA256(JSON.stringify(["reclaim", principalId, sessionId, connectionId, instanceId]))`，同样以 base64url 编码；绑定本次连接，不能转用到另一连接或 daemon 实例。
 
 连接 token 是不透明随机串，绑定 principalId、connectionId 和权限范围，默认有效期 1 小时，过期前可续期；daemon 重启后全部失效。token 不出现在工具结果、会话内容和日志里。
 

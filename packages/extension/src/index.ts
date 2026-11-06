@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { AgoraHttpError, agoraHome, connectHost, connectLaunch, hmacProof } from '@pi-agora/protocol';
+import { AgoraConnectionError, AgoraHttpError, agoraHome, connectHost, connectLaunch, hmacProof } from '@pi-agora/protocol';
 import type { AgoraClient } from '@pi-agora/protocol';
 import { NoticeDelivery } from './notifications.js';
 import type { Notice } from './notifications.js';
@@ -21,7 +21,7 @@ const taskSchema = {
   },
 };
 function principalReference(ctx: SessionContext): string | undefined {
-  const entries = ctx.sessionManager.getBranch();
+  const entries = ctx.sessionManager.getEntries();
   for (let i = entries.length - 1; i >= 0; i--) {
     const entry = entries[i]!;
     if (entry.type !== 'custom' || entry.customType !== 'agora-principal') continue;
@@ -30,7 +30,7 @@ function principalReference(ctx: SessionContext): string | undefined {
   }
   return undefined;
 }
-async function bindMain(pi: PiExtensionApi, ctx: SessionContext, client: AgoraClient, home: string): Promise<boolean> {
+async function bindMain(ctx: SessionContext, client: AgoraClient, home: string): Promise<{ ephemeral: boolean; principalId?: string }> {
   const sessionId = ctx.sessionManager.getSessionId();
   const sessionFile = ctx.sessionManager.getSessionFile();
   const ephemeral = !sessionFile;
@@ -43,7 +43,7 @@ async function bindMain(pi: PiExtensionApi, ctx: SessionContext, client: AgoraCl
     try {
       await client.request('POST', '/v1/principals/reclaim', { principalId: previous, sessionId,
         proof: hmacProof(key, ['reclaim', previous, sessionId, client.connectionId, client.instanceId]) });
-      return ephemeral;
+      return { ephemeral };
     } catch (error) {
       if (!(error instanceof AgoraHttpError) || error.code !== 'session_mismatch') throw error;
     }
@@ -51,9 +51,24 @@ async function bindMain(pi: PiExtensionApi, ctx: SessionContext, client: AgoraCl
   const registered = await client.request<{ principalId: string }>('POST', '/v1/principals/register', {
     sessionId, sessionFile, cwd: ctx.cwd, ephemeral, ...(previous ? { forkedFrom: previous } : {}),
   });
-  if (!/^[A-Za-z0-9_-]{1,128}$/.test(registered.principalId)) throw new Error('agora 会话注册响应无效');
-  pi.appendEntry('agora-principal', { principalId: registered.principalId });
-  return ephemeral;
+  if (!registered || !/^[A-Za-z0-9_-]{1,128}$/.test(registered.principalId)) throw new Error('agora 会话注册响应无效');
+  return { ephemeral, principalId: registered.principalId };
+}
+interface SessionRuntime {
+  ctx: SessionContext;
+  sessionId: string;
+  controller: AbortController;
+  client?: AgoraClient;
+  delivery?: NoticeDelivery;
+  policy?: ChildPolicy;
+  runId?: string;
+  ready: boolean;
+  fatal: boolean;
+  initializing?: Promise<void>;
+  reconnecting?: Promise<void>;
+  reconnectAfter: number;
+  leaseTimer?: ReturnType<typeof setInterval>;
+  refreshTimer?: ReturnType<typeof setInterval>;
 }
 
 export default function agoraExtension(pi: PiExtensionApi): void {
@@ -62,73 +77,132 @@ export default function agoraExtension(pi: PiExtensionApi): void {
   const ticket = process.env.AGORA_LAUNCH_TICKET;
   const childUrl = process.env.AGORA_URL;
   delete process.env.AGORA_LAUNCH_TICKET;
-  let client: AgoraClient | undefined;
-  let context: SessionContext | undefined;
-  let delivery: NoticeDelivery | undefined;
-  let policy: ChildPolicy | undefined;
-  let runId: string | undefined;
-  let ready = false;
-  let fatal = false;
-  let stopped = true;
-  let controller = new AbortController();
-  let leaseTimer: ReturnType<typeof setInterval> | undefined;
-  let refreshTimer: ReturnType<typeof setInterval> | undefined;
-  let initializing: Promise<void> | undefined;
-  let sessionKey: string | undefined;
   const home = managed ? undefined : agoraHome();
   const launchPromise = managed
     ? (ticket && childUrl ? connectLaunch<LaunchIdentity>(childUrl, ticket) : Promise.reject(new Error('agora 子会话缺少启动凭证')))
     : undefined;
-  // session_start 接管错误；附加处理器防止加载期间出现未处理的拒绝。
   void launchPromise?.catch(() => {});
-
-  function notify(message: string): void {
-    if (context?.hasUI) context.ui?.notify(message, 'error');
+  let runtime: SessionRuntime | undefined;
+  const current = (r: SessionRuntime) => runtime === r && !r.controller.signal.aborted;
+  const notify = (r: SessionRuntime, message: string) => {
+    try { if (current(r) && r.ctx.hasUI) r.ctx.ui?.notify(message, 'error'); } catch { /* 界面错误不能中断权限检查或清理。 */ }
+  };
+  async function release(client: AgoraClient): Promise<void> {
+    await client.request('POST', '/v1/lease/release', {}, { timeoutMs: 2000 }).catch(() => {});
+    client.close();
   }
-  function recordFatal(): void {
-    ready = false;
-    if (fatal) return;
-    fatal = true;
+  function recordFatal(r: SessionRuntime): void {
+    r.ready = false;
+    if (r.fatal || !current(r)) return;
+    r.fatal = true;
     try { pi.appendEntry('agora-fatal', { message: '权限检查失败，已拒绝工具调用' }); } catch { /* 关闭期间不放行工具。 */ }
-    notify('agora 权限检查失败，协作会话已停用');
-    if (client && runId) void client.request('POST', `/v1/runs/${encodeURIComponent(runId)}/fatal`, {}).catch(() => {});
-    context?.shutdown();
+    notify(r, 'agora 权限检查失败，协作会话已停用');
+    try {
+      if (r.client && r.runId) void r.client.request('POST', `/v1/runs/${encodeURIComponent(r.runId)}/fatal`, {}).catch(() => {});
+    } catch { /* 通知后台失败时仍须阻断工具。 */ }
+    try { r.ctx.shutdown(); } catch { /* 关闭失败时保持 fatal，后续工具仍被拒绝。 */ }
   }
-  async function poll(wait: number): Promise<void> {
-    const activeClient = client;
-    const activeDelivery = delivery;
-    if (!activeClient || !activeDelivery || stopped) return;
-    await activeDelivery.confirm();
-    const response = await activeClient.request<{ items: Notice[] }>('GET', `/v1/inbox?wait=${wait}`, undefined, { signal: controller.signal });
-    if (stopped || activeClient !== client) return;
-    await activeDelivery.accept(response.items);
+  async function connectMain(r: SessionRuntime): Promise<{ client: AgoraClient; ephemeral: boolean } | undefined> {
+    const replacement = await connectHost({ home, as: 'agent:main', signal: r.controller.signal });
+    if (!current(r)) { replacement.close(); return; }
+    try {
+      const binding = await bindMain(r.ctx, replacement, home!);
+      // register/reclaim 可能已在 daemon 接受后遇到 shutdown，迟到的租约仍须释放。
+      if (!current(r)) { await release(replacement); return; }
+      if (binding.principalId) pi.appendEntry('agora-principal', { principalId: binding.principalId });
+      return { client: replacement, ephemeral: binding.ephemeral };
+    } catch (error) {
+      // 响应丢失时也可能已绑定；release 只释放本连接持有的租约。
+      await release(replacement);
+      throw error;
+    }
   }
-  let reconnecting: Promise<void> | undefined;
-  function reconnect(): Promise<void> {
-    if (managed || stopped || !context) return Promise.resolve();
-    if (reconnecting) return reconnecting;
-    const ctx = context;
-    reconnecting = (async () => {
-      const replacement = await connectHost({ home, as: 'agent:main', signal: controller.signal });
-      try {
-        await bindMain(pi, ctx, replacement, home!);
-        if (stopped || context !== ctx) { replacement.close(); return; }
-        const previous = client;
-        client = replacement;
-        delivery?.setClient(replacement);
-        previous?.close();
-      } catch (error) { replacement.close(); throw error; }
-    })().finally(() => { reconnecting = undefined; });
-    return reconnecting;
+  function reconnect(r: SessionRuntime): Promise<void> {
+    if (managed || !current(r) || Date.now() < r.reconnectAfter) return Promise.resolve();
+    if (r.reconnecting) return r.reconnecting;
+    r.reconnectAfter = Date.now() + 5000;
+    r.reconnecting = (async () => {
+      const connection = await connectMain(r);
+      if (!connection) return;
+      const previous = r.client;
+      r.client = connection.client;
+      r.delivery?.setClient(connection.client);
+      previous?.close();
+    })().finally(() => { r.reconnecting = undefined; });
+    return r.reconnecting;
   }
-  async function pollLoop(): Promise<void> {
-    while (!stopped && !controller.signal.aborted) {
-      try { await poll(25); }
-      catch {
-        if (stopped) break;
-        await reconnect().catch(() => {});
+  async function recover(r: SessionRuntime, error: unknown): Promise<void> {
+    if (error instanceof AgoraConnectionError || error instanceof AgoraHttpError &&
+        (error.status === 401 || error.status === 409 && error.code === 'lease_required')) {
+      await reconnect(r).catch(() => {});
+    }
+  }
+  async function poll(r: SessionRuntime, wait: number): Promise<number> {
+    const client = r.client;
+    const delivery = r.delivery;
+    if (!current(r) || !client || !delivery) return 0;
+    await delivery.confirm();
+    if (!current(r) || client !== r.client) return 0;
+    const response = await client.request<{ items: Notice[] }>('GET', `/v1/inbox?wait=${wait}`, undefined, { signal: r.controller.signal });
+    if (!current(r) || client !== r.client) return 0;
+    if (!response || !Array.isArray(response.items)) throw new Error('agora 通知响应无效');
+    await delivery.accept(response.items);
+    return response.items.length;
+  }
+  async function drain(r: SessionRuntime, wait: number): Promise<void> {
+    let count = await poll(r, wait);
+    while (current(r) && count > 0) count = await poll(r, 0);
+  }
+  async function pollLoop(r: SessionRuntime): Promise<void> {
+    while (current(r)) {
+      try { await drain(r, 25); } catch (error) { await recover(r, error); }
+      try { await delay(250, undefined, { signal: r.controller.signal }); } catch { break; }
+    }
+  }
+  async function initialize(r: SessionRuntime): Promise<void> {
+    try {
+      if (managed) {
+        const auth = await launchPromise!;
+        if (!current(r)) { auth.client.close(); return; }
+        r.client = auth.client;
+        r.policy = auth.launch.policy;
+        r.runId = auth.launch.runId;
+        if (typeof r.runId !== 'string' || !r.runId) throw new Error('agora 子会话运行标识无效');
+        validatePolicy(r.policy);
+        verifyRuntime(pi, r.ctx, r.policy);
+        const accepted = await r.client.request<{ ready: boolean }>('POST', `/v1/runs/${encodeURIComponent(r.runId)}/ready`, {
+          tools: pi.getActiveTools(), model: `${r.ctx.model!.provider}/${r.ctx.model!.id}`,
+          thinking: pi.getThinkingLevel(), extensionVersion: EXTENSION_VERSION,
+        });
+        if (!current(r)) return;
+        if (accepted?.ready !== true) throw new Error('agora 子会话就绪检查未通过');
+        verifyRuntime(pi, r.ctx, r.policy);
+        r.ready = true;
+      } else {
+        const connection = await connectMain(r);
+        if (!connection) return;
+        r.client = connection.client;
+        r.delivery = new NoticeDelivery(pi, r.ctx, r.client, connection.ephemeral);
+        r.leaseTimer = setInterval(() => {
+          if (current(r)) void r.client?.request('POST', '/v1/lease/renew', {}).catch(error => recover(r, error));
+        }, 30000);
+        r.leaseTimer.unref();
+        await drain(r, 0).catch(() => {});
+        if (!current(r)) return;
+        void pollLoop(r);
       }
-      try { await delay(250, undefined, { signal: controller.signal }); } catch { break; }
+      r.refreshTimer = setInterval(() => {
+        if (current(r)) void r.client?.refresh().catch(error => { if (managed) recordFatal(r); else void recover(r, error); });
+      }, 30 * 60 * 1000);
+      r.refreshTimer.unref();
+    } catch {
+      if (!current(r)) return;
+      if (managed) recordFatal(r);
+      else {
+        notify(r, 'agora 连接失败，请检查后台进程或会话控制租约');
+        r.controller.abort(); r.delivery?.close(); r.client?.close();
+      }
+      throw new Error(managed ? 'agora 子会话初始化失败，已拒绝运行' : 'agora 主会话初始化失败');
     }
   }
   pi.on('session_before_switch', () => managed ? { cancel: true } : undefined);
@@ -136,88 +210,53 @@ export default function agoraExtension(pi: PiExtensionApi): void {
   pi.on('session_before_tree', () => managed ? { cancel: true } : undefined);
   pi.on('tool_call', async (event, ctx) => {
     if (!managed) return;
+    const r = runtime;
     try {
-      if (!ready || fatal || !policy) return { block: true, reason: 'agora 子会话尚未通过就绪检查' };
-      verifyRuntime(pi, ctx, policy);
-      const reason = await checkToolPath(event, ctx, policy);
+      if (!r || !current(r) || !r.ready || r.fatal || !r.policy || ctx.sessionManager.getSessionId() !== r.sessionId) {
+        return { block: true, reason: 'agora 子会话尚未通过就绪检查' };
+      }
+      verifyRuntime(pi, ctx, r.policy);
+      const reason = await checkToolPath(event, ctx, r.policy);
+      if (!current(r) || !r.ready || r.fatal) return { block: true, reason: 'agora 协作会话已经关闭' };
+      verifyRuntime(pi, ctx, r.policy);
       if (reason) return { block: true, reason };
     } catch {
-      recordFatal();
+      if (r) recordFatal(r);
       return { block: true, reason: 'agora 权限检查失败，已拒绝工具调用' };
     }
   });
   pi.on('user_bash', () => managed ? { result: { output: '只读协作会话不能执行命令', exitCode: 1, cancelled: false, truncated: false } } : undefined);
-  async function initialize(ctx: SessionContext): Promise<void> {
-    context = ctx;
-    stopped = false;
-    controller = new AbortController();
-    try {
-      if (managed) {
-        const auth = await launchPromise!;
-        client = auth.client;
-        policy = auth.launch.policy;
-        runId = auth.launch.runId;
-        if (typeof runId !== 'string' || !runId) throw new Error('agora 子会话运行标识无效');
-        validatePolicy(policy);
-        verifyRuntime(pi, ctx, policy);
-        const accepted = await client.request<{ ready: boolean }>('POST', `/v1/runs/${encodeURIComponent(runId)}/ready`, {
-          tools: pi.getActiveTools(), model: `${ctx.model!.provider}/${ctx.model!.id}`,
-          thinking: pi.getThinkingLevel(), extensionVersion: EXTENSION_VERSION,
-        });
-        if (accepted.ready !== true) throw new Error('agora 子会话就绪检查未通过');
-        if (stopped) { client.close(); return; }
-        ready = true;
-      } else {
-        client = await connectHost({ home, as: 'agent:main', signal: controller.signal });
-        const ephemeral = await bindMain(pi, ctx, client, home!);
-        if (stopped) { client.close(); return; }
-        delivery = new NoticeDelivery(pi, ctx, client, ephemeral);
-        leaseTimer = setInterval(() => {
-          void client?.request('POST', '/v1/lease/renew', {}).catch(() => reconnect().catch(() => {}));
-        }, 30000);
-        leaseTimer.unref();
-        await poll(0).catch(() => {});
-        void pollLoop();
-      }
-      refreshTimer = setInterval(() => {
-        void client?.refresh().catch(() => { if (managed) recordFatal(); else void reconnect().catch(() => {}); });
-      }, 30 * 60 * 1000);
-      refreshTimer.unref();
-    } catch {
-      if (managed) recordFatal();
-      else { stopped = true; delivery?.close(); client?.close(); notify('agora 连接失败，请检查后台进程或会话控制租约'); }
-      throw new Error(managed ? 'agora 子会话初始化失败，已拒绝运行' : 'agora 主会话初始化失败');
-    }
-  }
   pi.on('session_start', (_event, ctx) => {
-    const key = ctx.sessionManager.getSessionId();
-    if (initializing) {
-      if (sessionKey === key) return initializing;
+    const sessionId = ctx.sessionManager.getSessionId();
+    if (runtime) {
+      if (runtime.sessionId === sessionId) return runtime.initializing;
       throw new Error('agora 不能在释放旧会话之前初始化其他会话');
     }
-    sessionKey = key;
-    initializing = initialize(ctx);
-    return initializing;
+    const r: SessionRuntime = { ctx, sessionId, controller: new AbortController(), ready: false, fatal: false, reconnectAfter: 0 };
+    runtime = r;
+    r.initializing = initialize(r);
+    return r.initializing;
   });
-  pi.on('turn_end', async () => { if (!stopped) await delivery?.confirm().catch(() => {}); });
+  pi.on('turn_end', async () => {
+    const r = runtime;
+    if (r && current(r)) await r.delivery?.confirm().catch(() => {});
+  });
   pi.on('agent_settled', async () => {
-    if (stopped) return;
-    await delivery?.settled().catch(() => {});
-    // 与长轮询分开，空闲边界的即时拉取不能等待长轮询超时。
-    await poll(0).catch(() => {});
+    const r = runtime;
+    if (!r || !current(r)) return;
+    await r.delivery?.settled().catch(() => {});
+    await drain(r, 0).catch(error => recover(r, error));
   });
   pi.on('session_shutdown', async () => {
-    stopped = true;
-    ready = false;
-    clearInterval(leaseTimer);
-    clearInterval(refreshTimer);
-    controller.abort();
-    delivery?.close();
-    if (client && !managed) await client.request('POST', '/v1/lease/release', {}, { timeoutMs: 2000 }).catch(() => {});
-    client?.close();
-    context = undefined;
-    initializing = undefined;
-    sessionKey = undefined;
+    const r = runtime;
+    if (!r) return;
+    runtime = undefined;
+    r.ready = false;
+    r.controller.abort();
+    clearInterval(r.leaseTimer);
+    clearInterval(r.refreshTimer);
+    r.delivery?.close();
+    if (r.client) { if (managed) r.client.close(); else await release(r.client); }
   });
   if (managed) return;
   pi.registerTool({
@@ -225,9 +264,11 @@ export default function agoraExtension(pi: PiExtensionApi): void {
     description: '派只读子代理，查询任务状态、获取结果或停止任务。仅支持 explore 档位和不创建 worktree 的任务。工具文字最多返回 12000 字。',
     parameters: taskSchema,
     async execute(toolCallId, params, signal, _update, ctx) {
-      if (!client || stopped) throw new Error('agora 主会话尚未连接');
+      const r = runtime;
+      if (!r || !current(r) || !r.client || ctx.sessionManager.getSessionId() !== r.sessionId) throw new Error('agora 主会话尚未连接');
+      const client = r.client;
       let result: unknown;
-      const options = { signal, idempotencyKey: toolCallId };
+      const options = { signal: signal ? AbortSignal.any([signal, r.controller.signal]) : r.controller.signal, idempotencyKey: toolCallId };
       if (params.action === 'spawn') {
         if (params.profile !== 'explore' || typeof params.prompt !== 'string' || !params.prompt.trim() ||
             typeof params.model !== 'string' || !params.model.includes('/') || (params.isolation && params.isolation !== 'none')) {
@@ -244,6 +285,7 @@ export default function agoraExtension(pi: PiExtensionApi): void {
         else if (params.action === 'stop') result = await client.request('POST', path + '/stop', { reason: params.reason }, options);
         else throw new Error('任务操作无效');
       }
+      if (!current(r)) throw new Error('agora 会话已经关闭');
       const text = JSON.stringify(result);
       return { content: [{ type: 'text', text: text.length <= 12000 ? text : text.slice(0, 12000) + '\n结果已截断；请按任务标识查询。' }], details: result };
     },

@@ -74,7 +74,7 @@ pi-pane 不认识“子代理”“会议”这些概念。pi-agora 提供一个
 - 只有 `pane-plugin` 依赖 pi-pane 的插件接口包，其余包都不依赖 pi-pane。
 - 两者共用平台相关的包 [pi-hostkit](https://github.com/PosvdM/pi-hostkit)（定位 pi、RPC 传输、进程树终止、锁、路径规范化）。它是独立仓库，权威设计见其 [docs/design.md](https://github.com/PosvdM/pi-hostkit/blob/main/docs/design.md)。
 
-不装 pi-pane 时，pi-agora 的全部功能都可以在 pi 终端和 `agora` CLI 里使用；其中的用户级操作需要已配对的浏览器确认，或按 [docs/security.md](docs/security.md#只用终端) 关闭这项保护。
+完整设计不依赖 pi-pane：主 Agent 级功能通过 pi 扩展和 `agora` CLI 提供，用户级操作由已配对浏览器确认。1a 只提供上方“使用”中列出的功能，用户确认和离线安全设置属于后续切片，见 [docs/security.md](docs/security.md#只用终端)。
 
 ## 组成
 
@@ -83,8 +83,8 @@ packages/
   daemon/        后台进程：进程监管、身份鉴权、任务/提问/board/会议、存档、HTTP API
   extension/     pi 扩展：装进主代理和每个协作会话，提供 agora_* 工具
   cli/           agora 命令行
-  archive/       只读存档读取库（daemon 不运行时也能用）
-  pane-plugin/   pi-pane 插件
+  archive/       后续切片：只读存档读取库（daemon 不运行时也能用）
+  pane-plugin/   后续切片：pi-pane 插件
   protocol/      协议类型与 schema
 ```
 
@@ -103,6 +103,7 @@ npm test         # 构建后用 node --test 验证，真实 pi 测试要求 1.5.
 
 | 文档 | 内容 |
 | --- | --- |
+| [docs/development.md](docs/development.md) | 1a 实现范围、源码结构、构建、CLI、测试映射和限制 |
 | [docs/architecture.md](docs/architecture.md) | 总体架构、进程模型、受管扩展就绪检查、控制队列、daemon 生命周期、存储、权限档位与路径校验、worktree、崩溃与恢复、资源、平台注意事项 |
 | [docs/security.md](docs/security.md) | 安全模型：principal、主 Agent 级与用户级权限、用户确认、设备配对、只用终端、资源级访问控制、审计、剩余风险 |
 | [docs/tasks.md](docs/tasks.md) | 任务（子代理）：工具接口、状态机、返工与送达追踪、可靠通知、提问与转交、召集人离线 |

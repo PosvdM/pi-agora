@@ -6,6 +6,6 @@ const handle = await driver.start(args.spec);
 const state = await handle.send({ type: "get_state" });
 if (!state.success) throw new Error(state.error);
 handle.markReady();
-if (args.message) await handle.send({ type: "prompt", message: args.message });
 process.stdout.write(`${JSON.stringify({ identity: handle.identity })}\n`);
+if (args.message) await handle.send({ type: "prompt", message: args.message });
 process.stdin.resume();

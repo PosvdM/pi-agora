@@ -20,8 +20,10 @@ async function setup(t, script, extra = {}) {
   const spec = { agoraSessionId: "session", runId: "run", instanceId: "driver-test", cwd: f.cwd,
     model: "p0-fake/scripted", thinking: "off", profile: "explore", sessionFile: f.sessionPath("driver"), env: f.env };
   t.after(async () => {
-    for (const handle of handles) await handle.stop(FAST_STOP);
-    await f.cleanup();
+    const results = await Promise.allSettled(handles.map((handle) => handle.stop(FAST_STOP)));
+    try {
+      for (const result of results) if (result.status === "rejected") throw result.reason;
+    } finally { await f.cleanup(); }
   });
   return { f, options, driver, spec, handles,
     async start(overrides = {}, ready = true) {
@@ -35,6 +37,10 @@ async function setup(t, script, extra = {}) {
 }
 async function assertCoverage(report) {
   const scope = process.platform === "linux" && containment === "auto" && await linuxCgroupSupport();
+  if (process.platform === "linux" && process.env.HOSTKIT_TEST_REQUIRE_CGROUP === "1") {
+    assert.ok(await linuxCgroupSupport(), "此轮 CI 要求真实 cgroup v2 user scope");
+    assert.equal(report.coverage, "cgroup");
+  }
   assert.equal(report.coverage, isWin ? "job_object" : scope ? "cgroup" : "snapshot_visible");
   assert.deepEqual(report.leftovers, []);
   assert.equal(report.steps.find((step) => step.step === "verify")?.ok, true);
@@ -49,6 +55,7 @@ test("真实 pi：写锁竞争、就绪门槛、会话替换禁用和幂等停�
   assert.equal((await handle.send({ type: "get_state" })).success, true);
   await assert.rejects(s.driver.start({ ...s.spec, runId: "competitor" }), { code: "EAGORA_SESSION_BUSY" });
   handle.markReady();
+  assert.equal((await handle.send({ type: "get_session_stats" })).success, true);
   const [a, b] = await Promise.all([handle.stop(FAST_STOP), handle.stop(FAST_STOP)]);
   assert.equal(a, b);
   await assertCoverage(a);
@@ -95,8 +102,12 @@ test("真实 pi：shell 与脱离进程组的孙进程都退出，独立核对�
     assert.equal(report.steps.find((step) => step.step === "abort").ok, false);
     for (const identity of identities) assert.equal(await isSameProcess(identity), "gone");
   } finally {
-    await handle.stop(FAST_STOP);
-    for (const identity of identities) if (await isSameProcess(identity) === "alive") await stopByIdentity(identity, FAST_STOP);
+    // 即使等待第二个 oracle 超时，也独立回收已经登记的后代，不向被测算法补记录。
+    identities = records(oracle);
+    try { await handle.stop(FAST_STOP); }
+    finally {
+      for (const identity of identities) if (await isSameProcess(identity) === "alive") await stopByIdentity(identity, FAST_STOP);
+    }
   }
 });
 
@@ -210,7 +221,8 @@ test("真实 pi：扩展运行故障会停止写者并保存错误事件", { tim
 
 test("真实 pi：宿主强杀后，旧身份确认停止之前不能 resume", { timeout: 60_000 }, async (t) => {
   const s = await setup(t);
-  const args = { options: s.options, spec: s.spec };
+  // 同步阻塞让 POSIX pi 无法自行处理 stdin EOF，确实留下需要按身份终止的旧写者。
+  const args = { options: s.options, spec: s.spec, message: "/driver-block" };
   const child = spawn(process.execPath, [path.join(here, "driver-host.mjs")], {
     env: { ...s.f.env, DRIVER_HOST_ARGS: JSON.stringify(args) }, stdio: ["pipe", "pipe", "pipe"], windowsHide: true,
   });
@@ -225,6 +237,7 @@ test("真实 pi：宿主强杀后，旧身份确认停止之前不能 resume", {
       return output.includes("\n") ? JSON.parse(output.split("\n")[0]).identity : undefined;
     }, 30_000);
     await assert.rejects(s.driver.start({ ...s.spec, runId: "contender" }), { code: "EAGORA_SESSION_BUSY" });
+    await until(() => existsSync(path.join(s.f.root, "rpc-blocked")));
     child.kill("SIGKILL"); await childExit;
     if (isWin) await until(async () => await isSameProcess(identity) === "gone");
     else assert.equal(await isSameProcess(identity), "alive");

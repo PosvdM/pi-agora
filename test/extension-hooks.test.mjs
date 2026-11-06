@@ -87,6 +87,16 @@ test('daemon重启后重新发现握手并凭恢复证明认领原principal', as
   assert.equal(f.wire.state.registerCount, 1);
 });
 
+test('休眠导致租约过期后重新握手认领，不重复注册principal', async t => {
+  const f = await setup(t);
+  await f.handlers.get('session_start')({}, f.ctx);
+  f.wire.state.enforceLease = true;
+  f.wire.state.leaseHeld = false;
+  await until(() => f.wire.state.reclaimCount === 1);
+  assert.equal(f.wire.state.leaseHeld, true);
+  assert.equal(f.wire.state.registerCount, 1);
+});
+
 test('child就绪前拒绝全部工具，启动凭证不进入工具结果及会话', async t => {
   const f = await setup(t, { managed: true });
   const hook = f.handlers.get('tool_call');
@@ -123,6 +133,124 @@ test('child初始化完整工具集合不符时不发送ready', async t => {
   await assert.rejects(f.handlers.get('session_start')({}, f.ctx), /初始化失败/);
   assert.equal(f.wire.state.readyCount, 0);
   assert.equal(f.shutdown, true);
+});
+
+test('主会话导航到不含引用的分支后仍认领原principal', async t => {
+  const f = await setup(t);
+  f.entries.push({ id: 'principal-ref', type: 'custom', customType: 'agora-principal', data: { principalId: 'principal-one' } });
+  f.ctx.sessionManager.getBranch = () => [];
+  await f.handlers.get('session_start')({}, f.ctx);
+  assert.equal(f.wire.state.reclaimCount, 1);
+  assert.equal(f.wire.state.registerCount, 0);
+});
+
+test('fork只在session_mismatch时注册新principal，租约占用不能降级注册', async t => {
+  const f = await setup(t);
+  f.entries.push({ id: 'parent-ref', type: 'custom', customType: 'agora-principal', data: { principalId: 'principal-one' } });
+  f.wire.state.reclaimCode = 'session_mismatch';
+  await f.handlers.get('session_start')({}, f.ctx);
+  assert.equal(f.wire.state.registerCount, 1);
+  assert.equal(f.wire.calls.find(c => c.path === '/v1/principals/register').body.forkedFrom, 'principal-one');
+  await f.handlers.get('session_shutdown')({}, f.ctx);
+  f.wire.state.reclaimCode = undefined;
+  f.wire.state.leaseHeld = true;
+  await assert.rejects(f.handlers.get('session_start')({}, f.ctx), /初始化失败/);
+  assert.equal(f.wire.state.registerCount, 1);
+});
+
+function barrier() {
+  let entered, release;
+  const entering = new Promise(resolve => { entered = resolve; });
+  const gate = new Promise(resolve => { release = resolve; });
+  return { entering, release, async wait() { entered(); await gate; } };
+}
+
+test('shutdown遇到迟到注册时释放租约，不追加引用或启动poll', { timeout: 10000 }, async t => {
+  const f = await setup(t);
+  const gate = barrier();
+  f.wire.state.beforeRequest = call => call.path === '/v1/principals/register' ? gate.wait() : undefined;
+  const starting = f.handlers.get('session_start')({}, f.ctx);
+  await gate.entering;
+  await f.handlers.get('session_shutdown')({}, f.ctx);
+  gate.release();
+  await starting;
+  assert.equal(f.wire.state.registerCount, 1);
+  assert.equal(f.wire.state.leaseHeld, false);
+  assert.equal(f.wire.calls.filter(c => c.path === '/v1/lease/release').length, 1);
+  assert.equal(f.entries.length, 0);
+  assert.equal(f.wire.calls.some(c => c.path.startsWith('/v1/inbox')), false);
+});
+
+test('shutdown遇到迟到reclaim时同样释放租约且旧poll不复活', { timeout: 10000 }, async t => {
+  const f = await setup(t);
+  await f.handlers.get('session_start')({}, f.ctx);
+  const gate = barrier();
+  f.wire.state.beforeRequest = call => call.path === '/v1/principals/reclaim' ? gate.wait() : undefined;
+  await f.wire.restart();
+  await gate.entering;
+  await f.handlers.get('session_shutdown')({}, f.ctx);
+  gate.release();
+  await until(() => f.wire.state.reclaimCount === 1 && f.wire.calls.filter(c => c.path === '/v1/lease/release').length === 2);
+  assert.equal(f.wire.state.leaseHeld, false);
+  assert.equal(f.wire.state.registerCount, 1);
+});
+
+test('child路径检查等待期间关闭会话不能迟到放行', async t => {
+  const f = await setup(t, { managed: true });
+  await f.handlers.get('session_start')({}, f.ctx);
+  const checking = f.handlers.get('tool_call')({ toolName: 'read', input: { path: 'public.txt' } }, f.ctx);
+  await f.handlers.get('session_shutdown')({}, f.ctx);
+  assert.equal((await checking).block, true);
+});
+
+test('child等待ready期间模型改变时不能进入ready', { timeout: 10000 }, async t => {
+  const f = await setup(t, { managed: true });
+  const gate = barrier();
+  f.wire.state.beforeRequest = call => call.path.endsWith('/ready') ? gate.wait() : undefined;
+  const starting = f.handlers.get('session_start')({}, f.ctx);
+  await gate.entering;
+  f.ctx.model = { provider: 'fake', id: 'changed-model' };
+  gate.release();
+  await assert.rejects(starting, /初始化失败/);
+  assert.equal(f.shutdown, true);
+  assert.equal((await f.handlers.get('tool_call')({ toolName: 'read', input: { path: 'public.txt' } }, f.ctx)).block, true);
+});
+
+test('450条通知分批排空，复投相同key不重复注入或叫醒', async t => {
+  const f = await setup(t);
+  const notices = Array.from({ length: 450 }, (_, index) => ({
+    noticeId: `notice-${index}`, dedupeKey: `task:${index}:completed`, kind: 'task',
+    payload: { content: `任务${index}已完成` },
+  }));
+  f.wire.state.inboxItems = [...notices, ...notices];
+  const sends = [];
+  f.pi.sendMessage = (message, options) => {
+    sends.push({ message, options });
+    f.entries.push({ id: `notice-entry-${sends.length}`, type: 'custom_message', ...message });
+  };
+  await f.handlers.get('session_start')({}, f.ctx);
+  assert.equal(f.wire.state.inboxItems.length, 0);
+  assert.equal(sends.length, 450);
+  assert.equal(sends.filter(send => send.options.triggerTurn).length, 450);
+  assert.equal(new Set(sends.map(send => send.message.details.dedupeKey)).size, 450);
+  const inboxCalls = f.wire.calls.filter(call => call.path.startsWith('/v1/inbox'));
+  assert.ok(inboxCalls.length >= 6, '非空批次后继续获取，直至空批');
+  f.wire.state.inboxItems.push(...notices);
+  await f.handlers.get('agent_settled')({}, f.ctx);
+  assert.equal(f.wire.state.inboxItems.length, 0);
+  assert.equal(sends.length, 450);
+});
+
+test('fatal诊断、界面或shutdown抛错时tool_call仍返回block', async t => {
+  const f = await setup(t, { managed: true });
+  await f.handlers.get('session_start')({}, f.ctx);
+  f.pi.appendEntry = () => { throw new Error('诊断不可写'); };
+  f.ctx.ui.notify = () => { throw new Error('界面已关闭'); };
+  f.ctx.shutdown = () => { throw new Error('关闭失败'); };
+  f.setThinking('high');
+  assert.equal((await f.handlers.get('tool_call')({ toolName: 'read', input: { path: 'public.txt' } }, f.ctx)).block, true);
+  f.setThinking('off');
+  assert.equal((await f.handlers.get('tool_call')({ toolName: 'read', input: { path: 'public.txt' } }, f.ctx)).block, true);
 });
 
 test('child路径解析异常由钩子自己捕获并阻断', async t => {

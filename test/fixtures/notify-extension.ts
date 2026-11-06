@@ -29,7 +29,7 @@ export default function notifyFixture(pi) {
     log({ kind: 'fault', point, dedupeKey: key, ...snapshot(key) });
     // 同步屏障把 pi 固定在此 API 边界，由父测试真正 SIGKILL；Windows 同样由持有 child 的进程终止。
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20000);
-    throw new Error('The parent did not SIGKILL pi at the fixture barrier');
+    throw new Error('父测试未在夹具屏障处通过 SIGKILL 终止 pi');
   }
   pi.on('message_end', (event, context) => {
     if (event.message.customType !== 'agora:notice') return;
@@ -69,7 +69,7 @@ export default function notifyFixture(pi) {
       log({ kind: 'ack_blocked', dedupeKey: key });
       const deadline = Date.now() + 20000;
       while (!existsSync(join(root, 'release-ack'))) {
-        if (Date.now() > deadline) throw new Error('ack fixture barrier timed out');
+        if (Date.now() > deadline) throw new Error('等待释放 ack 夹具屏障超时');
         await delay(10);
       }
     }
@@ -107,7 +107,7 @@ export default function notifyFixture(pi) {
   });
   agoraExtension(wrapped);
   pi.registerCommand('notify-test-snapshot', {
-    description: 'Snapshot the isolated notification fixture',
+    description: '记录隔离通知测试现场的快照',
     handler: async (_args, context) => { ctx = context; log({ kind: 'snapshot', ...snapshot(control().key) }); },
   });
   pi.on('session_shutdown', () => {

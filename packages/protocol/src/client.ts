@@ -34,7 +34,8 @@ export function hmacProof(key: Uint8Array, values: string[]): string {
   return createHmac('sha256', key).update(JSON.stringify(values)).digest('base64url');
 }
 export function loopbackUrl(value: string): string {
-  const url = new URL(value);
+  let url: URL;
+  try { url = new URL(value); } catch { throw new Error('agora 地址无效'); }
   if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || !url.port ||
       url.username || url.password || url.pathname !== '/' || url.search || url.hash) {
     throw new Error('agora 地址必须是 IPv4 本机 HTTP 地址');
@@ -42,8 +43,18 @@ export function loopbackUrl(value: string): string {
   return url.origin;
 }
 
+function assertActive(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new Error('agora 请求已取消');
+}
+function record(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+function nonempty(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0;
+}
 async function jsonRequest<T>(url: string, method: string, path: string, body: unknown,
   token: string | undefined, options: RequestOptions, closed?: AbortSignal): Promise<T> {
+  assertActive(options.signal);
   if (!path.startsWith('/v1/') || path.includes('#') || path.includes('\\') || path.startsWith('//')) {
     throw new Error('agora 请求路径无效');
   }
@@ -64,10 +75,14 @@ async function jsonRequest<T>(url: string, method: string, path: string, body: u
     throw new AgoraConnectionError();
   }
   let data: unknown;
-  try { data = await response.json(); } catch { throw new Error('agora 返回了无效响应'); }
+  try { data = await response.json(); } catch {
+    assertActive(options.signal);
+    if (signals.some(signal => signal.aborted)) throw new AgoraConnectionError();
+    throw new Error('agora 返回了无效响应');
+  }
   if (!response.ok) {
-    const value = data as { error?: { code?: unknown } | string; code?: unknown };
-    const raw = typeof value.error === 'object' ? value.error?.code : value.code ?? value.error;
+    const value = record(data) ? data : {};
+    const raw = record(value.error) ? value.error.code : value.code ?? value.error;
     const code = typeof raw === 'string' && /^[a-z_]{1,64}$/.test(raw) ? raw : 'request_failed';
     throw new AgoraHttpError(response.status, code);
   }
@@ -85,7 +100,9 @@ export function createClient(options: { url: string; token: string; connectionId
     request: (method, path, body, requestOptions = {}) => jsonRequest(url, method, path, body, token, requestOptions, closed.signal),
     async refresh() {
       const next = await jsonRequest<{ token: string; expiresAt: string }>(url, 'POST', '/v1/auth/refresh', {}, token, {}, closed.signal);
-      if (!next.token || !next.expiresAt) throw new Error('agora 凭证续期响应无效');
+      if (!record(next) || !nonempty(next.token) || !nonempty(next.expiresAt) || !Number.isFinite(Date.parse(next.expiresAt))) {
+        throw new Error('agora 凭证续期响应无效');
+      }
       token = next.token; expiresAt = next.expiresAt;
     },
     close: () => closed.abort(),
@@ -96,7 +113,7 @@ interface Discovery { port: number; instanceId: string }
 async function discover(home: string): Promise<Discovery | undefined> {
   try {
     const data = JSON.parse(await readFile(join(home, 'run', 'daemon.json'), 'utf8')) as Discovery;
-    if (!Number.isInteger(data.port) || data.port < 1 || data.port > 65535 || typeof data.instanceId !== 'string') {
+    if (!record(data) || !Number.isInteger(data.port) || data.port < 1 || data.port > 65535 || !nonempty(data.instanceId)) {
       throw new Error('agora 后台发现信息无效');
     }
     return data;
@@ -105,17 +122,19 @@ async function discover(home: string): Promise<Discovery | undefined> {
     throw new Error('无法读取 agora 后台发现信息');
   }
 }
-async function startDaemon(home: string, entry: string): Promise<void> {
+async function startDaemon(home: string, entry: string, signal?: AbortSignal): Promise<void> {
+  assertActive(signal);
   await mkdir(join(home, 'logs'), { recursive: true });
   const log = await open(join(home, 'logs', 'startup.log'), 'a', 0o600);
   try {
+    assertActive(signal);
     const child = spawn(process.execPath, [entry, '--home', home], {
       cwd: home, env: { ...process.env, AGORA_HOME: home },
       detached: true, windowsHide: true, shell: false, stdio: ['ignore', log.fd, log.fd],
     });
     await new Promise<void>((ok, fail) => { child.once('spawn', ok); child.once('error', fail); });
     child.unref();
-  } catch { throw new Error('无法启动 agora 后台进程，请检查安装'); }
+  } catch { assertActive(signal); throw new Error('无法启动 agora 后台进程，请检查安装'); }
   finally { await log.close(); }
 }
 
@@ -128,6 +147,7 @@ export interface ConnectHostOptions {
   startupTimeoutMs?: number;
 }
 export async function connectHost(options: ConnectHostOptions): Promise<AgoraClient> {
+  assertActive(options.signal);
   const home = agoraHome(options.home);
   const existing = await discover(home);
   if (existing) {
@@ -135,28 +155,31 @@ export async function connectHost(options: ConnectHostOptions): Promise<AgoraCli
     catch (error) { if (!(error instanceof AgoraConnectionError) || options.autoStart === false) throw error; }
   } else if (options.autoStart === false) throw new Error('agora 后台进程尚未启动');
   const entry = options.daemonEntry ?? fileURLToPath(new URL('../../daemon/dist/main.js', import.meta.url));
-  await startDaemon(home, entry);
+  await startDaemon(home, entry, options.signal);
   const deadline = Date.now() + (options.startupTimeoutMs ?? 15000);
   while (Date.now() < deadline) {
     const discovery = await discover(home);
     if (discovery) {
-      try { return await authenticateHost(home, discovery, options); }
+      try { return await authenticateHost(home, discovery, options, deadline); }
       catch (error) { if (!(error instanceof AgoraConnectionError)) throw error; }
     }
     await delay(100, undefined, { signal: options.signal });
   }
   throw new Error('等待 agora 后台启动超时');
 }
-async function authenticateHost(home: string, discovery: Discovery, options: ConnectHostOptions): Promise<AgoraClient> {
+async function authenticateHost(home: string, discovery: Discovery, options: ConnectHostOptions, deadline?: number): Promise<AgoraClient> {
+  assertActive(options.signal);
   const url = loopbackUrl(`http://127.0.0.1:${discovery.port}`);
   let key: Buffer;
   try { key = await readFile(join(home, 'secret', 'host.key')); }
   catch { throw new Error('无法读取 agora 主机凭证'); }
   if (key.length !== 32) throw new Error('agora 主机凭证无效');
   const clientNonce = randomBytes(32).toString('base64url');
-  const requestOptions = { signal: options.signal, timeoutMs: 5000 };
+  const requestOptions = { signal: options.signal, timeoutMs: Math.max(1, Math.min(5000, (deadline ?? Date.now() + 5000) - Date.now())) };
   const challenge = await jsonRequest<{ challengeId: string; serverNonce: string; instanceId: string; serverProof: string }>(
     url, 'POST', '/v1/auth/challenge', { clientNonce }, undefined, requestOptions);
+  if (!record(challenge) || !nonempty(challenge.challengeId) || !nonempty(challenge.serverNonce) ||
+      !nonempty(challenge.instanceId) || !nonempty(challenge.serverProof)) throw new Error('agora 握手响应无效');
   const expected = Buffer.from(hmacProof(key, ['server', clientNonce, challenge.instanceId]), 'base64url');
   const actual = Buffer.from(challenge.serverProof ?? '', 'base64url');
   if (challenge.instanceId !== discovery.instanceId || actual.length !== expected.length || !timingSafeEqual(actual, expected)) {
@@ -165,13 +188,14 @@ async function authenticateHost(home: string, discovery: Discovery, options: Con
   const auth = await jsonRequest<{ token: string; connectionId: string; expiresAt: string }>(url, 'POST', '/v1/auth/token', {
     challengeId: challenge.challengeId, clientProof: hmacProof(key, ['client', challenge.serverNonce, challenge.instanceId]), as: options.as,
   }, undefined, requestOptions);
-  if (!auth.token || !auth.connectionId) throw new Error('agora 登录响应无效');
+  if (!record(auth) || !nonempty(auth.token) || !nonempty(auth.connectionId) || !nonempty(auth.expiresAt) ||
+      !Number.isFinite(Date.parse(auth.expiresAt))) throw new Error('agora 登录响应无效');
   return createClient({ url, ...auth, instanceId: challenge.instanceId });
 }
 
 export async function connectLaunch<T>(url: string, ticket: string): Promise<{ client: AgoraClient; launch: T }> {
   url = loopbackUrl(url);
   const launch = await jsonRequest<T & { token: string }>(url, 'POST', '/v1/auth/launch', { ticket }, undefined, { timeoutMs: 10000 });
-  if (!launch.token) throw new Error('agora 子会话登录响应无效');
+  if (!record(launch) || !nonempty(launch.token)) throw new Error('agora 子会话登录响应无效');
   return { client: createClient({ url, token: launch.token }), launch };
 }

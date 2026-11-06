@@ -45,7 +45,7 @@ CREATE TABLE outbox (
   id TEXT PRIMARY KEY, recipient_id TEXT NOT NULL, dedupe_key TEXT NOT NULL UNIQUE,
   kind TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT NOT NULL,
   visible_after INTEGER NOT NULL DEFAULT 0, delivered_at TEXT, persisted_at TEXT,
-  acked_at TEXT, entry_id TEXT, persisted INTEGER, attempts INTEGER NOT NULL DEFAULT 0
+  acked_at TEXT, processed_at TEXT, entry_id TEXT, persisted INTEGER, attempts INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX outbox_recipient ON outbox(recipient_id, acked_at, visible_after);
 CREATE TABLE operations (
@@ -129,7 +129,7 @@ export class Store {
   change(kind: string, objectId: string): void {
     this.run("INSERT INTO changes(epoch,object_type,object_id,created_at) VALUES((SELECT value FROM settings WHERE key='epoch'),?,?,?)", kind, objectId, now());
   }
-  transition(task: TaskRow, status: string, resultText?: string, runId?: string): TaskRow {
+  transition(task: TaskRow, status: string, resultText?: string, runId?: string, usage?: unknown): TaskRow {
     return this.transaction(() => {
       const at = now();
       const changed = this.run("UPDATE tasks SET status=?,revision=revision+1,status_detail=NULL,updated_at=? WHERE id=? AND generation=? AND revision=?", status, at, task.id, task.generation, task.revision);
@@ -137,6 +137,7 @@ export class Store {
       this.run("UPDATE agora_sessions SET status=?,revision=revision+1 WHERE id=?", status, task.agora_session_id);
       if (["completed", "failed", "stopped", "interrupted"].includes(status)) this.run("UPDATE agora_sessions SET ended_at=? WHERE id=?", at, task.agora_session_id);
       this.run("UPDATE task_generations SET status=?,result_text=COALESCE(?,result_text),settled_at=CASE WHEN ? IN ('completed','failed','stopped','interrupted') THEN ? ELSE settled_at END,started_at=CASE WHEN ?='running' THEN COALESCE(started_at,?) ELSE started_at END WHERE task_id=? AND generation=?", status, resultText ?? null, status, at, status, at, task.id, task.generation);
+      if (usage !== undefined) this.run("UPDATE task_generations SET usage=? WHERE task_id=? AND generation=?", JSON.stringify(usage), task.id, task.generation);
       if (["completed", "failed", "interrupted"].includes(status)) {
         this.notice(task.convener_id, `task:${task.id}:${task.generation}:${status}${status === "interrupted" ? `:${runId ?? "unknown"}` : ""}`, `task:${status}`, {
           taskId: task.id, agoraSessionId: task.agora_session_id, nodeId: `agora:session:${task.agora_session_id}`,

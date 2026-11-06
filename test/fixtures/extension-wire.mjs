@@ -23,7 +23,9 @@ export async function extensionWire(root) {
       let text = '';
       for await (const chunk of req) text += chunk;
       const body = text ? JSON.parse(text) : undefined;
-      calls.push({ method: req.method, path: req.url, body, authorization: req.headers.authorization, idempotencyKey: req.headers['idempotency-key'] });
+      const call = { method: req.method, path: req.url, body, authorization: req.headers.authorization, idempotencyKey: req.headers['idempotency-key'] };
+      calls.push(call);
+      await state.beforeRequest?.(call);
       let result;
       const path = req.url.split('?')[0];
       const fail = (status, code) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: { code, message: '测试拒绝' } })); };
@@ -48,24 +50,29 @@ export async function extensionWire(root) {
       } else {
         const conn = tokens.get(req.headers.authorization?.replace('Bearer ', ''));
         if (!conn) return fail(401, 'invalid_token');
-        if (path === '/v1/principals/register') { state.registerCount++; state.leaseHeld = true; result = { principalId: 'principal-one' }; }
+        if (path === '/v1/principals/register') { state.registerCount++; state.leaseHeld = true; conn.bound = true; result = { principalId: 'principal-one' }; }
         else if (path === '/v1/principals/reclaim') {
           if (body.proof !== hmacProof(recovery, ['reclaim', body.principalId, body.sessionId, conn.connectionId, instanceId])) return fail(403, 'bad_proof');
           state.reclaimCount++;
+          if (state.reclaimCode) return fail(state.reclaimCode === 'session_mismatch' ? 403 : 410, state.reclaimCode);
           if (state.leaseHeld) return fail(409, 'lease_held');
-          state.leaseHeld = true; result = {};
-        } else if (path === '/v1/lease/release') { state.leaseHeld = false; result = {}; }
+          state.leaseHeld = true; conn.bound = true; result = {};
+        } else if (path === '/v1/lease/release') { if (conn.bound) state.leaseHeld = false; conn.bound = false; result = {}; }
         else if (path === '/v1/lease/renew') result = {};
         else if (path === '/v1/auth/refresh') {
           state.refreshCount++;
           result = { token: req.headers.authorization.replace('Bearer ', ''), expiresAt: new Date(Date.now() + 7200000).toISOString() };
-        } else if (path === '/v1/inbox') result = { items: [] };
+        } else if (path === '/v1/inbox') {
+          if (state.enforceLease && !state.leaseHeld) return fail(409, 'lease_required');
+          result = { items: state.inboxItems?.splice(0, 200) ?? [] };
+        }
         else if (path.endsWith('/ready')) { state.readyCount++; if (state.readyReject) return fail(403, 'ready_mismatch'); result = { ready: true }; }
         else if (path.endsWith('/fatal')) { state.fatalCount++; result = {}; }
         else if (path === '/v1/failure') return fail(403, 'forbidden');
         else if (path === '/v1/test/shutdown') { result = {}; res.once('finish', () => { server.closeAllConnections(); server.close(); }); }
         else result = { taskId: 'task-one', status: 'completed', resultText: '测试结果' };
       }
+      if (state.transformResponse) result = state.transformResponse(path, result);
       res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(result));
     } catch { res.writeHead(500); res.end('{}'); }
   });

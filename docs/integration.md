@@ -1,6 +1,6 @@
 # 集成协议
 
-> 状态：设计草案，P0 后冻结。
+> 本文描述完整集成设计。切片 1a 的实际端点和测试入口见 [development.md](development.md)，pane、archive 和其他领域接口按后续切片提供。
 
 本文定义 pi-agora 自己对外的接口，以及 agora 如何接入 pi-pane：
 
@@ -101,14 +101,16 @@ pi-hostkit        ◄── daemon、extension（pi-pane 服务端也依赖它�
 
 | 分组 | 方法与路径 | 用途 | 主要调用方 |
 | --- | --- | --- | --- |
+| 基础 | `GET /v1/status` | 运行状态、活动名额和任务状态计数；需要主 Agent 级鉴权 | CLI |
 | 基础 | `GET /v1/health` | 版本、协议范围、instanceId；不需要鉴权，不返回其他信息 | 全部 |
 | 鉴权 | `POST /v1/auth/challenge` | 双向握手第一步 | 主会话扩展、CLI、pane 插件 |
 | | `POST /v1/auth/token` | `host.key` 证明换连接 token；`as: "host:cli" \| "host:pane"` 或主会话注册/认领 | 同上 |
 | | `POST /v1/auth/launch` | 协作会话用 launch ticket 换 token | 协作会话里的扩展 |
 | | `POST /v1/auth/refresh` | 续期 token | 全部 |
 | 运行 | `POST /v1/runs/:runId/ready` | 协作会话报告就绪（活动工具、模型等），见 [architecture.md](architecture.md#受管扩展的就绪检查) | 协作会话里的扩展 |
+| | `POST /v1/runs/:runId/fatal` | 权限检查发生内部故障时报告 fatal，停止自己的 run；不接受控制其他 run | 协作会话里的扩展 |
 | 主会话 | `POST /v1/principals/register`、`/reclaim` | 注册、恢复后认领 principal | 主会话扩展 |
-| | `POST /v1/lease/renew` | 续控制租约（每 30 秒） | 主会话扩展 |
+| | `POST /v1/lease/renew`、`/release` | 每 30 秒续控制租约及连接 token；关闭或切换主会话时释放租约 | 主会话扩展 |
 | | `POST /v1/principals/:id/takeover` | 强制转移租约（用户级） | CLI、pane 插件 |
 | 用户确认 | `GET /v1/confirmations` | 待确认列表（状态、发起方、过期时间） | CLI、pane 插件 |
 | | `POST /v1/confirmations/:id/sign` | 提交设备签名 `{ deviceId, publicKey, alg, signature }`，验签后执行 | pane 插件 |
@@ -121,7 +123,7 @@ pi-hostkit        ◄── daemon、extension（pi-pane 服务端也依赖它�
 | | `POST /v1/security/alerts/:alertId/acknowledge` | 带 `revision` 发起确认知悉，返回 `202` 和待确认；签名走 `/v1/confirmations/:id/sign`。只适用于 `devices-reset` | pane 插件 |
 | 配置 | `GET /v1/settings`、`PUT /v1/settings/:key` | 如 `userConfirmation`、`meetingLimitDefaults`、`agentLimitCap`；关闭保护、调高上限配置是用户级，开启保护、调低随时可以 | CLI |
 | 任务 | `POST /v1/tasks` | spawn | 主会话扩展、CLI、pane 插件 |
-| | `GET /v1/tasks`、`GET /v1/tasks/:id` | 列表、详情（含各代结果） | 同上 |
+| | `GET /v1/tasks`、`GET /v1/tasks/:id`、`GET /v1/tasks/:id/result?generation=` | 列表、当前详情、指定代结果 | 同上 |
 | | `POST /v1/tasks/:id/steer`、`/stop`、`/cleanup`、`/recover`、`/takeover` | 返工、停止、清理 worktree、中断后的处理、接管 | 同上 |
 | 提问 | `POST /v1/requests` | 提问 | 协作会话扩展 |
 | | `GET /v1/requests` | 按状态和接收方查询；`?for=me` | 全部 |
@@ -139,11 +141,13 @@ pi-hostkit        ◄── daemon、extension（pi-pane 服务端也依赖它�
 | | `GET /v1/sessions/:id/history?before=&limit=` | 历史水位之前的更早条目 | 同上 |
 | | `GET /v1/sessions/:id/stream?epoch=&afterSeq=` | 实时事件流（SSE） | 同上 |
 | | `GET /v1/sessions/:id/diagnostics` | 各次 run 的退出诊断 | 同上 |
-| 收件箱 | `GET /v1/inbox?wait=25` | 长轮询通知，见 [tasks.md](tasks.md#投递) | 全部扩展、pane 插件 |
+| 收件箱 | `GET /v1/inbox?wait=25` | 长轮询通知：按创建时间、id 排序，每批最多 200 条，无游标；非空批后用 wait=0 连续拉取到空批，见 [tasks.md](tasks.md#投递) | 全部扩展、pane 插件 |
 | | `POST /v1/inbox/ack` | 确认通知已写入会话文件（扩展）或已展示（pane 插件） | 同上 |
 | 变更流 | `GET /v1/changes?epoch=&afterSeq=` | 领域对象变更（SSE），见“变更流” | pane 插件 |
 | 审计 | `GET /v1/audit?target=` | 审计记录 | CLI、pane 插件 |
 | 管理 | `POST /v1/admin/shutdown` | 排空或强制关闭 | CLI |
+
+收件箱采用至少一次投递：返回通知时设置默认 120 秒的可见性超时，未确认项到期后可再次返回。扩展按 `dedupeKey` 去重，只有核实会话条目和完整磁盘记录后才调用 ack；ephemeral 会话单独记录内存送达，不声明已持久化。业务上取得结果与写入会话的确认互不替代。
 
 各端点的访问控制见 [security.md](security.md#资源级访问控制)。请求和响应的完整字段在 `packages/protocol` 里以 TypeScript 类型和 JSON schema 给出；工具参数与 [tasks.md](tasks.md)、[board.md](board.md)、[meetings.md](meetings.md) 中的定义一一对应。
 
@@ -427,7 +431,6 @@ daemon 的安全警告（规则见 [security.md](security.md#启动检查与安�
 - **重连对齐**：插件启动、重连 daemon、变更流 `reset` 后，先读 `GET /v1/security/alerts`，为每条未解除的警告 `setBanner`（同 id 整条替换），再清除 daemon 已明确报告解除的横幅。
 - 插件不在本地缓存“已解除”的判断。
 
-### 渲染安全
 ### 渲染安全
 
 board 正文、对话内容、提问文字都来自模型，按不可信内容处理。pane 插件只提供 Markdown 和纯文本，不提供 HTML；渲染规则（禁用原始 HTML、过滤危险 URL scheme、远程图片策略、CSP）由 pi-pane 执行，见其 `docs/architecture.md`。

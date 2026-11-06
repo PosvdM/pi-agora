@@ -1,6 +1,6 @@
 import { realpath, mkdir, stat } from "node:fs/promises";
 import path from "node:path";
-import { acquireSessionWriterLock, currentProcessIdentity, isSessionWriterLock, type ProcessIdentity, type RpcResponse } from "pi-hostkit";
+import { acquireSessionWriterLock, currentProcessIdentity, isSessionWriterLock, type ProcessIdentity, type RpcResponse, type SessionWriterLock } from "pi-hostkit";
 import { Auth, type Connection, type RunPolicy } from "./auth.js";
 import { AgoraError, invalid, text } from "./errors.js";
 import { Store, id, now, type RunRow, type TaskRow } from "./store.js";
@@ -21,6 +21,13 @@ function data(response: RpcResponse): Record<string, unknown> {
   if (!response.success) throw new Error("pi 拒绝了控制命令");
   return (response.data ?? {}) as Record<string, unknown>;
 }
+function failureDiagnostic(error: unknown, depth = 0): unknown {
+  if (!error || typeof error !== "object") return { message: "没有可用的底层诊断" };
+  const value = error as { name?: string; message?: string; code?: string; identity?: unknown; stopReport?: unknown; recoveryReports?: unknown; errors?: unknown[] };
+  return { name: value.name, message: value.message?.slice(0, 2048), code: value.code, identity: value.identity,
+    stopReport: value.stopReport, recoveryReports: value.recoveryReports,
+    errors: depth < 3 && Array.isArray(value.errors) ? value.errors.slice(0, 10).map(item => failureDiagnostic(item, depth + 1)) : undefined };
+}
 function modelName(value: unknown): string {
   if (typeof value === "string") return value;
   if (!value || typeof value !== "object") return "";
@@ -37,6 +44,7 @@ export class TaskManager {
   private readonly runtimes = new Map<string, Runtime>();
   private readonly controls = new Map<string, Promise<unknown>>();
   private readonly pending: string[] = [];
+  private readonly recoveryLocks = new Map<string, SessionWriterLock>();
   private occupied = 0;
   private halted = false;
   draining = false;
@@ -128,8 +136,9 @@ export class TaskManager {
     this.runtimes.set(taskId, runtime);
     this.store.run("INSERT INTO process_runs(id,agora_session_id,daemon_instance_id,state,started_at) VALUES(?,?,?,'starting',?)", runId, session.id, this.options.instanceId, now());
     const ticket = this.auth.ticket(session.principal_id, runId, policy);
-    runtime.timer = setTimeout(() => rejectReady(new Error("受管扩展就绪超时")), this.options.readyTimeoutMs ?? 30_000);
+    runtime.timer = setTimeout(() => rejectReady(new AgoraError(503, "ready_timeout", "受管扩展就绪超时")), this.options.readyTimeoutMs ?? 30_000);
     runtime.timer.unref();
+    let phase = "process_start_failed";
     try {
       await mkdir(path.dirname(session.session_file), { recursive: true });
       const handle = await this.driver.start({ agoraSessionId: session.id, runId, instanceId: this.options.instanceId,
@@ -160,28 +169,43 @@ export class TaskManager {
         void this.control(taskId, () => this.exited(runtime, exit)).catch(() => {});
       });
       resolveHandle(handle);
+      phase = "ready_timeout";
       await readyPromise;
       if (runtime.stopped) throw new Error("任务已停止");
+      phase = "rpc_check_failed";
       const available = data(await handle.send({ type: "get_available_models" }, { timeoutMs: 10_000 }));
-      if (!Array.isArray(available.models) || !available.models.some(value => modelName(value) === task.model)) throw new Error("模型不在可用列表中");
+      if (!Array.isArray(available.models) || !available.models.some(value => modelName(value) === task.model)) throw new AgoraError(400, "model_unavailable", "指定模型不在可用列表中");
       const state = data(await handle.send({ type: "get_state" }, { timeoutMs: 10_000 }));
-      if (modelName(state.model) !== policy.model || state.thinkingLevel !== policy.thinking || typeof state.sessionFile !== "string" || path.resolve(state.sessionFile) !== path.resolve(session.session_file)) throw new Error("RPC 状态核对失败");
+      if (modelName(state.model) !== policy.model || state.thinkingLevel !== policy.thinking || typeof state.sessionFile !== "string" || path.resolve(state.sessionFile) !== path.resolve(session.session_file)) throw new AgoraError(403, "rpc_state_mismatch", "RPC 模型、推理级别或会话路径不匹配");
       if (runtime.stopped) throw new Error("任务已停止");
       this.store.run("UPDATE agora_sessions SET pi_session_id=? WHERE id=?", typeof state.sessionId === "string" ? state.sessionId : null, session.id);
       handle.markReady();
       this.store.run("UPDATE process_runs SET state='ready' WHERE id=?", runId);
       runtime.accepted = true;
       this.store.transition(this.store.task(taskId), "running");
+      phase = "prompt_rejected";
       const response = await handle.send({ type: "prompt", message: task.prompt }, { timeoutMs: 30_000 });
       data(response);
     } catch (error) {
       rejectHandle(error instanceof Error ? error : new Error("任务启动失败"));
       this.auth.revokeRun(runId);
-      const message = runtime.stopped ? "运行已停止，任务不会自动重放" : "任务启动失败：模型、受管扩展或进程检查未通过";
-      let stopped = true;
+      const messages: Record<string, string> = {
+        process_start_failed: "协作进程启动失败", ready_timeout: "受管扩展就绪超时",
+        ready_rejected: "受管扩展就绪报告不匹配", model_unavailable: "指定模型不在可用列表中",
+        rpc_state_mismatch: "RPC 模型、推理级别或会话路径不匹配", rpc_check_failed: "RPC 状态检查失败",
+        prompt_rejected: "pi 未接受任务书",
+      };
+      const failureCode = error instanceof AgoraError && messages[error.code] ? error.code : phase;
+      const message = runtime.stopped ? "运行已停止，任务不会自动重放" : `任务启动失败：${messages[failureCode]}`;
+      let stopped = false;
       if (runtime.handle) {
-        try { await runtime.handle.stop(); }
-        catch { stopped = false; this.store.run("UPDATE process_runs SET cleanup_error=? WHERE id=?", "运行尚未确认退出", runId); }
+        try { await runtime.handle.stop(); stopped = true; }
+        catch { this.store.run("UPDATE process_runs SET cleanup_error=? WHERE id=?", "运行尚未确认退出", runId); }
+      } else {
+        // start 抛错时写者可能已过启动门闩，必须保留记录供重启按锁文件复查。
+        const detail = error as { identity?: ProcessIdentity; stopReport?: unknown; recoveryReports?: unknown };
+        this.store.run("UPDATE process_runs SET identity=COALESCE(?,identity),cleanup_error=? WHERE id=?", detail?.identity ? JSON.stringify(detail.identity) : null,
+          JSON.stringify({ message: "启动失败，写者退出状态待复查", diagnostic: failureDiagnostic(error) }).replaceAll(ticket, "[已隐藏启动凭证]"), runId);
       }
       if (stopped) this.store.run("UPDATE process_runs SET state='exited',exited_at=COALESCE(exited_at,?) WHERE id=?", now(), runId);
       const latest = this.store.task(taskId);
@@ -203,7 +227,7 @@ export class TaskManager {
       runtime.resolveReady();
       return { ready: true };
     } catch {
-      runtime.rejectReady(new Error("受管扩展就绪检查失败"));
+      runtime.rejectReady(new AgoraError(403, "ready_rejected", "受管扩展就绪检查失败"));
       throw new AgoraError(403, "ready_rejected", "受管扩展就绪检查失败，运行将被停止");
     }
   }
@@ -233,12 +257,11 @@ export class TaskManager {
     if (task.status !== "running" || runtime.stopped) return;
     const handle = runtime.handle!;
     const last = data(await handle.send({ type: "get_last_assistant_text" }, { timeoutMs: 10_000 }));
-    const state = data(await handle.send({ type: "get_state" }, { timeoutMs: 10_000 }));
+    const usage = data(await handle.send({ type: "get_session_stats" }, { timeoutMs: 10_000 }));
     const lastError = runtime.assistantError;
     const status = event.aborted ? "interrupted" : lastError ? "failed" : "completed";
     const result = typeof last.text === "string" ? last.text : "";
-    this.store.transition(task, status, result, runtime.runId);
-    if (state.usage !== undefined) this.store.run("UPDATE task_generations SET usage=? WHERE task_id=? AND generation=?", JSON.stringify(state.usage), task.id, task.generation);
+    this.store.transition(task, status, result, runtime.runId, usage);
     this.releaseSlot(runtime);
     runtime.idleTimer = setTimeout(() => {
       void this.control(task.id, async () => { runtime.stopped = true; await handle.stop(); this.auth.revokeRun(runtime.runId); }).catch(() => {});
@@ -248,11 +271,12 @@ export class TaskManager {
   private async exited(runtime: Runtime, exit: DriverExit): Promise<void> {
     this.auth.revokeRun(runtime.runId);
     if (runtime.idleTimer) clearTimeout(runtime.idleTimer);
-    const clean = !exit.error && !exit.stopReport?.leftovers.length;
+    const clean = exit.cleanupConfirmed === true;
     this.store.run("UPDATE process_runs SET state=?,exited_at=?,exit_code=?,signal=?,diagnostics_path=?,cleanup_error=? WHERE id=?", clean ? "exited" : "stopping", clean ? now() : null, exit.code, exit.signal, exit.diagnosticsPath ?? null, clean ? null : "运行尚未确认退出", runtime.runId);
     const task = this.store.task(runtime.taskId);
     if (!runtime.stopped && ["created", "running"].includes(task.status)) this.store.transition(task, runtime.accepted ? "interrupted" : "failed", "协作进程退出，请检查诊断", runtime.runId);
     this.releaseSlot(runtime);
+    if (clean && this.runtimes.get(runtime.taskId) === runtime) this.runtimes.delete(runtime.taskId);
   }
   status(conn: Connection, taskId: string) {
     const task = this.store.task(taskId);
@@ -269,6 +293,7 @@ export class TaskManager {
     if (!Number.isSafeInteger(gen) || gen < 1) invalid("代数无效");
     const row = this.store.get<{ status: string; result_text: string | null; usage: string | null }>("SELECT status,result_text,usage FROM task_generations WHERE task_id=? AND generation=?", taskId, gen);
     if (!row) throw new AgoraError(404, "not_found", "任务代数不存在");
+    if (["completed", "failed", "interrupted"].includes(row.status)) this.store.run("UPDATE outbox SET processed_at=COALESCE(processed_at,?) WHERE id IN (SELECT id FROM outbox WHERE recipient_id=? AND dedupe_key LIKE ? AND processed_at IS NULL LIMIT 200)", now(), task.convener_id, `task:${taskId}:${gen}:%`);
     return { taskId, agoraSessionId: task.agora_session_id, generation: gen, status: row.status, resultText: row.result_text, usage: row.usage ? JSON.parse(row.usage) : null };
   }
   list(conn: Connection, scope: string, limit: number, cursor: number, statuses: string[] = []) {
@@ -296,7 +321,6 @@ export class TaskManager {
     return this.control(taskId, async () => {
       const task = this.store.task(taskId);
       this.access(conn, task, true);
-      if (body.expectedGeneration !== undefined && body.expectedGeneration !== task.generation || body.expectedRevision !== undefined && body.expectedRevision !== task.revision) throw new AgoraError(409, "conflict", "任务状态已变化，请重新读取");
       if (task.status === "stopped") return { ...taskSummary(task), stopReport: null };
       let report;
       this.store.run("UPDATE tasks SET status_detail='停止中' WHERE id=?", taskId);
@@ -323,11 +347,16 @@ export class TaskManager {
             const lock = await acquireSessionWriterLock(session.session_file, { app: "pi-agora", identity: currentProcessIdentity(this.options.instanceId) });
             if (!isSessionWriterLock(lock)) throw new Error("旧会话仍被锁定");
             if (await lock.recoverPreviousWriter() === "failed") throw new Error("旧写者身份不明");
-            try { if (lock.recoveryReports.some(report => report.leftovers.length)) throw new Error("旧进程仍有残留"); }
-            finally { await lock.release(); }
+            if (lock.recoveryReports.some(report => report.leftovers.length || report.steps.some(step => ["snapshot", "snapshot cleanup", "verify"].includes(step.step) && !step.ok))) {
+              this.recoveryLocks.set(session.id, lock);
+              throw new Error("旧进程清理尚未确认");
+            }
+            await lock.release();
           }
           clean = true;
-        } catch { this.store.run("UPDATE process_runs SET cleanup_error=? WHERE id=?", "旧进程尚未确认退出，禁止恢复", run.id); }
+        } catch (error) {
+          this.store.run("UPDATE process_runs SET cleanup_error=? WHERE id=?", JSON.stringify({ message: "旧进程尚未确认退出，禁止恢复", diagnostic: failureDiagnostic(error) }), run.id);
+        }
         if (clean) this.store.run("UPDATE process_runs SET state='exited',exited_at=? WHERE id=?", now(), run.id);
         const task = this.store.task(session.task_id);
         if (["created", "running"].includes(task.status)) this.store.transition(task, "interrupted", clean ? "daemon 重启，旧运行已停止；任务不会自动重放" : "旧进程尚未确认退出，禁止恢复", run.id);
@@ -373,6 +402,6 @@ export class TaskManager {
     }
     const results = await Promise.allSettled(work);
     await this.flush();
-    if (results.some(result => result.status === "rejected")) throw new AgoraError(409, "stop_incomplete", "部分进程尚未确认退出，daemon 保持运行");
+    if (this.recoveryLocks.size || results.some(result => result.status === "rejected")) throw new AgoraError(409, "stop_incomplete", "部分进程尚未确认退出，daemon 保持运行");
   }
 }

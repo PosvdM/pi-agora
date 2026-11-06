@@ -25,6 +25,7 @@ export async function persistedNotices(file: string, wanted: SessionEntry[]): Pr
     let position = (await handle.stat()).size;
     let pending = Buffer.alloc(0);
     let discardTail = true;
+    let skippingLine = false;
     const accept = (line: Buffer) => {
       try {
         const entry = JSON.parse(line.toString('utf8')) as SessionEntry;
@@ -45,15 +46,17 @@ export async function persistedNotices(file: string, wanted: SessionEntry[]): Pr
       let end = data.length;
       for (let index = data.lastIndexOf(10); index >= 0; index = data.lastIndexOf(10, index - 1)) {
         const line = data.subarray(index + 1, end);
-        if (discardTail) discardTail = false;
+        if (discardTail) { discardTail = false; skippingLine = false; }
+        else if (skippingLine) skippingLine = false;
         else accept(line);
         end = index;
         if (index === 0) break;
       }
       pending = data.subarray(0, end);
-      if (pending.length > 4 * 1024 * 1024) throw new Error('会话记录过长，暂不确认通知');
+      // 其他工具的大图片或大结果不应阻止确认更早的通知；超过上限的整行跳过。
+      if (skippingLine || pending.length > 4 * 1024 * 1024) { pending = Buffer.alloc(0); skippingLine = true; }
     }
-    if (position === 0 && !discardTail && pendingEntries.size) accept(pending);
+    if (position === 0 && !discardTail && !skippingLine && pendingEntries.size) accept(pending);
     return found;
   } finally { await handle.close(); }
 }
@@ -79,6 +82,7 @@ export class NoticeDelivery {
     const persisted = file ? await persistedNotices(file, entries) : new Set<string>();
     for (const entry of entries) {
       if (this.closed) return;
+      if (this.acknowledged.has(entry.details!.dedupeKey as string)) continue;
       if (!this.ephemeral && !persisted.has(entry.id)) continue;
       await this.client.request('POST', '/v1/inbox/ack', {
         noticeId: entry.details!.noticeId, entryId: entry.id, persisted: !this.ephemeral,

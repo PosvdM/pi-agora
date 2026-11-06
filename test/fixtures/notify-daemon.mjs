@@ -45,7 +45,7 @@ process.on('message', async ({ seq, op, body }) => {
       mock.restoreAll();
       process.send({ seq, result: true }, () => process.disconnect());
       return;
-    } else throw new Error(`Unknown fixture operation: ${op}`);
+    } else throw new Error(`未知的夹具操作：${op}`);
     process.send({ seq, result });
   } catch (error) { process.send({ seq, error: String(error?.stack ?? error) }); }
 });

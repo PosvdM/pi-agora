@@ -1,6 +1,6 @@
 # 总体架构
 
-> 状态：设计草案。接口、表结构和默认值都是草案，P0 验证后冻结。
+> 本文描述完整架构设计。切片 1a 提供 daemon、只读任务闭环、进程监管和可靠通知；完整状态机、其他档位与领域功能按 [roadmap.md](roadmap.md) 推进。实际源码、构建和测试见 [development.md](development.md)。
 
 pi-agora 是 pi 的协作引擎：一个每用户单实例的后台进程（daemon）负责拉起和监管所有协作会话（子代理、参会者、书记），并持久保存任务、提问、共享桌面（board）、会议和全部对话。主代理通过 pi 扩展调用它，用户通过 CLI 或 pi-pane 插件调用它。
 
@@ -247,7 +247,7 @@ node <pi>/dist/bundle/cli.js --mode rpc
 | `worktrees` | id、task_id、repo_root、base_commit、branch、path、owner_id、state |
 | `boards`、`board_entries`、`board_drafts`、`board_cursors` | 见 [board.md](board.md) |
 | `meetings`、`meeting_seats`、`meeting_revisions`、`meeting_endorsements`、`meeting_objections`、`budget_ledger` | 见 [meetings.md](meetings.md) |
-| `outbox` | id、recipient_id、dedupe_key（唯一）、kind、payload、created_at、visible_after、delivered_at、persisted_at、acked_at、attempts |
+| `outbox` | id、recipient_id、dedupe_key（唯一）、kind、payload、created_at、visible_after、delivered_at、persisted_at、acked_at、processed_at（业务已处理）、attempts |
 | `changes` | seq、epoch、object_type、object_id、tombstone、created_at（供 `/v1/changes`，见 [integration.md](integration.md#变更流)） |
 | `pending_confirmations` | id、action、target、params、params_hash、nonce、requested_by、expires_at、state、result |
 | `devices` | device_id、public_key、alg、label、state（pending / paired / revoked）、paired_at、approved_by |

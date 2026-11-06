@@ -13,8 +13,8 @@ const mainProvider = fileURLToPath(new URL("./fixtures/e2e-main-provider.ts", im
 
 test("真实 pi 1.5.0 主会话派出只读子代理，收到持久通知后自动取回结果", { timeout: 120_000 }, async () => {
   const f = await piFixture({ turns: [
-    { segments: [{ type: "toolCall", name: "read", arguments: { path: "evidence.txt" } }] },
-    { segments: [{ type: "text", text: "子代理结果：只读检查通过" }] },
+    { usage: { input: 11, output: 3 }, segments: [{ type: "toolCall", name: "read", arguments: { path: "evidence.txt" } }] },
+    { usage: { input: 13, output: 5 }, segments: [{ type: "text", text: "子代理结果：只读检查通过" }] },
   ] });
   const home = path.join(f.root, "agora");
   const mainSession = f.sessionPath("main");
@@ -53,6 +53,12 @@ test("真实 pi 1.5.0 主会话派出只读子代理，收到持久通知后自�
     const onDisk = (await readFile(mainSession, "utf8")).trim().split("\n").map(JSON.parse);
     assert.equal(onDisk.filter((entry) => entry.type === "custom_message" && entry.details?.dedupeKey === key).length, 1);
     assert.equal(await readFile(path.join(f.cwd, "evidence.txt"), "utf8"), "待核对的只读内容\n");
+    const resultDb = new DatabaseSync(path.join(home, "agora.db"), { readOnly: true });
+    try {
+      const usage = JSON.parse(resultDb.prepare("SELECT usage FROM task_generations WHERE task_id=? AND generation=1").get(notices[0].details.taskId).usage);
+      assert.equal(usage.tokens.input, 24, "用量必须从真实 pi 会话统计读取");
+      assert.equal(usage.tokens.output, 8);
+    } finally { resultDb.close(); }
     const requests = (await readFile(mainLog, "utf8")).trim().split("\n").map(JSON.parse);
     assert.ok(requests.some(({ content }) => content.some((block) => block.type === "toolCall" && block.arguments.action === "result")), "完成通知必须触发主会话调用 result");
     const childRequests = (await readFile(f.env.FAKE_REQUEST_LOG, "utf8")).trim().split("\n").map(JSON.parse).filter((entry) => entry.kind === "request");

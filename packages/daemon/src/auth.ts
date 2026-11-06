@@ -116,6 +116,7 @@ export class Auth {
     const keyFile = path.join(this.store.home, "secret", "principals", `${principalId}.key`);
     if (!ephemeral) await writePrivateFile(keyFile, randomBytes(32));
     try {
+      this.bootstrap(conn);
       this.store.run("INSERT INTO principals(id,type,label,pi_session_id,session_file,cwd,ephemeral,forked_from,lease_connection_id,lease_expires_at,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)", principalId, "agent:main", typeof body.label === "string" ? body.label.slice(0, 200) : sessionId, sessionId, sessionFile, cwd, ephemeral ? 1 : 0, forkedFrom, conn.connectionId, Date.now() + LEASE_MS, now());
     } catch (error) { if (!ephemeral) await unlink(keyFile).catch(() => {}); throw error; }
     conn.principalId = principalId;
@@ -134,6 +135,7 @@ export class Auth {
     if (!(await checkPrivate(file)).ok) throw new AgoraError(403, "forbidden", "恢复凭证不可用");
     const key = await readFile(file);
     if (!equal(body.proof, proof(key, ["reclaim", principalId, sessionId, conn.connectionId, this.instanceId]))) throw new AgoraError(403, "forbidden", "恢复证明无效");
+    this.bootstrap(conn);
     const expiry = Date.now() + LEASE_MS;
     const changed = this.store.run("UPDATE principals SET lease_connection_id=?,lease_expires_at=? WHERE id=? AND (lease_connection_id IS NULL OR lease_expires_at<=?)", conn.connectionId, expiry, principalId, Date.now());
     if (!changed.changes) throw new AgoraError(409, "lease_held", "该主会话已由另一个连接控制", { principalId });
