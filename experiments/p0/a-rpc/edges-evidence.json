@@ -1,0 +1,42 @@
+{
+  "commands": [
+    {
+      "name": "p0-template",
+      "description": "P0 test template",
+      "source": "prompt"
+    },
+    {
+      "name": "skill:p0-skill",
+      "description": "P0 test skill",
+      "source": "skill"
+    }
+  ],
+  "abortOnly": {
+    "requests": 1,
+    "lastUser": "original",
+    "isStreaming": false,
+    "pendingMessageCount": 2,
+    "clearAfterSettled": {
+      "steering": [
+        "steer after abort"
+      ],
+      "followUp": [
+        "queued after abort"
+      ]
+    }
+  },
+  "ignoredProvider": {
+    "abortReceived": true,
+    "stateStillStreaming": true,
+    "settled": false,
+    "exit": {
+      "code": 143,
+      "signal": null
+    }
+  },
+  "userExtension": {
+    "source": "extension",
+    "sourceScope": "user",
+    "mode": "rpc"
+  }
+}

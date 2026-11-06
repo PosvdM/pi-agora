@@ -88,7 +88,7 @@ CLI、pane 插件和主会话里的扩展用 `host.key` 与 daemon 双向握手�
 daemon 拉起协作会话时生成一次性 launch ticket，经环境变量 `AGORA_LAUNCH_TICKET` 传入。扩展启动后立即用 `POST /v1/auth/launch` 兑换连接 token，并从 `process.env` 删除该变量，避免 `bash` 子进程继承。ticket 绑定 runId，60 秒内有效、只能兑换一次；进程退出后对应 token 作废，重新拉起换新 ticket。环境变量在被删除之前对同一进程里的其他代码可见，实际暴露范围：
 
 - explore、review、会议席位和书记用 `-ne` 只加载 agora 扩展，进程里没有其他扩展。
-- implement 可能按配置加载白名单扩展和 `builtin:mcp`。agora 扩展排在 `-e` 的第一位，在工厂函数里同步读取并删除该变量；pi 是否保证按 `-e` 的顺序依次执行工厂函数、`builtin:mcp` 是否在此之前启动 MCP 服务器进程（会继承环境变量），列为 P0 验证项。在验证之前，按“白名单扩展和 MCP 服务器可能读到 ticket”处理。
+- implement 可能按配置加载白名单扩展和 `builtin:mcp`。agora 扩展排在 `-e` 的第一位，在工厂函数里同步读取并删除该变量。P0 实测证明：首位扩展删除该变量后，后续扩展工厂、MCP 服务器进程和 `bash` 子进程均无法读取 ticket；即使 `builtin:mcp` 排在前面，MCP 进程也是在变量删除后才启动。若排在前面的其他扩展读到 ticket 并抢先兑换，pi 会以退出码 1 退出，被宿主捕获为启动故障而不予重试。此外，为了防止未列入白名单的 MCP 服务器产生后台副作用，agora 会为每个子代理单独生成只包含白名单服务器的 MCP 配置文件。
 - 读到 ticket 的代码最多抢先兑换它：ticket 只能兑换一次，被抢先后 agora 扩展兑换失败，就绪检查不通过，run 被结束（见 [architecture.md](architecture.md#受管扩展的就绪检查)）；抢到的 token 只有该协作会话自己的权限，且随进程退出作废。兑换之后还要完成受管扩展的就绪检查，见 [architecture.md](architecture.md#受管扩展的就绪检查)。
 
 ## 用户确认

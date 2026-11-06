@@ -23,8 +23,10 @@ pi-hostkit 是一个独立的小包，封装托管 pi 子进程时与操作系�
 
 - Windows、macOS、Linux 同时支持，三个平台的行为在本文逐项写明；同一功能在不同平台上的结果一致，实现方式可以不同。
 - Node.js 24 及以上。
-- Node 没有内置命名 mutex、`flock`、Job Object 和进程创建时间查询，这些能力由 pi-hostkit 自带的原生部分提供。形态（N-API 预编译模块，或随包分发的小辅助程序）在 P0 决定；不论哪种形态，对外接口相同。
-- 数据目录和锁目录必须在本地磁盘上。网络文件系统上的 `flock` 不可靠，pi-hostkit 检测到网络文件系统时拒绝启动并报错（检测方式 P0 确定）。
+- Node 没有内置命名 mutex、`flock`、Job Object 和进程创建时间查询，这些能力由 pi-hostkit 自带的 **N-API 预编译模块**提供。
+  - **选型理由**：锁的文件描述符直接由宿主进程持有，宿主存活则锁在，宿主崩溃或被强杀则内核自动释放，天然符合会话写锁的语义；若使用单独的辅助程序持锁，辅助程序单独崩溃时锁被内核释放，但宿主进程和写入仍在继续，就会出现两个写者破坏会话。实测两种形态在 macOS 原型上均已跑通，进程创建时间等读数逐字一致。
+  - **后续代价**：需为 Windows、macOS、Linux 三平台及对应架构分别分发预编译二进制包，三平台的构建与 CI 打包列入后续阶段（P1）。
+- 数据目录和锁目录必须在本地磁盘上。网络文件系统上的 `flock` 不可靠，pi-hostkit 检测到网络文件系统时拒绝启动并报错（macOS 通过 `statfs` 的 `MNT_LOCAL` 检查已在原型中验证；远程挂载拒绝行为待后续平台补测）。
 
 ## 定位 pi
 
@@ -119,7 +121,8 @@ export interface StopOptions {
 
 export interface StopReport {
   steps: { step: string; at: string; ok: boolean; detail?: string }[];
-  leftovers: { pid: number; startTime: string; exe?: string }[]; // 复查后仍存活的后代，正常应为空
+  coverage: "job_object" | "cgroup" | "snapshot_visible"; // 覆盖范围标注：快照方式仅保证快照能看到的进程
+  leftovers: { pid: number; startTime: string; exe?: string }[]; // 覆盖范围内复查后仍存活的后代，正常应为空
 }
 ```
 
@@ -128,7 +131,7 @@ export interface StopReport {
 ### Windows
 
 - 启动：每个受管 pi 放进一个独立的 Job Object，设置 `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`，不允许 breakaway。为避免“进程在加入 Job 前已经启动了子进程”，由原生部分以挂起状态创建进程、加入 Job 后再恢复运行。
-- 停止：RPC `abort`（带超时）→ 关闭 stdin → 等待 `graceMs` → `TerminateJobObject` → 复查 Job 内进程数为 0。
+- 停止：RPC `abort`（带超时）→ 关闭 stdin → 等待 `graceMs` → `TerminateJobObject` → 复查 Job 内进程数为 0。`coverage` 为 `"job_object"`。
 - Job 内的后代进程不论父进程是否已退出都在 Job 里，所以“pi 主进程先退出、孙进程还在”的情况同样能清理。
 - 宿主（daemon 或 pane 服务端）退出或被强杀时，Job 句柄关闭，Job 内所有进程随之终止。
 
@@ -136,16 +139,18 @@ export interface StopReport {
 
 pi 1.5.0 的 `bash` 工具在 POSIX 上以 `detached` 方式启动每条命令（新会话、新进程组，依据：`dist/core/tools/bash.js:65`）。因此只对 pi 自己的进程组发信号杀不到这些命令。pi 在 RPC 模式下收到 SIGTERM 或 SIGHUP 时会先终止它记录的这些命令进程树（依据：`dist/modes/rpc/rpc-mode.js:276–283`），但被 SIGKILL 时来不及清理。
 
-- 启动：pi 以 `detached: true` 启动，自成进程组（pgid = pi 的 pid）。
-- 运行期间：受管 pi 有工具在执行时，每 5 秒对进程表做一次快照，记录 pi 的全部后代及其 pgid、创建时间。这样 pi 先退出、后代被系统收养后，仍能按记录找到它们。
-- 停止顺序：
-  1. RPC `abort`（带超时）；
-  2. 关闭 stdin，等待 `graceMs`；
-  3. 向 pi 发 SIGTERM，让 pi 自己清理它启动的命令，等待 `termGraceMs`；
-  4. 对进程表做快照，收集 pi 的全部后代的 pgid，加上运行期间记录过的 pgid；逐个做进程身份检查后，对每个 pgid 发 `SIGKILL`（`kill(-pgid)`），最后对 pi 自己的进程组发 `SIGKILL`；
-  5. 复查：快照中出现过的进程都已不在。仍存活的写进 `StopReport.leftovers`。
-- 进程表快照：Linux 读 `/proc`；macOS 用原生部分调用 `proc_listpids` 一类接口（P0 确定）。
-- Linux 可选增强：用 cgroup v2（如 `systemd-run --user --scope`）或把宿主设为 child subreaper，让脱离进程组的后代也能被找到。是否默认开启在 P0 后决定。
+- **Linux**：有 cgroup v2 时**默认开启**（通过 `systemd-run --user --scope`），将受管进程及其所有后代放入同一 scope，停止时通过 cgroup 一次性杀死整棵树，`coverage` 标注为 `"cgroup"`；环境无 cgroup v2 时退回下方快照模式。
+- **macOS**：不支持 cgroup，采用快照模式。
+  - 启动：pi 以 `detached: true` 启动，自成进程组（pgid = pi 的 pid）。
+  - 运行期间：受管 pi 有工具在执行时，每 5 秒对进程表做一次快照，记录 pi 的全部后代及其 pgid、创建时间。这样 pi 先退出、后代被系统收养后，仍能按记录找到它们。
+  - 停止顺序：
+    1. RPC `abort`（带超时）；
+    2. 关闭 stdin，等待 `graceMs`；
+    3. 向 pi 发 SIGTERM，让 pi 自己清理它启动的命令，等待 `termGraceMs`；
+    4. 对进程表做快照，收集 pi 的全部后代的 pgid，加上运行期间记录过的 pgid；逐个做进程身份检查后，对每个 pgid 发 `SIGKILL`（`kill(-pgid)`），最后对 pi 自己的进程组发 `SIGKILL`；
+    5. 复查：快照中出现过的进程都已不在。仍存活的写进 `StopReport.leftovers`；`coverage` 标注为 `"snapshot_visible"`（只保证快照能看到的进程）。
+  - 进程表快照：Linux 读 `/proc`；macOS 用原生 N-API 调用 `proc_listpids` 与 `proc_pidinfo`。
+  - **收窄承诺**：macOS 原型实测表明快照模式存在两种无法发现的盲窗，会留下孤儿进程（见下方剩余风险），不能出具无说明的 0 残留保证。
 
 ### 场景
 
@@ -159,7 +164,10 @@ pi 1.5.0 的 `bash` 工具在 POSIX 上以 `detached` 方式启动每条命令�
 
 ### 剩余风险
 
-- POSIX 上，pi 被 SIGKILL 前、两次快照之间新启动并立即脱离（`setsid` 后父进程退出）的进程可能找不到，成为孤儿进程；macOS 没有等价于 cgroup 的通用手段。P0 用故障注入测量这种情况。
+- **macOS 快照盲窗**：在 macOS 上（及未开启 cgroup 的 Linux），以下两种情况均会留下孤儿进程，且快照复查无法检出（`StopReport.leftovers` 仍为 0，故必须通过 `coverage: "snapshot_visible"` 标明覆盖边界）：
+  1. 两次快照（间隔 5 秒）之间，后代进程 `setsid` 后父进程退出，接着 pi 被 SIGKILL；
+  2. bash 用 `nohup … &` 起了后台进程，而该命令在第一次快照之前就结束了（这种情况 pi 正常停止也会遗漏）。
+  - **P1 调研项**：调研能否在 pi 里用扩展包住 bash 工具，命令一启动就把进程组上报给宿主，以兜住早退后台进程（视 pi 扩展接口能力而定，目前不承诺）。
 - 不是由受管进程直接启动的进程（如通过计划任务、系统服务、`launchd`/`systemd` 启动的）不在 Job、进程组或进程树里，无法清理。
 
 ## 锁
@@ -229,7 +237,7 @@ pi 在打开已有会话文件时就可能改写它：文件为空时写入会�
 | ② 拉起 pi 新建会话 | 宿主预先分配一个确定的路径（会话目录下的新文件名），取得该路径的锁后用 `--session <该路径>` 拉起。路径含 `/` 或以 `.jsonl` 结尾时，pi 把参数当作路径；文件不存在时 pi 新建会话并沿用这个路径（依据：`dist/main.js` 的 `resolveSessionPath`、`dist/core/session-manager.js` 的 `_setSessionFile` 的 else 分支）。不用 `--session-id` 让 pi 自己生成路径 | 换一个路径重试 |
 | ③ 进程内切换到已有会话（RPC `switch_session`，或扩展调用 `switchSession`，即 `reason = "resume"`） | 宿主自己发 RPC 时，在发送之前取得目标文件的锁；由扩展发起时，宿主放在 pi 里的桥接扩展在 `session_before_switch`（带 `targetSessionFile`）里同步请求宿主取锁 | 桥接扩展返回 `{ cancel: true }`，切换不发生 |
 | ④ 进程内新建或分叉（RPC `new_session`、`fork`、`clone`，或扩展调用 `newSession`、`fork`） | 新文件的路径由 pi 生成（会话目录下的 `<时间>_<新会话 id>.jsonl`），`session_before_switch`（`reason = "new"`）和 `session_before_fork` 都不带这个路径；最早在 `session_shutdown` 的 `targetSessionFile` 里出现。宿主（经桥接扩展）在 `session_shutdown` 时取得新路径的锁 | 见下文 |
-| ⑤ 宿主在自己进程内预先建文件，再拉起 pi 打开它（如 pi-pane 只读视图的“Fork 为新会话”用 `SessionManager.forkFrom()` 复制出新文件，依据：`dist/core/session-manager.js` 的 `forkFrom`） | 先写后锁：`forkFrom` 以新生成的会话 id 命名并用排他方式创建新文件，宿主在它返回后取得新文件的锁，再按①拉起 pi。理由同④中带叶子的 fork：新文件名是新生成的，其他宿主不会预先持有它的锁 | 不拉起，删除刚建的文件或保留并告诉使用方 |
+| ⑤ 宿主在自己进程内预先建文件，再拉起 pi 打开它（如 pi-pane 只读视图的“Fork 为新会话”用 `SessionManager.forkFrom()` 复制出新文件，依据：`dist/core/session-manager.js` 的 `forkFrom`。`forkFrom()` 会改动源文件（见 earendil-works/pi#11867），所以 pi-pane 对源文件的临时副本调用它，并在取锁前把新文件会话头的 `parentSession` 修正为原始源文件路径，细节见 pi-pane [`docs/architecture.md` 的“拉起”](https://github.com/PosvdM/pi-pane/blob/main/docs/architecture.md#拉起)） | 先写后锁：`forkFrom` 以新生成的会话 id 命名并用排他方式创建新文件，宿主在它返回后取得新文件的锁，再按①拉起 pi。理由同④中带叶子的 fork：新文件名是新生成的，其他宿主不会预先持有它的锁 | 不拉起，删除刚建的文件或保留并告诉使用方 |
 
 关于④：
 
@@ -238,6 +246,10 @@ pi 在打开已有会话文件时就可能改写它：文件为空时写入会�
 - 取锁失败时（理论上只有路径冲突），新会话已经无法取消。宿主停止向该进程发送任何输入，终止该进程（按“进程树终止”），把会话标为中断并告诉使用方。不论切换由宿主的 RPC 还是扩展命令发起，处理都一样。
 
 切换成功后，旧文件的锁在新会话的 `session_start` 之后释放（记录写为 `released`），不必等 pi 退出：`session_start` 之前 pi 已对旧实例发出 `session_shutdown` 并拆除旧运行时，不会再写旧文件。切换失败时（没有等到新会话的 `session_start`，且 RPC `get_state` 的 `sessionFile` 仍是旧文件），宿主释放已取得的目标锁。agora 的协作会话禁止会话替换：daemon 不发这几种 RPC，agora 扩展注册 `session_before_switch` 和 `session_before_fork`，一律返回 `{ cancel: true }`。pi 只要有一个处理器返回取消，就不再执行后面的处理器并取消替换（依据：`dist/core/extensions/runner.js:813–825`），所以 implement 档位按白名单加载的其他扩展也无法发起替换。
+
+**宿主与扩展的生命周期与容错**：
+- **`session_start` 幂等**：RPC 替换会话（new、resume、fork、clone）在 runtimeHost 替换完成后与 RPC 自身 rebind 时各触发一次 `session_start`（依据：`dist/modes/rpc/rpc-mode.js` 与 `dist/core/agent-session-runtime.js`），宿主及桥接扩展必须对 `session_start` 做幂等处理（复用同一个就绪 Promise，每实例只绑定一次监听）。
+- **启动阶段退出码 1**：ticket 被抢先兑换、ticket 失效或扩展加载失败时，pi 会在未响应 `get_state` 前直接以退出码 1 退出。宿主遇到「启动阶段退出码 1」，应作为 ticket 或扩展启动故障处理，记下诊断，不自动重试。
 
 #### 取得锁之后
 
@@ -248,7 +260,7 @@ pi 在打开已有会话文件时就可能改写它：文件为空时写入会�
 3. `state = "starting"` 且没有 `writer`（上一个宿主在拉起 pi 和写入记录之间退出）→ 在进程表里查找命令行包含该会话文件路径和 `--mode rpc` 的 pi 进程，找到则按第 2 步处理。**没找到也不能排除遗留写者**（命令行可能被截断、路径写法不同、进程表读取受限），返回 `"failed"`：不自动拉起新写者，释放锁，告诉使用方“上一个写者状态不明”。使用方提示用户人工确认没有遗留的 pi 进程后，才可以显式强制继续（agora 中这是用户级操作）。
 4. 完成后把记录改写为自己的 `starting`，再拉起新写者。
 
-第 3 步的窗口来自“拉起进程”和“写入 `writer`”之间的间隔。可选的消除办法（P0 评估）：由原生部分以挂起状态创建进程（Windows 已经这样做，见“进程树终止”）、写入 `writer` 后再恢复运行；或在 POSIX 上先 fork 一个等待管道信号的辅助进程，写入记录后再让它 exec pi；或让 pi 启动后先完成一次握手，宿主写入记录后才放行。
+第 3 步的窗口来自“拉起进程”和“写入 `writer`”之间的间隔。消除办法：由原生部分以挂起状态创建进程（Windows 已经这样做，见“进程树终止”）、写入 `writer` 后再恢复运行；在 POSIX 上先 fork 一个等待管道信号的辅助进程，写入记录后再让它 exec pi。P0 在 macOS 原型上验证了 POSIX 的 exec 前门闩：放行前目标程序不运行，exec 后 PID 和创建时间与保存的身份一致；该机制尚未并入宿主的拉起和恢复流程，Windows 挂起创建待测。让 pi 启动后在扩展 `session_start` 中握手、宿主写入记录后再放行的办法不能作为门闩：到达握手点之前，会话文件已经可能被 pi 改写。把门闩集成进拉起流程列为后续工作。
 
 这样不论上一个写者属于 pi-pane 还是 pi-agora，新持锁方都会先清理它。
 
@@ -289,7 +301,7 @@ export function isAncestorOf(dir: string, target: string): boolean;  // dir 是 
 
 1. **与 pi 解析工具路径的规则一致**，确保校验的是 pi 实际会打开的文件：去掉开头的 `@`、把 Unicode 空格（`U+00A0`、`U+2000–U+200A`、`U+202F`、`U+205F`、`U+3000`）换成普通空格、展开 `~`、`file://` URL 转路径、Windows 上把 Git Bash/MSYS/WSL 形式的盘符路径（`/c/...`、`/mnt/c/...`）转成 `C:\...`，再相对 `cwd` 解析（依据：`dist/utils/paths.js` 的 `normalizePath`、`resolvePath`，`dist/core/tools/path-utils.js` 的 `resolveToCwd`）。
 2. `mode = "read"` 时还要按 pi 的 `resolveReadPath` 依次尝试 macOS 截图名的窄不换行空格变体、NFD 变体、弯引号变体，取第一个存在的文件（依据：`dist/core/tools/path-utils.js`）。
-3. **真实路径**：`fs.realpath.native` 解析符号链接和 Windows junction。目标不存在时（如 `write` 新文件），对最深的已存在祖先取真实路径，再拼上其余部分。
+3. **真实路径**：`fs.realpath.native` 解析符号链接和 Windows junction。目标不存在时（如 `write` 新文件），对最深的已存在祖先取真实路径，再拼上其余部分。比较路径前两方必须均做 `realpath`（macOS 上系统临时目录 `event.cwd` 时而是 `/private/var`、时而是 `/var`）。
 4. **比较键**：Windows 上统一分隔符为 `\`、去掉 `\\?\` 前缀、折叠大小写（与 pi 的 `getPathComparisonKey` 一致，忽略 NTFS 按目录开启的大小写敏感）；macOS 默认卷不区分大小写且对 Unicode 规范化不敏感，比较前折叠大小写并转为 NFC（`realpath` 是否返回磁盘上的实际大小写在 P0 验证）；Linux 不折叠。
 
 pi 的这些函数位于内部模块，不在包的公开导出里，所以 pi-hostkit 自行实现同样的规则，并把 pi 1.5.0 的行为整理成测试用例；升级支持的 pi 版本时先跑这组用例。
@@ -300,24 +312,21 @@ pi 的这些函数位于内部模块，不在包的公开导出里，所以 pi-h
 
 | 能力 | Windows | macOS | Linux |
 | --- | --- | --- | --- |
-| 进程树终止 | Job Object | 进程组 + 进程表快照 | 进程组 + 进程表快照（可选 cgroup） |
+| 进程树终止 | Job Object | 进程组 + 进程表快照（收窄承诺，标注覆盖范围） | cgroup v2 默认开启（无 cgroup 时退回进程组 + 进程表快照） |
 | 宿主被强杀后 | 受管进程随 Job 终止 | 受管进程可能存活，重启后按身份停止 | 同 macOS |
 | 单实例锁、会话写锁 | 命名 mutex | `flock` | `flock` |
 | 进程创建时间 | `GetProcessTimes` | `proc_pidinfo` | `/proc/<pid>/stat` |
 | 密钥权限 | `icacls` | `0700/0600` | `0700/0600` |
 | 路径比较 | 折叠大小写、统一分隔符 | 折叠大小写、NFC | 原样 |
 
-## P0 验证项
+## P0 验证结论与后续工作
 
-以下各项列在 [roadmap.md](roadmap.md#p0-验证项) 中，结论写回本文：
-
-- 原生部分的形态（N-API 预编译模块或辅助程序）、三平台的构建与分发方式。
-- Windows：挂起创建 + Job Object 后，`bash` 工具的长命令、后台进程、父进程先退出的孙进程在停止后全部消失；宿主被强杀时 Job 内进程全部终止。
-- POSIX：`bash` 工具启动的命令（独立进程组）、`nohup … &`、`setsid` 启动的进程在停止后的残留情况；pi 被 SIGKILL 后快照能否找回其后代。
-- 两个进程同时争抢单实例锁和会话写锁，只有一个成功；持锁进程被强杀后锁立即可用。
-- 跨宿主恢复：pi-pane 托管某会话时被强杀，pi-agora 随后打开同一文件；以及反过来。包括恰在 spawn 之后、写入 `writer` 之前杀掉宿主：新持锁方应返回 `failed`，不能自动拉起。
-- 消除 spawn 与写入 `writer` 之间窗口的方案（挂起创建、POSIX 辅助进程、启动握手）的可行性。新持锁方必须先按共享记录停止旧的 pi 并确认退出，再启动新写者；两边的会话文件都不出现交错写入。
-- 会话写锁的取锁时机：`--session <不存在的路径>` 新建会话后文件确实写在该路径；`session_before_switch` 返回取消时目标文件未被打开或改写；`new`、`fork`、`clone` 时 `session_shutdown` 的 `targetSessionFile` 与实际新文件一致。
-- 进程创建时间在三平台上的精度，PID 复用时 `isSameProcess` 返回 `gone`。
-- `icacls` 参数和收紧后的实际 ACL。
-- 路径规范化用例：符号链接、junction、大小写、`..`、`@` 前缀、`~`、Unicode 空格、NFD、写入新文件、链接切换。
+P0 实测结果（macOS，详见各组 RESULTS.md）：
+- **原生部分形态**：已定为 N-API 预编译模块。锁的文件描述符由宿主进程持有，崩溃自动释放；辅助程序单独崩溃会导致锁释放但写者继续运行的风险。三平台构建与 CI 打包列入 P1。
+- **锁与恢复**：单实例锁与会话写锁争抢、强杀后释放、双向跨宿主恢复（pi-pane ↔ pi-agora）在 macOS 原型上全部通过，inode 与共享记录保持一致。
+- **写锁时机**：预分配路径 `--session` 生效；`session_before_switch` 取消不改目标文件；新会话取锁失败时阻断后续发送；RPC 替换会产生两次 `session_start`，宿主与 bridge 已按幂等处理。
+- **进程树终止**：快照机制在两次快照间 setsid 退出和早退后台进程两类时序下会遗漏进程，故 Linux 默认开启 cgroup v2，macOS 收窄承诺并增加 `StopReport.coverage` 字段；P1 调研 bash 启动上报 pgid。
+- **路径规范化**：macOS 静态路径规则通过；TOCTOU 确认为固有剩余风险；比较前必须 realpath。
+- **启动窗口门闩**：POSIX exec 前门闩的机制已在 macOS 原型上运行（结论为部分通过），但未并入双向宿主恢复测试；扩展 `session_start` 握手发生前会话文件已可能被改写，不能作为门闩（见“取得锁之后”）。门闩的集成列为后续工作。
+- **进程身份未测项**：P0 只验证了伪造创建时间的记录被拒绝；真实 PID 复用、机器重启，以及身份检查到发信号之间的竞态未实测，仍待验证。
+- **后续跨平台验证（移入公开发布前）**：Windows Job Object 与挂起创建、原生 PowerShell 与 junction、`icacls` 权限、Linux cgroup v2、Windows `GetProcessTimes` 与 Linux `/proc` 的进程身份精度、非本地文件系统拒绝。

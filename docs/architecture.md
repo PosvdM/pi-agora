@@ -120,7 +120,7 @@ node <pi>/dist/bundle/cli.js --mode rpc
 #### 项目信任
 
 - explore、review、会议席位和书记固定加 `--no-approve`，不加载需要项目信任的本地配置和资源（依据：`docs/cli.md` 的 `--no-approve`、`docs/security.md` 的 Understand project trust）。
-- implement 默认也加 `--no-approve`；配置 `implement.projectTrust: "saved"` 后不加该参数，改按用户已保存的信任决定（`~/.pi/agent/trust.json`）。RPC 模式不能弹出信任提示，没有保存决定时按 `defaultProjectTrust` 处理（依据：`docs/security.md` 的 Project trust without an interactive prompt）。不加 `--approve`。
+- implement 默认也加 `--no-approve`；配置 `implement.projectTrust: "saved"` 后不加该参数，改按用户已保存的信任决定（`~/.pi/agent/trust.json`）。RPC 模式不能弹出信任提示，没有保存决定时按 `defaultProjectTrust` 处理（依据：`docs/security.md` 的 Project trust without an interactive prompt）。不加 `--approve`。注意：即使目录里没有需要信任的项目资源，如果 `trust.json` 中记为 false，仍按不信任处理。
 - `AGENTS.md`、`CLAUDE.md` 等上下文文件不受项目信任控制，仍会加载（依据同上）。agora 不加 `-nc`，因为项目约定对子代理有用；任务书提醒子代理把仓库里的指令当作不可信输入。
 
 ### 受管扩展的就绪检查
@@ -128,9 +128,9 @@ node <pi>/dist/bundle/cli.js --mode rpc
 协作会话的安全检查都在 agora 扩展里，所以扩展没有正常工作时会话必须不能做任何事（fail closed）：
 
 1. 扩展加载后立即用 launch ticket 换连接 token（ticket 绑定 runId，见 [security.md](security.md#协作会话)）。
-2. 扩展向 daemon 报告就绪：`POST /v1/runs/:runId/ready`，带 `pi.getActiveTools()` 的结果、当前模型和 thinking 级别、扩展版本（依据：`dist/core/extensions/types.d.ts` 的 `getActiveTools`、`getThinkingLevel`）。
+2. 就绪等待：MCP 工具注册是异步的，在 `session_start` 时可能尚未完成。扩展必须等 MCP 工具注册完成（或等到超时按 fail closed 处理），生成工具清单前按平台过滤（macOS 和 Linux 上不列 `powershell`），再向 daemon 报告就绪：`POST /v1/runs/:runId/ready`，带完整的 `pi.getActiveTools()` 结果、当前模型和 thinking 级别、扩展版本（依据：`dist/core/extensions/types.d.ts` 的 `getActiveTools`、`getThinkingLevel`）。
 3. daemon 核对：活动工具集合与档位白名单完全一致；模型和 thinking 与 `LaunchSpec` 一致，并用 RPC `get_state` 再核对一次模型；扩展版本与 daemon 兼容。全部通过后 run 进入 `ready`，daemon 才发送任务书或会议消息。
-4. 就绪前，扩展的 `tool_call` 钩子拒绝一切工具调用。钩子内部任何异常都返回 `{ block: true }`，不依赖 pi 对抛出异常的处理方式（依据：`docs/extensions.md` 的 `tool_call`；同文档要求安全判断无法做出时 fail closed）。
+4. 就绪前，扩展的 `tool_call` 钩子拒绝一切工具调用。钩子内部必须显式用 `try/catch` 包住，出异常时自行记录 fatal 诊断并返回 `{ block: true }` 拒绝调用，不依赖 pi 对抛出异常的处理方式（实测裸钩子抛错时 pi 不发 RPC `extension_error`，进程不会自行退出；安全策略必须 fail closed 自行闭环）。
 5. 就绪超时（`readyTimeoutMs`，默认 30000）、核对失败、或运行期间收到来自 agora 扩展的 `extension_error` 事件（依据：`docs/json.md`），daemon 立即停止该 run，记录诊断；任务进入 `failed`（首次启动）或 `interrupted`（恢复时），并通知召集人。
 
 ### 禁止会话替换
@@ -205,7 +205,7 @@ node <pi>/dist/bundle/cli.js --mode rpc
 1. 协议兼容（双方协议版本区间有交集）→ 继续使用旧 daemon，提示用户择机升级。
 2. 不兼容 → 拒绝连接并提示运行 `agora shutdown`。
 3. 新 daemon 启动时发现 `schema_version` 低于自身：
-   1. 用 SQLite 在线备份接口（`node:sqlite` 的 `backup()`）把 `agora.db` 备份到 `backups/agora-<旧版本>-<时间>.db`。WAL 模式下直接复制文件可能得到不一致的副本，所以不用文件复制。
+   1. 用 SQLite 在线备份接口（`node:sqlite` 的 `backup()`）把 `agora.db` 备份到 `backups/agora-<旧版本>-<时间>.db`。WAL 模式下直接复制文件可能得到不一致的副本，所以不用文件复制。**备份约束**：备份只用同一个连接，或者一步复制（`rate` 设为极大值一步复制全部页）；不能使用独立连接做逐步 `backup()`（写入持续并发时独立连接会被打断重置而永远无法完成）。以只读方式打开 WAL 数据库同样会创建 `-wal` 和 `-shm` 文件，因此数据库所在目录必须对 daemon 进程保持可写。
    2. 以只读方式打开备份，执行 `PRAGMA integrity_check`，通过后才继续。
    3. 在一个事务里执行迁移。备份或校验失败、迁移失败，都保持原库不动并退出。
 
@@ -269,8 +269,8 @@ node <pi>/dist/bundle/cli.js --mode rpc
 执行方式：
 
 1. **工具白名单**：`--tools` 用明确的工具名列表，例如 explore 为 `read,grep,find,ls,agora_*`。列明工具名时会替换整个默认选择，`codemode` 不在列表里就不会启用（依据：`docs/cli.md` 的 Tools 一节）。就绪检查再核对一次实际的活动工具集合。
-2. **MCP**：协作会话因 `-ne` 默认没有 MCP。implement 需要 MCP 时显式加 `-e builtin:mcp`，并在 `--tools` 里只列白名单服务器的工具（如 `mcp__radius__*`）；以 `mcp__` 开头的条目会让 `--tools` 同时过滤 MCP 工具（依据：`docs/cli.md` 的 MCP tools 一节）。未列入白名单的服务器是否仍会连接在 P0 验证。
-3. **路径校验**：见下节。
+2. **MCP**：协作会话因 `-ne` 默认没有 MCP。implement 需要 MCP 时显式加 `-e builtin:mcp`，并在 `--tools` 里只列白名单服务器的工具（如 `mcp__radius__*`）。P0 实测表明：MCP 白名单只限制工具能否调用，不限制服务器启动（未列入的服务器仍会被拉起并初始化）。为防止未列入的服务器启动造成副作用或凭证泄露，agora 为每个子代理单独生成一份只含白名单服务器的 MCP 配置文件。生成的 MCP 配置必须使白名单工具的有效 exposure 为 `"direct"`：设置服务器 `exposure: "direct"`，并移除或覆盖与之冲突的 `toolExposure` 配置。pi 默认的 exposure 是 `codemode`（依据：`docs/mcp.md` 的 Control tool exposure 一节），P0 实测在默认 exposure 下白名单内的工具也无法调用。仍不启用 `codemode`。完成异步注册后，核对实际活动工具集合，再发送任务书。
+3. **路径校验**：比较路径前两端先调用 realpath（解决如 macOS 上系统临时目录 `event.cwd` 在 `/private/var` 与 `/var` 的不一致）。详见下节。
 4. **不依赖工具注解**：`readOnlyHint` 等注解未经验证（依据：`docs/extensions.md`），不作为放行依据。
 5. **恢复不提权**：重新拉起进程时档位从 SQLite 读取，不接受客户端传入。
 
@@ -313,11 +313,11 @@ P0 测试用例：搜索根是受保护目录的祖先、受保护目录嵌套�
   | `log` | `<前缀> log --no-ext-diff --no-textconv --no-color --no-show-signature [白名单选项] [<提交范围>] -- [<路径>…]` |
   | `show` | `<前缀> show --no-ext-diff --no-textconv --no-color --no-show-signature [白名单选项] <提交> -- [<路径>…]` |
 
-  `status` 不接受 `--no-color`，颜色由全局的 `-c color.ui=never` 关闭；`--no-optional-locks` 是全局选项，不能放在子命令之后。以上参数在 git 2.56 上逐个核实过，P0 在支持的最低 git 版本上再核实一次。
+  `status` 不接受 `--no-color`，颜色由全局的 `-c color.ui=never` 关闭；`--no-optional-locks` 是全局选项，不能放在子命令之后。git 最低支持版本定为 **2.34**（覆盖主流仍维护的 LTS 发行版如 Ubuntu 22.04 自带版本，补测已在 git 2.34.1 与 2.56.0 上通过，见 `experiments/p0/c-tools/RESULTS.md`）。实测差异：git 2.34 会将 `core.fsmonitor=false` 解释为执行名为 `false` 的 hook（执行从 PATH 解析的 false 退出，无害且恶意 fsmonitor 未触发），后续评估统一改用 `-c core.fsmonitor=` 并双版本验证。
 - **环境变量**：在继承的环境上设 `GIT_CONFIG_NOSYSTEM=1`、`GIT_PAGER=cat`、`PAGER=cat`、`GIT_EXTERNAL_DIFF=`（空）、`GIT_TERMINAL_PROMPT=0`，并去掉 `GIT_DIR`、`GIT_WORK_TREE`、`GIT_CONFIG_PARAMETERS`、`GIT_CONFIG_COUNT` 及 `GIT_CONFIG_KEY_*` / `GIT_CONFIG_VALUE_*`。
 - **白名单选项**：模型只能传白名单内的选项（如 `--stat`、`--name-only`、`--name-status`、`-n <数字>`、`--oneline`、`--format=<固定几种>`、`-U<数字>`、`--cached`（仅 `diff`））、提交号和提交范围，以及 `--` 之后的路径。其余一律拒绝，尤其是 `-c`、`--output`、`--exec`、`--git-dir`、`--work-tree`、`-C`、`--ext-diff`、`--textconv`、`--show-signature`、`--config-env`、`--color` 和任何会写文件或改引用的选项。提交号和范围用正则校验（十六进制、分支名字符、`..`、`~n`、`^`），不允许以 `-` 开头，不允许包含 `:`（防止 `<提交>:<路径>` 形式读取任意 blob 时触发 textconv）。
 - **路径限定**：`--` 之后的路径用 `canonicalPath` 规范化，必须在任务工作目录内，同时受“受保护目录”规则约束。
-- **filter**：`status` 和对工作区的 `diff` 在文件状态信息过期时可能对工作区文件运行 `filter.<driver>.clean` 或 `process`。每次执行前用 `git config --get-regexp "^filter\."` 读出仓库配置的 filter（读配置不执行代码），对每个 driver 在前缀中用 `-c` 把 `clean`、`smudge`、`process` 覆盖为空。空值是否等于禁用 filter **未核实**；P0 不通过则 review 档位不提供 `status` 和工作区 `diff`（只保留针对提交的 `diff`、`log`、`show`）。
+- **filter**：`status` 和对工作区的 `diff` 在文件状态信息过期时可能对工作区文件运行 `filter.<driver>.clean` 或 `process`。每次执行前用 `git config --get-regexp "^filter\."` 读出仓库配置的 filter（读配置不执行代码），对每个 driver 在前缀中用 `-c` 把 `clean`、`smudge`、`process` 覆盖为空。已在 git 2.34.1、2.56.0 的默认非 required filter 配置下验证，覆盖为空未触发恶意程序；不外推到任意版本和 filter 组合。
 
 P0 用一个带恶意配置的测试仓库验证：仓库配置了 textconv、`diff.external`、`core.fsmonitor`、`core.pager`、clean/smudge/process filter、`log.showSignature` + `gpg.program`，并让工作区文件的状态信息过期；对 `status`、`diff`（工作区、`--cached`、两个提交之间）、`log`（含 `-p`）、`show` 的每一种调用都检查，这些程序一次都不会执行（用写标记文件的脚本判断）。
 

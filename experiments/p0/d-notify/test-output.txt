@@ -1,0 +1,37 @@
+✔ #7 idle (652.4945ms)
+✔ #7 busy (896.640375ms)
+✔ #7 tool (938.845ms)
+✔ #7 silent (599.155917ms)
+✔ #7 silent-new (584.370625ms)
+✔ #7 silent-busy (593.898208ms)
+✔ #7 clear_queue (1113.260208ms)
+✔ #8 extension-message-end 1/3 (901.119041ms)
+✔ #8 extension-message-end 2/3 (907.492375ms)
+✔ #8 extension-message-end 3/3 (929.233833ms)
+✔ #8 public-before-persist 1/3 (926.992833ms)
+✔ #8 public-before-persist 2/3 (902.52375ms)
+✔ #8 public-before-persist 3/3 (904.845875ms)
+✔ #8 silent-after-send 1/3 (891.533542ms)
+✔ #8 silent-after-send 2/3 (900.667917ms)
+✔ #8 silent-after-send 3/3 (912.450542ms)
+✔ #8 silent-new-after-send 1/3 (892.762875ms)
+✔ #8 silent-new-after-send 2/3 (920.918208ms)
+✔ #8 silent-new-after-send 3/3 (901.545334ms)
+✔ #8 daemon-before-ack 1/3 (1127.445875ms)
+✔ #8 daemon-before-ack 2/3 (1125.043625ms)
+✔ #8 daemon-before-ack 3/3 (1151.725333ms)
+retained fixture: /var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-lwlZU1
+✔ #7 abort without clear_queue deviation 1/3 (1156.992041ms)
+retained fixture: /var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-ZujIQ2
+✔ #7 abort without clear_queue deviation 2/3 (1169.300458ms)
+retained fixture: /var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-qGdeIt
+✔ #7 abort without clear_queue deviation 3/3 (1179.417958ms)
+P0 evidence: /var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-d-notify-run-WL8o8z/observations.json (P0_RECORD=1: repository observations refreshed)
+ℹ tests 25
+ℹ suites 0
+ℹ pass 25
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 23306.187625

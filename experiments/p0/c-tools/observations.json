@@ -1,0 +1,1265 @@
+{
+  "platform": "darwin",
+  "node": "v26.12.0",
+  "evidenceDir": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-c-tools-run-wprq8B",
+  "cases": [
+    {
+      "cleanupGuard": true,
+      "exitedSignals": 0,
+      "liveStopCalls": 1
+    },
+    {
+      "group": 3,
+      "trust": "deny",
+      "savedTrust": true,
+      "trustFlag": "--no-approve",
+      "globalThinking": "low",
+      "projectThinking": "high",
+      "actualThinking": "low",
+      "readyThinking": "low",
+      "projectSettingsLoaded": false,
+      "projectTools": [
+        "bash",
+        "edit",
+        "write",
+        "codemode",
+        "mcp__denied__ping"
+      ]
+    },
+    {
+      "group": 3,
+      "trust": "deny",
+      "mode": "explore",
+      "tool": "bash",
+      "isError": true,
+      "text": "Tool bash not found"
+    },
+    {
+      "group": 3,
+      "trust": "deny",
+      "mode": "explore",
+      "tool": "edit",
+      "isError": true,
+      "text": "Tool edit not found"
+    },
+    {
+      "group": 3,
+      "trust": "deny",
+      "mode": "explore",
+      "tool": "write",
+      "isError": true,
+      "text": "Tool write not found"
+    },
+    {
+      "group": 3,
+      "trust": "deny",
+      "mode": "explore",
+      "tool": "codemode",
+      "isError": true,
+      "text": "Tool codemode not found"
+    },
+    {
+      "group": 3,
+      "trust": "deny",
+      "mode": "explore",
+      "tool": "mcp__allowed__ping",
+      "isError": true,
+      "text": "Tool mcp__allowed__ping not found"
+    },
+    {
+      "group": 3,
+      "trust": "deny",
+      "mode": "explore",
+      "tool": "mcp__denied__ping",
+      "isError": true,
+      "text": "Tool mcp__denied__ping not found"
+    },
+    {
+      "group": 3,
+      "trust": "deny",
+      "mode": "explore",
+      "tool": "powershell",
+      "isError": true,
+      "text": "Tool powershell not found"
+    },
+    {
+      "group": 3,
+      "trust": "deny",
+      "declarations": [
+        "read",
+        "grep",
+        "find",
+        "ls",
+        "agora_canary"
+      ],
+      "checkedRequests": 14,
+      "mcpSpawns": 0,
+      "archivedAt": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-c-tools-run-wprq8B/project-settings-deny"
+    },
+    {
+      "group": 3,
+      "trust": "saved",
+      "savedTrust": true,
+      "trustFlag": null,
+      "globalThinking": "low",
+      "projectThinking": "high",
+      "actualThinking": "high",
+      "readyThinking": "high",
+      "projectSettingsLoaded": true,
+      "projectTools": [
+        "bash",
+        "edit",
+        "write",
+        "codemode",
+        "mcp__denied__ping"
+      ]
+    },
+    {
+      "group": 3,
+      "trust": "saved",
+      "mode": "explore",
+      "tool": "bash",
+      "isError": true,
+      "text": "Tool bash not found"
+    },
+    {
+      "group": 3,
+      "trust": "saved",
+      "mode": "explore",
+      "tool": "edit",
+      "isError": true,
+      "text": "Tool edit not found"
+    },
+    {
+      "group": 3,
+      "trust": "saved",
+      "mode": "explore",
+      "tool": "write",
+      "isError": true,
+      "text": "Tool write not found"
+    },
+    {
+      "group": 3,
+      "trust": "saved",
+      "mode": "explore",
+      "tool": "codemode",
+      "isError": true,
+      "text": "Tool codemode not found"
+    },
+    {
+      "group": 3,
+      "trust": "saved",
+      "mode": "explore",
+      "tool": "mcp__allowed__ping",
+      "isError": true,
+      "text": "Tool mcp__allowed__ping not found"
+    },
+    {
+      "group": 3,
+      "trust": "saved",
+      "mode": "explore",
+      "tool": "mcp__denied__ping",
+      "isError": true,
+      "text": "Tool mcp__denied__ping not found"
+    },
+    {
+      "group": 3,
+      "trust": "saved",
+      "mode": "explore",
+      "tool": "powershell",
+      "isError": true,
+      "text": "Tool powershell not found"
+    },
+    {
+      "group": 3,
+      "trust": "saved",
+      "declarations": [
+        "read",
+        "grep",
+        "find",
+        "ls",
+        "agora_canary"
+      ],
+      "checkedRequests": 14,
+      "mcpSpawns": 0,
+      "archivedAt": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-c-tools-run-wprq8B/project-settings-saved"
+    },
+    {
+      "group": 3,
+      "exposure": "direct",
+      "declared": [
+        "read",
+        "grep",
+        "find",
+        "ls",
+        "agora_canary",
+        "mcp__allowed__ping"
+      ],
+      "connections": [
+        {
+          "server": "allowed",
+          "pid": 66772,
+          "kind": "spawn"
+        },
+        {
+          "server": "denied",
+          "pid": 66773,
+          "kind": "spawn"
+        }
+      ],
+      "denied": "Tool mcp__denied__ping not found",
+      "allowedBeforeReady": "agora not ready",
+      "executions": []
+    },
+    {
+      "group": 4,
+      "exposure": "direct",
+      "readyReport": [
+        "read",
+        "grep",
+        "find",
+        "ls",
+        "agora_canary"
+      ],
+      "postConnectDeclared": [
+        "read",
+        "grep",
+        "find",
+        "ls",
+        "agora_canary",
+        "mcp__allowed__ping"
+      ]
+    },
+    {
+      "group": 3,
+      "exposure": "direct",
+      "allowedAfterReady": "allowed called"
+    },
+    {
+      "group": 3,
+      "exposure": "codemode",
+      "declared": [
+        "read",
+        "grep",
+        "find",
+        "ls",
+        "agora_canary"
+      ],
+      "connections": [
+        {
+          "server": "denied",
+          "pid": 66777,
+          "kind": "spawn"
+        },
+        {
+          "server": "allowed",
+          "pid": 66776,
+          "kind": "spawn"
+        }
+      ],
+      "denied": "Tool mcp__denied__ping not found",
+      "allowedBeforeReady": "Tool mcp__allowed__ping not found",
+      "executions": []
+    },
+    {
+      "group": 4,
+      "exposure": "codemode",
+      "readyReport": [
+        "read",
+        "grep",
+        "find",
+        "ls",
+        "agora_canary"
+      ],
+      "postConnectDeclared": [
+        "read",
+        "grep",
+        "find",
+        "ls",
+        "agora_canary"
+      ]
+    },
+    {
+      "group": 4,
+      "fault": "load",
+      "taskSent": false,
+      "executed": false,
+      "diagnostic": "Error: Failed to load extension \"/Users/pm/Harness/pi-design-review/pi-agora/.worktrees/sa-9ed68e9e/experiments/p0/c-tools/managed-extension.ts\": Failed to load extension: P0 deliberate factory failure\nHint: Start without extensions using \"pi -ne\".\n"
+    },
+    {
+      "group": 4,
+      "fault": "hook",
+      "taskSent": false,
+      "executed": false,
+      "diagnostic": {
+        "reason": "Error: P0 deliberate policy exception"
+      },
+      "exit": {
+        "code": 143,
+        "signal": null
+      }
+    },
+    {
+      "group": 4,
+      "fault": "expired",
+      "taskSent": false,
+      "executed": false,
+      "diagnostic": {
+        "reason": "Error: invalid or expired ticket"
+      },
+      "exit": {
+        "code": 143,
+        "signal": null
+      }
+    },
+    {
+      "group": 4,
+      "fault": "replay",
+      "taskSent": false,
+      "executed": false,
+      "diagnostic": {
+        "reason": "Error: EEXIST: file already exists, open '/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-gxFABZ/ticket.spent'"
+      },
+      "exit": {
+        "code": 143,
+        "signal": null
+      }
+    },
+    {
+      "group": 4,
+      "fault": "tools",
+      "taskSent": false,
+      "executed": false,
+      "diagnostic": {
+        "reason": "ready tool set mismatch"
+      },
+      "exit": {
+        "code": 143,
+        "signal": null
+      }
+    },
+    {
+      "group": 4,
+      "fault": "raw-throw-after-ready-control",
+      "result": "P0 raw tool_call throw",
+      "extensionErrors": []
+    },
+    {
+      "group": 5,
+      "name": "read",
+      "input": {
+        "path": "protected/secret.txt"
+      },
+      "isError": true,
+      "result": "Error: protected path"
+    },
+    {
+      "group": 5,
+      "name": "read",
+      "input": {
+        "path": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-KabCg9/secret/host.key"
+      },
+      "isError": true,
+      "result": "Error: protected path"
+    },
+    {
+      "group": 5,
+      "name": "read",
+      "input": {
+        "path": "@protected/secret.txt"
+      },
+      "isError": true,
+      "result": "Error: protected path"
+    },
+    {
+      "group": 5,
+      "name": "read",
+      "input": {
+        "path": "safe/../protected/secret.txt"
+      },
+      "isError": true,
+      "result": "Error: protected path"
+    },
+    {
+      "group": 5,
+      "name": "read",
+      "input": {
+        "path": "file:///var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-KabCg9/cwd/protected/secret.txt"
+      },
+      "isError": true,
+      "result": "Error: protected path"
+    },
+    {
+      "group": 5,
+      "name": "read",
+      "input": {
+        "path": "alias/secret.txt"
+      },
+      "isError": true,
+      "result": "Error: protected path"
+    },
+    {
+      "group": 5,
+      "name": "read",
+      "input": {
+        "path": "safe/link/secret.txt"
+      },
+      "isError": true,
+      "result": "Error: protected path"
+    },
+    {
+      "group": 5,
+      "name": "read",
+      "input": {
+        "path": "PrOtEcTeD/SECRET.TXT"
+      },
+      "isError": true,
+      "result": "Error: protected path"
+    },
+    {
+      "group": 5,
+      "name": "read",
+      "input": {
+        "path": "protected/Café.txt"
+      },
+      "isError": true,
+      "result": "Error: protected path"
+    },
+    {
+      "group": 5,
+      "name": "read",
+      "input": {
+        "path": "protected/Capture 1 PM.txt"
+      },
+      "isError": true,
+      "result": "Error: protected path"
+    },
+    {
+      "group": 5,
+      "name": "read",
+      "input": {
+        "path": "protected/Capture d'écran.txt"
+      },
+      "isError": true,
+      "result": "Error: protected path"
+    },
+    {
+      "group": 5,
+      "name": "read",
+      "input": {
+        "path": "safe/Café.txt"
+      },
+      "isError": true,
+      "result": "Error: protected path"
+    },
+    {
+      "group": 5,
+      "name": "read",
+      "input": {
+        "path": "safe/Capture 1 PM.txt"
+      },
+      "isError": true,
+      "result": "Error: protected path"
+    },
+    {
+      "group": 5,
+      "name": "read",
+      "input": {
+        "path": "safe/Capture d'écran.txt"
+      },
+      "isError": true,
+      "result": "Error: protected path"
+    },
+    {
+      "group": 5,
+      "name": "read",
+      "input": {
+        "path": "safe/space name.txt"
+      },
+      "isError": true,
+      "result": "Error: protected path"
+    },
+    {
+      "group": 5,
+      "name": "write",
+      "input": {
+        "path": "alias/new/deep.txt",
+        "content": "forbidden"
+      },
+      "isError": true,
+      "result": "Error: protected path"
+    },
+    {
+      "group": 5,
+      "name": "write",
+      "input": {
+        "path": "PrOtEcTeD/new.txt",
+        "content": "forbidden"
+      },
+      "isError": true,
+      "result": "Error: protected path"
+    },
+    {
+      "group": 5,
+      "name": "edit",
+      "input": {
+        "path": "protected/secret.txt",
+        "oldText": "C_TOOLS_SECRET",
+        "newText": "forbidden"
+      },
+      "isError": true,
+      "result": "Error: protected path"
+    },
+    {
+      "group": 5,
+      "name": "grep",
+      "input": {
+        "pattern": "SECRET",
+        "path": "."
+      },
+      "isError": true,
+      "result": "Error: search root contains protected path"
+    },
+    {
+      "group": 5,
+      "name": "grep",
+      "input": {
+        "pattern": "SECRET",
+        "path": "protected"
+      },
+      "isError": true,
+      "result": "Error: protected path"
+    },
+    {
+      "group": 5,
+      "name": "grep",
+      "input": {
+        "pattern": "SECRET",
+        "path": "safe/link"
+      },
+      "isError": true,
+      "result": "Error: protected path"
+    },
+    {
+      "group": 5,
+      "name": "find",
+      "input": {
+        "pattern": "*",
+        "path": "."
+      },
+      "isError": true,
+      "result": "Error: search root contains protected path"
+    },
+    {
+      "group": 5,
+      "name": "find",
+      "input": {
+        "pattern": "*",
+        "path": "protected"
+      },
+      "isError": true,
+      "result": "Error: protected path"
+    },
+    {
+      "group": 5,
+      "name": "find",
+      "input": {
+        "pattern": "*",
+        "path": "safe/link"
+      },
+      "isError": true,
+      "result": "Error: protected path"
+    },
+    {
+      "group": 5,
+      "name": "ls",
+      "input": {
+        "path": "."
+      },
+      "isError": true,
+      "result": "Error: search root contains protected path"
+    },
+    {
+      "group": 5,
+      "name": "ls",
+      "input": {
+        "path": "protected"
+      },
+      "isError": true,
+      "result": "Error: protected path"
+    },
+    {
+      "group": 5,
+      "name": "ls",
+      "input": {
+        "path": "safe/link"
+      },
+      "isError": true,
+      "result": "Error: protected path"
+    },
+    {
+      "group": 5,
+      "name": "read",
+      "input": {
+        "path": "safe/ok.txt"
+      },
+      "result": "public text\n"
+    },
+    {
+      "group": 5,
+      "name": "ls",
+      "input": {
+        "path": "safe"
+      },
+      "result": "Café.txt\nCapture 1 PM.txt\nCapture d’écran.txt\nlink/\nok.txt\nspace name.txt"
+    },
+    {
+      "group": 5,
+      "name": "grep",
+      "input": {
+        "path": "safe",
+        "pattern": "SECRET"
+      },
+      "result": "No matches found"
+    },
+    {
+      "group": 5,
+      "name": "find",
+      "input": {
+        "path": "safe",
+        "pattern": "*.txt"
+      },
+      "result": "Café.txt\nCapture 1 PM.txt\nCapture d’écran.txt\nok.txt\nspace name.txt"
+    },
+    {
+      "group": 5,
+      "name": "write",
+      "input": {
+        "path": "safe/new/deep.txt",
+        "content": "public"
+      },
+      "result": "Successfully wrote to safe/new/deep.txt"
+    },
+    {
+      "group": 5,
+      "caseInsensitive": true,
+      "realLower": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-KabCg9/cwd/protected",
+      "realUpper": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-KabCg9/cwd/protected",
+      "nfdExists": true,
+      "hookedFileCalls": 32
+    },
+    {
+      "group": 5,
+      "rawPowerShellDeclaredOnNonWindows": true,
+      "actualCall": "The powershell tool is only available on Windows."
+    },
+    {
+      "group": 5,
+      "tool": "read",
+      "input": {
+        "path": "../outside.txt"
+      },
+      "result": "Error: outside allowed roots"
+    },
+    {
+      "group": 5,
+      "tool": "read",
+      "input": {
+        "path": "~/outside.txt"
+      },
+      "result": "Error: outside allowed roots"
+    },
+    {
+      "group": 5,
+      "tool": "read",
+      "input": {
+        "path": "../extra/protected/secret.txt"
+      },
+      "result": "Error: protected path"
+    },
+    {
+      "group": 5,
+      "tool": "grep",
+      "input": {
+        "pattern": "anything"
+      },
+      "result": "Error: search root contains protected path"
+    },
+    {
+      "group": 5,
+      "tool": "find",
+      "input": {
+        "pattern": "*"
+      },
+      "result": "Error: search root contains protected path"
+    },
+    {
+      "group": 5,
+      "tool": "ls",
+      "input": {},
+      "result": "Error: search root contains protected path"
+    },
+    {
+      "group": 5,
+      "extraReadRoot": "extra public"
+    },
+    {
+      "group": 5,
+      "attack": "TOCTOU",
+      "isError": false,
+      "result": "TOCTOU_SECRET",
+      "guard": [
+        {
+          "kind": "allowed_path",
+          "tool": "read",
+          "target": "/private/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-Gu8G9w/cwd/safe/value.txt"
+        }
+      ]
+    },
+    {
+      "group": 19,
+      "executable": "/tmp/pi-p0-git-2.34.1-24czjc/install/bin/git",
+      "git": "git version 2.34.1"
+    },
+    {
+      "group": 19,
+      "input": {
+        "command": "status"
+      },
+      "argv": [
+        "--no-pager",
+        "--no-optional-locks",
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "core.pager=cat",
+        "-c",
+        "color.ui=never",
+        "-c",
+        "log.showSignature=false",
+        "-c",
+        "filter.evil.clean=",
+        "-c",
+        "filter.evil.smudge=",
+        "-c",
+        "filter.evil.process=",
+        "status",
+        "--porcelain=v1",
+        "--ignore-submodules=all",
+        "--untracked-files=normal",
+        "--"
+      ],
+      "stdout": "MM tracked.txt\n",
+      "stderr": "",
+      "markerCount": 0
+    },
+    {
+      "group": 19,
+      "input": {
+        "command": "diff"
+      },
+      "argv": [
+        "--no-pager",
+        "--no-optional-locks",
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "core.pager=cat",
+        "-c",
+        "color.ui=never",
+        "-c",
+        "log.showSignature=false",
+        "-c",
+        "filter.evil.clean=",
+        "-c",
+        "filter.evil.smudge=",
+        "-c",
+        "filter.evil.process=",
+        "diff",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-color",
+        "--"
+      ],
+      "stdout": "diff --git a/tracked.txt b/tracked.txt\nindex 77d3b3b..59b5ccc 100644\n--- a/tracked.txt\n+++ b/tracked.txt\n@@ -1 +1 @@\n-staged version three\n+worktree stale data\n",
+      "stderr": "",
+      "markerCount": 0
+    },
+    {
+      "group": 19,
+      "input": {
+        "command": "diff",
+        "options": [
+          "--cached"
+        ]
+      },
+      "argv": [
+        "--no-pager",
+        "--no-optional-locks",
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "core.pager=cat",
+        "-c",
+        "color.ui=never",
+        "-c",
+        "log.showSignature=false",
+        "-c",
+        "filter.evil.clean=",
+        "-c",
+        "filter.evil.smudge=",
+        "-c",
+        "filter.evil.process=",
+        "diff",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-color",
+        "--cached",
+        "--"
+      ],
+      "stdout": "diff --git a/tracked.txt b/tracked.txt\nindex 6702fe2..77d3b3b 100644\n--- a/tracked.txt\n+++ b/tracked.txt\n@@ -1 +1 @@\n-version two\n+staged version three\n",
+      "stderr": "",
+      "markerCount": 0
+    },
+    {
+      "group": 19,
+      "input": {
+        "command": "diff",
+        "revision": "HEAD~1..HEAD"
+      },
+      "argv": [
+        "--no-pager",
+        "--no-optional-locks",
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "core.pager=cat",
+        "-c",
+        "color.ui=never",
+        "-c",
+        "log.showSignature=false",
+        "-c",
+        "filter.evil.clean=",
+        "-c",
+        "filter.evil.smudge=",
+        "-c",
+        "filter.evil.process=",
+        "diff",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-color",
+        "HEAD~1..HEAD",
+        "--"
+      ],
+      "stdout": "diff --git a/tracked.txt b/tracked.txt\nindex 9bc69cf..6702fe2 100644\n--- a/tracked.txt\n+++ b/tracked.txt\n@@ -1 +1 @@\n-version one\n+version two\n",
+      "stderr": "",
+      "markerCount": 0
+    },
+    {
+      "group": 19,
+      "input": {
+        "command": "log",
+        "options": [
+          "-p",
+          "-n",
+          "2"
+        ]
+      },
+      "argv": [
+        "--no-pager",
+        "--no-optional-locks",
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "core.pager=cat",
+        "-c",
+        "color.ui=never",
+        "-c",
+        "log.showSignature=false",
+        "-c",
+        "filter.evil.clean=",
+        "-c",
+        "filter.evil.smudge=",
+        "-c",
+        "filter.evil.process=",
+        "log",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-color",
+        "--no-show-signature",
+        "-p",
+        "-n",
+        "2",
+        "--"
+      ],
+      "stdout": "commit 45a800cad6eb23080da579756a7a0c9212230caf\nAuthor: P0 <p0@example.invalid>\nDate:   Fri Nov 6 14:43:26 2026 +0800\n\n    two\n\ndiff --git a/tracked.txt b/tracked.txt\nindex 9bc69cf..6702fe2 100644\n--- a/tracked.txt\n+++ b/tracked.txt\n@@ -1 +",
+      "stderr": "",
+      "markerCount": 0
+    },
+    {
+      "group": 19,
+      "input": {
+        "command": "show",
+        "revision": "HEAD"
+      },
+      "argv": [
+        "--no-pager",
+        "--no-optional-locks",
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "core.pager=cat",
+        "-c",
+        "color.ui=never",
+        "-c",
+        "log.showSignature=false",
+        "-c",
+        "filter.evil.clean=",
+        "-c",
+        "filter.evil.smudge=",
+        "-c",
+        "filter.evil.process=",
+        "show",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-color",
+        "--no-show-signature",
+        "HEAD",
+        "--"
+      ],
+      "stdout": "commit 45a800cad6eb23080da579756a7a0c9212230caf\nAuthor: P0 <p0@example.invalid>\nDate:   Fri Nov 6 14:43:26 2026 +0800\n\n    two\n\ndiff --git a/tracked.txt b/tracked.txt\nindex 9bc69cf..6702fe2 100644\n--- a/tracked.txt\n+++ b/tracked.txt\n@@ -1 +",
+      "stderr": "",
+      "markerCount": 0
+    },
+    {
+      "group": 19,
+      "variant": "clean-without-process",
+      "argv": [
+        "--no-pager",
+        "--no-optional-locks",
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "core.pager=cat",
+        "-c",
+        "color.ui=never",
+        "-c",
+        "log.showSignature=false",
+        "-c",
+        "filter.evil.clean=",
+        "-c",
+        "filter.evil.smudge=",
+        "-c",
+        "filter.evil.process=",
+        "diff",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-color",
+        "--"
+      ],
+      "stderr": "",
+      "markerCount": 0
+    },
+    {
+      "group": 19,
+      "variant": "smudge-without-process",
+      "argv": [
+        "--no-pager",
+        "--no-optional-locks",
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "core.pager=cat",
+        "-c",
+        "color.ui=never",
+        "-c",
+        "log.showSignature=false",
+        "-c",
+        "filter.evil.clean=",
+        "-c",
+        "filter.evil.smudge=",
+        "-c",
+        "filter.evil.process=",
+        "diff",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-color",
+        "--"
+      ],
+      "stderr": "",
+      "markerCount": 0
+    },
+    {
+      "group": 19,
+      "providerTool": "agora_git",
+      "executable": "/tmp/pi-p0-git-2.34.1-24czjc/install/bin/git",
+      "stderr": "",
+      "result": "MM tracked.txt\n"
+    },
+    {
+      "group": 19,
+      "rejectedOption": "-c",
+      "result": "option not allowed: -c"
+    },
+    {
+      "group": 19,
+      "rejectedOption": "--output=owned",
+      "result": "option not allowed: --output=owned"
+    },
+    {
+      "group": 19,
+      "rejectedOption": "--exec=touch owned",
+      "result": "option not allowed: --exec=touch owned"
+    },
+    {
+      "group": 19,
+      "rejectedOption": "--git-dir=/tmp",
+      "result": "option not allowed: --git-dir=/tmp"
+    },
+    {
+      "group": 19,
+      "rejectedOption": "--work-tree=/tmp",
+      "result": "option not allowed: --work-tree=/tmp"
+    },
+    {
+      "group": 19,
+      "rejectedOption": "-C",
+      "result": "option not allowed: -C"
+    },
+    {
+      "group": 19,
+      "rejectedOption": "--ext-diff",
+      "result": "option not allowed: --ext-diff"
+    },
+    {
+      "group": 19,
+      "rejectedOption": "--textconv",
+      "result": "option not allowed: --textconv"
+    },
+    {
+      "group": 19,
+      "rejectedOption": "--show-signature",
+      "result": "option not allowed: --show-signature"
+    },
+    {
+      "group": 19,
+      "rejectedOption": "--config-env=core.pager=X",
+      "result": "option not allowed: --config-env=core.pager=X"
+    },
+    {
+      "group": 19,
+      "rejectedOption": "--color=always",
+      "result": "option not allowed: --color=always"
+    },
+    {
+      "group": 19,
+      "rejectedOption": "--no-index",
+      "result": "option not allowed: --no-index"
+    },
+    {
+      "group": 19,
+      "hardenedChildArgv": [
+        [
+          "false",
+          "2",
+          "1793947406905301000"
+        ],
+        [
+          "false",
+          "1",
+          "1793947406905301000"
+        ],
+        [
+          "false",
+          "2",
+          "1793947406915940000"
+        ],
+        [
+          "false",
+          "1",
+          "1793947406915940000"
+        ],
+        [
+          "false",
+          "2",
+          "1793947406926043000"
+        ],
+        [
+          "false",
+          "1",
+          "1793947406926043000"
+        ],
+        [
+          "false",
+          "2",
+          "1793947406957555000"
+        ],
+        [
+          "false",
+          "1",
+          "1793947406957555000"
+        ],
+        [
+          "false",
+          "2",
+          "1793947406970115000"
+        ],
+        [
+          "false",
+          "1",
+          "1793947406970115000"
+        ]
+      ]
+    },
+    {
+      "group": 19,
+      "positiveMarkers": [
+        "textconv",
+        "external",
+        "fsmonitor",
+        "clean",
+        "process",
+        "smudge",
+        "gpg",
+        "pager"
+      ],
+      "hardenedMarkers": 0,
+      "minimumGitVersion": "2.34",
+      "minimumGitVersionTested": true
+    }
+  ],
+  "retained": [
+    {
+      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-sOv7Vo",
+      "reason": "raw tool_call throw has no extension_error event"
+    },
+    {
+      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-1M2U39",
+      "reason": "raw pi declares powershell on macOS when explicitly selected, but execution rejects"
+    },
+    {
+      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-Gu8G9w",
+      "reason": "TOCTOU read reached protected fixture; documented design residual risk"
+    }
+  ],
+  "cleanup": [
+    {
+      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-m96jMP",
+      "pids": [
+        66761
+      ],
+      "remaining": []
+    },
+    {
+      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-1QDzXl",
+      "pids": [
+        66766
+      ],
+      "remaining": []
+    },
+    {
+      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-Rpxd3V",
+      "pids": [
+        66772,
+        66773,
+        66768
+      ],
+      "remaining": []
+    },
+    {
+      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-LBFsGl",
+      "pids": [
+        66777,
+        66776,
+        66775
+      ],
+      "remaining": []
+    },
+    {
+      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-TIgwcH",
+      "pids": [],
+      "remaining": []
+    },
+    {
+      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-IjontR",
+      "pids": [
+        66784
+      ],
+      "remaining": []
+    },
+    {
+      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-hMWH81",
+      "pids": [
+        66786
+      ],
+      "remaining": []
+    },
+    {
+      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-gxFABZ",
+      "pids": [
+        66789
+      ],
+      "remaining": []
+    },
+    {
+      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-09PbT0",
+      "pids": [
+        66794
+      ],
+      "remaining": []
+    },
+    {
+      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-sOv7Vo",
+      "pids": [
+        66796
+      ],
+      "remaining": []
+    },
+    {
+      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-KabCg9",
+      "pids": [
+        66801
+      ],
+      "remaining": []
+    },
+    {
+      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-1M2U39",
+      "pids": [
+        66810
+      ],
+      "remaining": []
+    },
+    {
+      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-7uEAaF",
+      "pids": [
+        66812
+      ],
+      "remaining": []
+    },
+    {
+      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-Gu8G9w",
+      "pids": [
+        66817
+      ],
+      "remaining": []
+    },
+    {
+      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-5iHFz0",
+      "pids": [
+        66869
+      ],
+      "remaining": []
+    }
+  ],
+  "archived": [
+    {
+      "fixture": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-m96jMP",
+      "path": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-c-tools-run-wprq8B/project-settings-deny"
+    },
+    {
+      "fixture": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-1QDzXl",
+      "path": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-c-tools-run-wprq8B/project-settings-saved"
+    }
+  ],
+  "timestamp": "2026-11-06T06:43:29.325Z"
+}

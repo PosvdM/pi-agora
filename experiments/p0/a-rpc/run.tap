@@ -1,0 +1,143 @@
+TAP version 13
+# Subtest: A11 get_commands lists explicit skills and templates with source metadata
+ok 1 - A11 get_commands lists explicit skills and templates with source metadata
+  ---
+  duration_ms: 566.951875
+  type: 'test'
+  ...
+# fixture: /var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-wSpnTC
+# commands: [{"name":"p0-template","description":"P0 test template","source":"prompt"},{"name":"skill:p0-skill","description":"P0 test skill","source":"skill"}]
+# Subtest: A12 abort alone settles with queued text retained instead of automatically continuing
+ok 2 - A12 abort alone settles with queued text retained instead of automatically continuing
+  ---
+  duration_ms: 494.267958
+  type: 'test'
+  ...
+# fixture: /var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-4mY9Vp
+# abort only: {"requests":1,"lastUser":"original","isStreaming":false,"pendingMessageCount":2,"clearAfterSettled":{"steering":["steer after abort"],"followUp":["queued after abort"]}}
+# retained observation: /var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-4mY9Vp
+# Subtest: A13 ignored provider abort times out while get_state remains responsive
+ok 3 - A13 ignored provider abort times out while get_state remains responsive
+  ---
+  duration_ms: 717.804334
+  type: 'test'
+  ...
+# fixture: /var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-gh9yyS
+# ignored provider: {"abortReceived":true,"stateStillStreaming":true,"settled":false,"exit":{"code":143,"signal":null}}
+# Subtest: A14 user extension autodiscovery uses only the isolated agent directory in RPC mode
+ok 4 - A14 user extension autodiscovery uses only the isolated agent directory in RPC mode
+  ---
+  duration_ms: 457.165375
+  type: 'test'
+  ...
+# fixture: /var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-mFdOt4
+# user extension: {"source":"extension","sourceScope":"user","mode":"rpc"}
+# P0 evidence directory: /Users/pm/Harness/pi-design-review/pi-agora/.worktrees/sa-5bf85339/experiments/p0/a-rpc/
+# Subtest: A9 automatic retry emits an intermediate agent_end before final agent_settled
+ok 5 - A9 automatic retry emits an intermediate agent_end before final agent_settled
+  ---
+  duration_ms: 593.751
+  type: 'test'
+  ...
+# fixture: /var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-DhsE2s
+# retry: [{"seq":2,"type":"agent_start"},{"seq":11,"type":"agent_end","willRetry":true},{"seq":12,"type":"auto_retry_start"},{"seq":14,"type":"agent_start"},{"seq":21,"type":"auto_retry_end"},{"seq":23,"type":"agent_end","willRetry":false},{"seq":24,"type":"agent_settled","aborted":false}]
+# Subtest: A10 an uncompacted session restores both users and assistants to the fake provider
+ok 6 - A10 an uncompacted session restores both users and assistants to the fake provider
+  ---
+  duration_ms: 784.969417
+  type: 'test'
+  ...
+# fixture: /var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-t55ddA
+# restored roles: user,assistant,user,assistant,user
+# P0 evidence directory: /Users/pm/Harness/pi-design-review/pi-agora/.worktrees/sa-5bf85339/experiments/p0/a-rpc/
+# Subtest: A1 lifecycle, tool-boundary steering, follow-up, extension commands and steerId
+ok 7 - A1 lifecycle, tool-boundary steering, follow-up, extension commands and steerId
+  ---
+  duration_ms: 599.144333
+  type: 'test'
+  ...
+# fixture: /var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-mvTVtX
+# lifecycle: {"toolSnapshotCuts":55,"statuses":{"st_delivered":["accepted","queued","delivered"],"st_dropped":["accepted","queued","dropped"]},"prompt":{"disposition":"started"},"ping":{"disposition":"handled"},"commands":[{"name":"p0-notify","description":"P0 custom message","source":"extension","sourceInfo":{"path":"<fixture>/cwd/probe.ts","source":"cli","scope":"temporary","origin":"top-level"}},{"name":"p0-ping","description":"P0 extension command","source":"extension","sourceInfo":{"path":"<fixture>/cwd/probe.ts","source":"cli","scope":"temporary","origin":"top-level"}},{"name":"p0-ui","description":"P0 UI dialogs","source":"extension","sourceInfo":{"path":"<fixture>/cwd/probe.ts","source":"cli","scope":"temporary","origin":"top-level"}},{"name":"p0-replace","description":"P0 session replacement","source":"extension","sourceInfo":{"path":"<fixture>/cwd/probe.ts","source":"cli","scope":"temporary","origin":"top-level"}},{"name":"p0-navigate","description":"P0 leaf navigation","source":"extension","sourceInfo":{"path":"<fixture>/cwd/probe.ts","source":"cli","scope":"temporary","origin":"top-level"}},{"name":"p0-fork-file","description":"P0 static forkFrom","source":"extension","sourceInfo":{"path":"<fixture>/cwd/probe.ts","source":"cli","scope":"temporary","origin":"top-level"}}],"clearQueue":{"steering":["【agora 返工 st_dropped，第 3 代】\\nfix"],"followUp":["drop follow-up"]},"handled":{"disposition":"handled"},"users":["start gate","【agora 返工 st_delivered，第 2 代】\\nfix","follow-up delivered"],"toolEnd":36,"delivered":43,"agentEnd":[60],"agentSettled":61,"requests":3,"trace":[{"seq":4,"type":"agent_start"},{"seq":26,"type":"queue_update","steering":["【agora 返工 st_dropped，第 3 代】\\nfix"],"followUp":[]},{"seq":28,"type":"queue_update","steering":["【agora 返工 st_dropped，第 3 代】\\nfix"],"followUp":["drop follow-up"]},{"seq":30,"type":"queue_update","steering":[],"followUp":[]},{"seq":32,"type":"queue_update","steering":["【agora 返工 st_delivered，第 2 代】\\nfix"],"followUp":[]},{"seq":34,"type":"queue_update","steering":["【agora 返工 st_delivered，第 2 代】\\nfix"],"followUp":["follow-up delivered"]},{"seq":36,"type":"tool_execution_end"},{"seq":41,"type":"queue_update","steering":[],"followUp":["follow-up delivered"]},{"seq":51,"type":"queue_update","steering":[],"followUp":[]},{"seq":60,"type":"agent_end","willRetry":false},{"seq":61,"type":"agent_settled","aborted":false}]}
+# Subtest: A2 clear_queue then abort preserves text and executes no queued message
+ok 8 - A2 clear_queue then abort preserves text and executes no queued message
+  ---
+  duration_ms: 516.333416
+  type: 'test'
+  ...
+# fixture: /var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-3nHVsF
+# stop: {"clearQueue":{"steering":["steer one","steer two"],"followUp":["follow one"]},"requests":1,"users":["stop test"],"state":{"model":{"id":"scripted","name":"P0 scripted local provider","reasoning":true,"input":["text","image"],"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0},"contextWindow":200000,"maxTokens":8192,"api":"p0-scripted","provider":"p0-fake","baseUrl":"http://127.0.0.1:1/never-requested"},"thinkingLevel":"medium","isStreaming":false,"isCompacting":false,"steeringMode":"one-at-a-time","followUpMode":"one-at-a-time","sessionFile":"<fixture>/agent/sessions/2026-11-05T14-29-19-571Z_01a1ac1d-3c52-7652-bfeb-35fd532fcdd8.jsonl","sessionId":"01a1ac1d-3c52-7652-bfeb-35fd532fcdd8","autoCompactionEnabled":false,"messageCount":3,"pendingMessageCount":0}}
+# Subtest: A3 ignored tool abort times out, owned process terminates, same session resumes
+ok 9 - A3 ignored tool abort times out, owned process terminates, same session resumes
+  ---
+  duration_ms: 1036.797375
+  type: 'test'
+  ...
+# fixture: /var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-zuPB8Q
+# abortTimeout: {"timeoutMs":180,"exit":{"code":null,"signal":"SIGKILL"},"recoveredFileMatches":true,"priorUserRestored":true,"toolStarts":1}
+# Subtest: A4 preallocated session, since/leafId, message_end cut, compaction history and restart
+ok 10 - A4 preallocated session, since/leafId, message_end cut, compaction history and restart
+  ---
+  duration_ms: 718.82525
+  type: 'test'
+  ...
+# fixture: /var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-FzIEaG
+# persistence: {"leafMovedWithoutAppend":true,"leafRebuildRequired":true,"explicitFile":true,"initialFileAbsent":true,"cuts":[{"rawSeq":7,"role":"system","found":true,"count":5},{"rawSeq":9,"role":"user","found":true,"count":5},{"rawSeq":14,"role":"assistant","found":true,"count":5},{"rawSeq":25,"role":"user","found":true,"count":2},{"rawSeq":30,"role":"assistant","found":true,"count":2}],"extensionBeforePersist":[{"type":"message_end_before_persist","role":"system","alreadyPresent":false},{"type":"message_end_before_persist","role":"user","alreadyPresent":false},{"type":"message_end_before_persist","role":"assistant","alreadyPresent":false},{"type":"message_end_before_persist","role":"user","alreadyPresent":false},{"type":"message_end_before_persist","role":"assistant","alreadyPresent":false},{"type":"message_end_before_persist","role":"user","alreadyPresent":false},{"type":"message_end_before_persist","role":"assistant","alreadyPresent":false}],"preCompactionMessages":5,"afterCompactionEntries":8,"compaction":{"summary":"P0 compact summary","firstKeptEntryId":"481a47f5","tokensBefore":1234,"estimatedTokensAfter":1359},"restartEntriesIdentical":true,"restoredContext":[{"role":"user","content":[{"type":"text","text":"The conversation history before this point was compacted into the following summary:\\n\\n<summary>\\nP0 compact summary\\n</summary>"}],"timestamp":1793888961255},{"role":"user","content":[{"type":"text","text":"history two"}],"timestamp":1793888961251},{"role":"assistant","api":"p0-scripted","provider":"p0-fake","model":"scripted","timestamp":1793888961252,"content":[{"type":"text","text":"fallback answer"}],"stopReason":"stop","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"durationMs":1,"thinkingLevel":"medium"},{"role":"user","content":[{"type":"text","text":"after restart"}],"timestamp":1793888961520}]}
+# Subtest: A5 snapshot cuts, delta blocks, discarded model reconnect, server restart and epochs
+ok 11 - A5 snapshot cuts, delta blocks, discarded model reconnect, server restart and epochs
+  ---
+  duration_ms: 977.158542
+  type: 'test'
+  ...
+# fixture: /var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-C2JkK2
+# snapshots: {"explicitBarrier":true,"snapshotsBeforeDiscard":15,"replayedCuts":10,"finalMessages":[{"role":"system","content":""},{"role":"user","content":[{"type":"text","text":"snapshot stream"}]},{"role":"assistant","content":[{"type":"thinking","thinking":"plan two"},{"type":"text","text":"alpha beta gamma"}]}],"pendingCompleted":0,"epochResync":true,"futureResync":true,"expiredResync":true,"serverRestartFromDisk":true,"interruptedRestartFromDisk":true}
+# Subtest: A6 UI values, pi timeouts, immediate child cancellation and host pending deadline
+ok 12 - A6 UI values, pi timeouts, immediate child cancellation and host pending deadline
+  ---
+  duration_ms: 793.086167
+  type: 'test'
+  ...
+# fixture: /var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-M12xZX
+# ui: {"value":{"select":"B","confirm":true,"input":"typed","editor":"edited\\nlines","elapsed":1},"timed":{"select":null,"confirm":false,"input":null,"editor":null,"elapsed":184},"cancelled":{"select":null,"confirm":false,"input":null,"editor":null,"elapsed":0},"pending":{"select":null,"confirm":false,"input":null,"editor":null,"elapsed":165},"editorTimeoutSupported":false,"requests":[{"method":"select"},{"method":"confirm"},{"method":"input"},{"method":"editor"},{"method":"select","timeout":60},{"method":"confirm","timeout":60},{"method":"input","timeout":60},{"method":"select"},{"method":"confirm"},{"method":"input"},{"method":"editor"},{"method":"select"},{"method":"confirm"},{"method":"input"},{"method":"editor"}]}
+# Subtest: A7 RPC and extension new/resume/fork/clone, forkFrom source hash and lock timing
+ok 13 - A7 RPC and extension new/resume/fork/clone, forkFrom source hash and lock timing
+  ---
+  duration_ms: 584.320416
+  type: 'test'
+  ...
+# fixture: /var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-aadGr6
+# sessionSwitch: {"forkFromSourceUnchanged":false,"forkFromSourceCases":[{"sample":"complete-with-final-lf","type":"forkFrom","source":"<fixture>/agent/sessions/2026-11-05T14-29-23-588Z_01a1ac1d-4c03-7255-a2b7-656faf9423d0.jsonl","target":"<fixture>/agent/sessions/2026-11-05T14-29-23-728Z_01a1ac1d-4c90-7255-a2b7-65708b743796.jsonl","beforeHash":"9c1da4bf64efeb938a8cd0c8be8f252d5d3ead902104de80d34562a4feabd8cf","afterHash":"9c1da4bf64efeb938a8cd0c8be8f252d5d3ead902104de80d34562a4feabd8cf","beforeBytes":7456,"afterBytes":7456,"sourceUnchanged":true,"appendedNewlineOnly":false},{"sample":"complete-without-final-lf","type":"forkFrom","source":"<fixture>/cwd/complete-without-final-lf.jsonl","target":"<fixture>/agent/sessions/2026-11-05T14-29-23-730Z_01a1ac1d-4c92-7255-a2b7-65733b4aef15.jsonl","beforeHash":"278314a5179a44a24110c72faa9e242bd7a54b3c0f09dd7cbcf1b8e71dab64b6","afterHash":"9c1da4bf64efeb938a8cd0c8be8f252d5d3ead902104de80d34562a4feabd8cf","beforeBytes":7455,"afterBytes":7456,"sourceUnchanged":false,"appendedNewlineOnly":true},{"sample":"truncated-final-line","type":"forkFrom","source":"<fixture>/cwd/truncated-final-line.jsonl","target":"<fixture>/agent/sessions/2026-11-05T14-29-23-731Z_01a1ac1d-4c93-7255-a2b7-65755ee22085.jsonl","beforeHash":"bf116648be9550ec950272ee526d6637a7f45c44f06b1860c4327a7d52466232","afterHash":"46a9dad2d466cea0ec72b1ff8a55678954185a3187516ef8186ed5a15f6b8b79","beforeBytes":7491,"afterBytes":7492,"sourceUnchanged":false,"appendedNewlineOnly":true}],"cases":[{"via":"rpc","action":"new","targetMatches":true,"previousMatches":true,"targetExistedAtShutdown":false,"sequence":["session_before_switch","session_shutdown","lock_result","session_start","session_start"],"before":{"type":"session_before_switch","reason":"new","file":"<fixture>/agent/sessions/2026-11-05T14-29-23-588Z_01a1ac1d-4c03-7255-a2b7-656faf9423d0.jsonl","targetExists":null}},{"via":"rpc","action":"resume","targetMatches":true,"previousMatches":true,"targetExistedAtShutdown":true,"sequence":["session_before_switch","lock_result","session_shutdown","session_start","session_start"],"before":{"type":"session_before_switch","reason":"resume","targetSessionFile":"<fixture>/agent/sessions/2026-11-05T14-29-23-728Z_01a1ac1d-4c90-7255-a2b7-65708b743796.jsonl","file":"<fixture>/agent/sessions/2026-11-05T14-29-23-588Z_01a1ac1d-4c03-7255-a2b7-656faf9423d0.jsonl","targetExists":true}},{"via":"rpc","action":"fork","targetMatches":true,"previousMatches":true,"targetExistedAtShutdown":true,"sequence":["session_before_fork","session_shutdown","lock_result","session_start","session_start"],"before":{"type":"session_before_fork","entryId":"af794e53","position":"before","file":"<fixture>/agent/sessions/2026-11-05T14-29-23-588Z_01a1ac1d-4c03-7255-a2b7-656faf9423d0.jsonl","targetExists":null}},{"via":"rpc","action":"clone","targetMatches":true,"previousMatches":true,"targetExistedAtShutdown":true,"sequence":["session_before_fork","session_shutdown","lock_result","session_start","session_start"],"before":{"type":"session_before_fork","entryId":"5d4a6eeb","position":"at","file":"<fixture>/agent/sessions/2026-11-05T14-29-23-588Z_01a1ac1d-4c03-7255-a2b7-656faf9423d0.jsonl","targetExists":null}},{"via":"extension","action":"new","targetMatches":true,"previousMatches":true,"targetExistedAtShutdown":false,"sequence":["session_before_switch","session_shutdown","lock_result","session_start"],"before":{"type":"session_before_switch","reason":"new","file":"<fixture>/agent/sessions/2026-11-05T14-29-23-588Z_01a1ac1d-4c03-7255-a2b7-656faf9423d0.jsonl","targetExists":null}},{"via":"extension","action":"resume","targetMatches":true,"previousMatches":true,"targetExistedAtShutdown":true,"sequence":["session_before_switch","lock_result","session_shutdown","session_start"],"before":{"type":"session_before_switch","reason":"resume","targetSessionFile":"<fixture>/agent/sessions/2026-11-05T14-29-23-728Z_01a1ac1d-4c90-7255-a2b7-65708b743796.jsonl","file":"<fixture>/agent/sessions/2026-11-05T14-29-23-588Z_01a1ac1d-4c03-7255-a2b7-656faf9423d0.jsonl","targetExists":true}},{"via":"extension","action":"fork","targetMatches":true,"previousMatches":true,"targetExistedAtShutdown":true,"sequence":["session_before_fork","session_shutdown","lock_result","session_start"],"before":{"type":"session_before_fork","entryId":"af794e53","position":"before","file":"<fixture>/agent/sessions/2026-11-05T14-29-23-588Z_01a1ac1d-4c03-7255-a2b7-656faf9423d0.jsonl","targetExists":null}},{"via":"extension","action":"clone","targetMatches":true,"previousMatches":true,"targetExistedAtShutdown":true,"sequence":["session_before_fork","session_shutdown","lock_result","session_start"],"before":{"type":"session_before_fork","entryId":"5d4a6eeb","position":"at","file":"<fixture>/agent/sessions/2026-11-05T14-29-23-588Z_01a1ac1d-4c03-7255-a2b7-656faf9423d0.jsonl","targetExists":null}}],"cancelResume":{"cancelled":true},"occupiedResumeCancelled":{"cancelled":true},"cancelledTargetUnchanged":true,"failedLock":{"blocked":true,"stoppedAfterStart":true,"furtherInputs":[],"exit":{"code":143,"signal":null}},"events":[{"type":"session_before_switch","reason":"resume","targetSessionFile":"<fixture>/agent/sessions/2026-11-05T14-29-23-728Z_01a1ac1d-4c90-7255-a2b7-65708b743796.jsonl","file":"<fixture>/agent/sessions/2026-11-05T14-29-23-588Z_01a1ac1d-4c03-7255-a2b7-656faf9423d0.jsonl","targetExists":true},{"type":"lock_result","at":"session_before_switch","acquired":false,"target":"<fixture>/agent/sessions/2026-11-05T14-29-23-728Z_01a1ac1d-4c90-7255-a2b7-65708b743796.jsonl","error":"EEXIST"},{"type":"session_before_switch","reason":"new","file":"<fixture>/agent/sessions/2026-11-05T14-29-23-588Z_01a1ac1d-4c03-7255-a2b7-656faf9423d0.jsonl","targetExists":null},{"type":"session_shutdown","reason":"new","targetSessionFile":"<fixture>/agent/sessions/2026-11-05T14-29-23-870Z_01a1ac1d-4d1e-7255-a2b7-658348b8269c.jsonl","file":"<fixture>/agent/sessions/2026-11-05T14-29-23-588Z_01a1ac1d-4c03-7255-a2b7-656faf9423d0.jsonl","targetExists":false},{"type":"lock_result","at":"session_shutdown","acquired":false,"target":"<fixture>/agent/sessions/2026-11-05T14-29-23-870Z_01a1ac1d-4d1e-7255-a2b7-658348b8269c.jsonl","error":"EEXIST"},{"type":"session_start","reason":"new","previousSessionFile":"<fixture>/agent/sessions/2026-11-05T14-29-23-588Z_01a1ac1d-4c03-7255-a2b7-656faf9423d0.jsonl","file":"<fixture>/agent/sessions/2026-11-05T14-29-23-870Z_01a1ac1d-4d1e-7255-a2b7-658348b8269c.jsonl","targetExists":null},{"type":"session_start","reason":"new","previousSessionFile":"<fixture>/agent/sessions/2026-11-05T14-29-23-588Z_01a1ac1d-4c03-7255-a2b7-656faf9423d0.jsonl","file":"<fixture>/agent/sessions/2026-11-05T14-29-23-870Z_01a1ac1d-4d1e-7255-a2b7-658348b8269c.jsonl","targetExists":null},{"type":"session_shutdown","reason":"quit","file":"<fixture>/agent/sessions/2026-11-05T14-29-23-870Z_01a1ac1d-4d1e-7255-a2b7-658348b8269c.jsonl","targetExists":null}]}
+# retained fixture: /var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-aadGr6
+# Subtest: A8 collaboration replacement guards cancel RPC and extension paths; watchdog stops unexpected shutdown
+ok 14 - A8 collaboration replacement guards cancel RPC and extension paths; watchdog stops unexpected shutdown
+  ---
+  duration_ms: 423.595042
+  type: 'test'
+  ...
+# fixture: /var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-n7pGJU
+# replacementGuards: {"results":[{"command":"new_session","data":{"cancelled":true}},{"command":"switch_session","data":{"cancelled":true}},{"command":"fork","data":{"cancelled":true}},{"command":"clone","data":{"cancelled":true}},{"command":"/p0-attempt new","data":{"disposition":"handled"}},{"command":"/p0-attempt resume","data":{"disposition":"handled"}},{"command":"/p0-attempt fork","data":{"disposition":"handled"}},{"command":"/p0-attempt clone","data":{"disposition":"handled"}}],"extensionResults":[{"type":"replacement_result","source":"caller-extension","action":"new","result":{"cancelled":true}},{"type":"replacement_result","source":"caller-extension","action":"resume","result":{"cancelled":true}},{"type":"replacement_result","source":"caller-extension","action":"fork","result":{"cancelled":true}},{"type":"replacement_result","source":"caller-extension","action":"clone","result":{"cancelled":true}}],"fileUnchangedForCancelledPaths":true,"unexpectedShutdown":true,"exit":{"code":143,"signal":null}}
+# Subtest: A15 wake custom notification persists once and leaves no completed duplicate
+ok 15 - A15 wake custom notification persists once and leaves no completed duplicate
+  ---
+  duration_ms: 419.048
+  type: 'test'
+  ...
+# fixture: /var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-aQtcD8
+# custom-wake: {"diskCount":1,"snapshotCopies":1,"completed":[],"providerRequests":1}
+# Subtest: A16 silent custom notification persists once and leaves no completed duplicate
+ok 16 - A16 silent custom notification persists once and leaves no completed duplicate
+  ---
+  duration_ms: 414.754625
+  type: 'test'
+  ...
+# fixture: /var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-DoccZ9
+# custom-silent: {"diskCount":1,"snapshotCopies":1,"completed":[],"providerRequests":0}
+# P0 evidence directory: /Users/pm/Harness/pi-design-review/pi-agora/.worktrees/sa-5bf85339/experiments/p0/a-rpc/
+1..16
+# tests 16
+# suites 0
+# pass 16
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 6642.16625

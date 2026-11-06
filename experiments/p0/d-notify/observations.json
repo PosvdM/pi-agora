@@ -1,0 +1,3810 @@
+{
+  "platform": "darwin",
+  "node": "v26.12.0",
+  "repeat": 3,
+  "lingering": [],
+  "retainedFixtures": [
+    {
+      "test": "#7 abort without clear_queue deviation 1/3",
+      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-lwlZU1"
+    },
+    {
+      "test": "#7 abort without clear_queue deviation 2/3",
+      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-ZujIQ2"
+    },
+    {
+      "test": "#7 abort without clear_queue deviation 3/3",
+      "root": "/var/folders/0d/1h73_ysx6818yv_98vhrj3580000gn/T/pi-p0-qGdeIt"
+    }
+  ],
+  "observations": [
+    {
+      "name": "#7 idle",
+      "notices": [
+        {
+          "id": "cb470306",
+          "dedupeKey": "notice:idle"
+        }
+      ],
+      "extension": [
+        {
+          "pid": 11905,
+          "kind": "settled"
+        },
+        {
+          "pid": 11905,
+          "kind": "inject",
+          "dedupeKey": "notice:idle",
+          "silent": false,
+          "idle": true
+        },
+        {
+          "pid": 11905,
+          "kind": "extension_message_end",
+          "dedupeKey": "notice:idle",
+          "memoryCount": 0,
+          "diskCount": 0
+        },
+        {
+          "pid": 11905,
+          "kind": "public_dispatched",
+          "dedupeKey": "notice:idle"
+        },
+        {
+          "pid": 11905,
+          "kind": "acked",
+          "dedupeKey": "notice:idle",
+          "entryId": "cb470306"
+        },
+        {
+          "pid": 11905,
+          "kind": "settled"
+        },
+        {
+          "pid": 11905,
+          "kind": "snapshot",
+          "entries": [
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice notice:idle",
+              "display": true,
+              "details": {
+                "dedupeKey": "notice:idle",
+                "noticeId": "notice:idle"
+              },
+              "id": "cb470306",
+              "parentId": "9f466b47",
+              "timestamp": "2026-11-05T14:23:50.252Z"
+            }
+          ],
+          "disk": [
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice notice:idle",
+              "display": true,
+              "details": {
+                "dedupeKey": "notice:idle",
+                "noticeId": "notice:idle"
+              },
+              "id": "cb470306",
+              "parentId": "9f466b47",
+              "timestamp": "2026-11-05T14:23:50.252Z"
+            }
+          ]
+        }
+      ],
+      "daemon": [
+        {
+          "pid": 11891,
+          "kind": "delivery",
+          "keys": [
+            "notice:idle"
+          ]
+        },
+        {
+          "pid": 11891,
+          "kind": "ack",
+          "dedupeKey": "notice:idle",
+          "entryId": "cb470306",
+          "onDisk": true
+        }
+      ],
+      "outbox": [
+        {
+          "dedupeKey": "notice:idle",
+          "payload": {
+            "dedupeKey": "notice:idle",
+            "silent": false
+          },
+          "visibleAfter": 1793888630497,
+          "attempts": 1,
+          "persistedAt": 1793888630256,
+          "ackedAt": 1793888630256,
+          "entryId": "cb470306"
+        }
+      ],
+      "requests": [
+        {
+          "request": 1,
+          "lastUser": "P0 seed"
+        },
+        {
+          "request": 2,
+          "lastUser": "P0 notice notice:idle"
+        }
+      ],
+      "exits": []
+    },
+    {
+      "name": "#7 busy",
+      "notices": [
+        {
+          "id": "e897b24d",
+          "dedupeKey": "notice:busy"
+        }
+      ],
+      "extension": [
+        {
+          "pid": 11915,
+          "kind": "settled"
+        },
+        {
+          "pid": 11915,
+          "kind": "busy_blocked"
+        },
+        {
+          "pid": 11915,
+          "kind": "inject",
+          "dedupeKey": "notice:busy",
+          "silent": false,
+          "idle": false
+        },
+        {
+          "pid": 11915,
+          "kind": "deduped",
+          "dedupeKey": "notice:busy",
+          "inEntries": false,
+          "inFlight": true
+        },
+        {
+          "pid": 11915,
+          "kind": "busy_released"
+        },
+        {
+          "pid": 11915,
+          "kind": "extension_message_end",
+          "dedupeKey": "notice:busy",
+          "memoryCount": 0,
+          "diskCount": 0
+        },
+        {
+          "pid": 11915,
+          "kind": "public_dispatched",
+          "dedupeKey": "notice:busy"
+        },
+        {
+          "pid": 11915,
+          "kind": "acked",
+          "dedupeKey": "notice:busy",
+          "entryId": "e897b24d"
+        },
+        {
+          "pid": 11915,
+          "kind": "settled"
+        },
+        {
+          "pid": 11915,
+          "kind": "snapshot",
+          "entries": [
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice notice:busy",
+              "display": true,
+              "details": {
+                "dedupeKey": "notice:busy",
+                "noticeId": "notice:busy"
+              },
+              "id": "e897b24d",
+              "parentId": "078e3a6d",
+              "timestamp": "2026-11-05T14:23:51.162Z"
+            }
+          ],
+          "disk": [
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice notice:busy",
+              "display": true,
+              "details": {
+                "dedupeKey": "notice:busy",
+                "noticeId": "notice:busy"
+              },
+              "id": "e897b24d",
+              "parentId": "078e3a6d",
+              "timestamp": "2026-11-05T14:23:51.162Z"
+            }
+          ]
+        }
+      ],
+      "daemon": [
+        {
+          "pid": 11911,
+          "kind": "delivery",
+          "keys": [
+            "notice:busy"
+          ]
+        },
+        {
+          "pid": 11911,
+          "kind": "delivery",
+          "keys": [
+            "notice:busy"
+          ]
+        },
+        {
+          "pid": 11911,
+          "kind": "ack",
+          "dedupeKey": "notice:busy",
+          "entryId": "e897b24d",
+          "onDisk": true
+        }
+      ],
+      "outbox": [
+        {
+          "dedupeKey": "notice:busy",
+          "payload": {
+            "dedupeKey": "notice:busy",
+            "silent": false
+          },
+          "visibleAfter": 1793888631400,
+          "attempts": 2,
+          "persistedAt": 1793888631165,
+          "ackedAt": 1793888631165,
+          "entryId": "e897b24d"
+        }
+      ],
+      "requests": [
+        {
+          "request": 1,
+          "lastUser": "P0 seed"
+        },
+        {
+          "request": 2,
+          "lastUser": "P0 busy"
+        },
+        {
+          "request": 3,
+          "lastUser": "P0 notice notice:busy"
+        }
+      ],
+      "exits": []
+    },
+    {
+      "name": "#7 tool",
+      "beforeDeliveryDiskCount": 0,
+      "notices": [
+        {
+          "id": "fe6b41e1",
+          "dedupeKey": "notice:tool"
+        }
+      ],
+      "extension": [
+        {
+          "pid": 11925,
+          "kind": "settled"
+        },
+        {
+          "pid": 11927,
+          "kind": "inject",
+          "dedupeKey": "notice:tool",
+          "silent": false,
+          "idle": false
+        },
+        {
+          "pid": 11927,
+          "kind": "extension_message_end",
+          "dedupeKey": "notice:tool",
+          "memoryCount": 0,
+          "diskCount": 0
+        },
+        {
+          "pid": 11927,
+          "kind": "public_dispatched",
+          "dedupeKey": "notice:tool"
+        },
+        {
+          "pid": 11927,
+          "kind": "acked",
+          "dedupeKey": "notice:tool",
+          "entryId": "fe6b41e1"
+        },
+        {
+          "pid": 11927,
+          "kind": "settled"
+        },
+        {
+          "pid": 11927,
+          "kind": "snapshot",
+          "entries": [
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice notice:tool",
+              "display": true,
+              "details": {
+                "dedupeKey": "notice:tool",
+                "noticeId": "notice:tool"
+              },
+              "id": "fe6b41e1",
+              "parentId": "685324e2",
+              "timestamp": "2026-11-05T14:23:52.092Z"
+            }
+          ],
+          "disk": [
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice notice:tool",
+              "display": true,
+              "details": {
+                "dedupeKey": "notice:tool",
+                "noticeId": "notice:tool"
+              },
+              "id": "fe6b41e1",
+              "parentId": "685324e2",
+              "timestamp": "2026-11-05T14:23:52.092Z"
+            }
+          ]
+        }
+      ],
+      "daemon": [
+        {
+          "pid": 11922,
+          "kind": "delivery",
+          "keys": [
+            "notice:tool"
+          ]
+        },
+        {
+          "pid": 11922,
+          "kind": "ack",
+          "dedupeKey": "notice:tool",
+          "entryId": "fe6b41e1",
+          "onDisk": true
+        }
+      ],
+      "outbox": [
+        {
+          "dedupeKey": "notice:tool",
+          "payload": {
+            "dedupeKey": "notice:tool",
+            "silent": false
+          },
+          "visibleAfter": 1793888632335,
+          "attempts": 1,
+          "persistedAt": 1793888632097,
+          "ackedAt": 1793888632097,
+          "entryId": "fe6b41e1"
+        }
+      ],
+      "requests": [
+        {
+          "request": 1,
+          "lastUser": "P0 seed"
+        },
+        {
+          "request": 2,
+          "lastUser": "P0 tool"
+        },
+        {
+          "request": 3,
+          "lastUser": "P0 tool"
+        },
+        {
+          "request": 4,
+          "lastUser": "P0 notice notice:tool"
+        }
+      ],
+      "exits": [
+        {
+          "code": 143,
+          "signal": null
+        }
+      ]
+    },
+    {
+      "name": "#7 silent",
+      "notices": [
+        {
+          "id": "b9f70232",
+          "dedupeKey": "notice:silent"
+        }
+      ],
+      "extension": [
+        {
+          "pid": 11955,
+          "kind": "settled"
+        },
+        {
+          "pid": 11955,
+          "kind": "inject",
+          "dedupeKey": "notice:silent",
+          "silent": true,
+          "idle": true
+        },
+        {
+          "pid": 11955,
+          "kind": "public_dispatched",
+          "dedupeKey": "notice:silent"
+        },
+        {
+          "pid": 11955,
+          "kind": "silent_returned",
+          "dedupeKey": "notice:silent",
+          "memoryCount": 1,
+          "diskCount": 1
+        },
+        {
+          "pid": 11955,
+          "kind": "acked",
+          "dedupeKey": "notice:silent",
+          "entryId": "b9f70232"
+        },
+        {
+          "pid": 11955,
+          "kind": "snapshot",
+          "entries": [
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice notice:silent",
+              "display": true,
+              "details": {
+                "dedupeKey": "notice:silent",
+                "noticeId": "notice:silent"
+              },
+              "id": "b9f70232",
+              "parentId": "81474d96",
+              "timestamp": "2026-11-05T14:23:52.696Z"
+            }
+          ],
+          "disk": [
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice notice:silent",
+              "display": true,
+              "details": {
+                "dedupeKey": "notice:silent",
+                "noticeId": "notice:silent"
+              },
+              "id": "b9f70232",
+              "parentId": "81474d96",
+              "timestamp": "2026-11-05T14:23:52.696Z"
+            }
+          ]
+        }
+      ],
+      "daemon": [
+        {
+          "pid": 11952,
+          "kind": "delivery",
+          "keys": [
+            "notice:silent"
+          ]
+        },
+        {
+          "pid": 11952,
+          "kind": "ack",
+          "dedupeKey": "notice:silent",
+          "entryId": "b9f70232",
+          "onDisk": true
+        }
+      ],
+      "outbox": [
+        {
+          "dedupeKey": "notice:silent",
+          "payload": {
+            "dedupeKey": "notice:silent",
+            "silent": true
+          },
+          "visibleAfter": 1793888632942,
+          "attempts": 1,
+          "persistedAt": 1793888632698,
+          "ackedAt": 1793888632698,
+          "entryId": "b9f70232"
+        }
+      ],
+      "requests": [
+        {
+          "request": 1,
+          "lastUser": "P0 seed"
+        }
+      ],
+      "exits": []
+    },
+    {
+      "name": "#7 silent-new",
+      "notices": [
+        {
+          "id": "b5452c9d",
+          "dedupeKey": "notice:silent-new"
+        }
+      ],
+      "extension": [
+        {
+          "pid": 11963,
+          "kind": "inject",
+          "dedupeKey": "notice:silent-new",
+          "silent": true,
+          "idle": true
+        },
+        {
+          "pid": 11963,
+          "kind": "public_dispatched",
+          "dedupeKey": "notice:silent-new"
+        },
+        {
+          "pid": 11963,
+          "kind": "silent_returned",
+          "dedupeKey": "notice:silent-new",
+          "memoryCount": 1,
+          "diskCount": 0
+        },
+        {
+          "pid": 11963,
+          "kind": "acked",
+          "dedupeKey": "notice:silent-new",
+          "entryId": "b5452c9d"
+        },
+        {
+          "pid": 11963,
+          "kind": "settled"
+        },
+        {
+          "pid": 11963,
+          "kind": "snapshot",
+          "entries": [
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice notice:silent-new",
+              "display": true,
+              "details": {
+                "dedupeKey": "notice:silent-new",
+                "noticeId": "notice:silent-new"
+              },
+              "id": "b5452c9d",
+              "parentId": "0245c9a4",
+              "timestamp": "2026-11-05T14:23:53.274Z"
+            }
+          ],
+          "disk": [
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice notice:silent-new",
+              "display": true,
+              "details": {
+                "dedupeKey": "notice:silent-new",
+                "noticeId": "notice:silent-new"
+              },
+              "id": "b5452c9d",
+              "parentId": "0245c9a4",
+              "timestamp": "2026-11-05T14:23:53.274Z"
+            }
+          ]
+        }
+      ],
+      "daemon": [
+        {
+          "pid": 11958,
+          "kind": "delivery",
+          "keys": [
+            "notice:silent-new"
+          ]
+        },
+        {
+          "pid": 11958,
+          "kind": "ack",
+          "dedupeKey": "notice:silent-new",
+          "entryId": "b5452c9d",
+          "onDisk": true
+        }
+      ],
+      "outbox": [
+        {
+          "dedupeKey": "notice:silent-new",
+          "payload": {
+            "dedupeKey": "notice:silent-new",
+            "silent": true
+          },
+          "visibleAfter": 1793888633520,
+          "attempts": 1,
+          "persistedAt": 1793888633281,
+          "ackedAt": 1793888633281,
+          "entryId": "b5452c9d"
+        }
+      ],
+      "requests": [
+        {
+          "request": 1,
+          "lastUser": "P0 seed"
+        }
+      ],
+      "exits": []
+    },
+    {
+      "name": "#7 silent-busy",
+      "notices": [
+        {
+          "id": "86e9a648",
+          "dedupeKey": "notice:silent-busy"
+        }
+      ],
+      "extension": [
+        {
+          "pid": 11967,
+          "kind": "settled"
+        },
+        {
+          "pid": 11967,
+          "kind": "inject",
+          "dedupeKey": "notice:silent-busy",
+          "silent": true,
+          "idle": false
+        },
+        {
+          "pid": 11967,
+          "kind": "silent_returned",
+          "dedupeKey": "notice:silent-busy",
+          "memoryCount": 0,
+          "diskCount": 0
+        },
+        {
+          "pid": 11967,
+          "kind": "public_dispatched",
+          "dedupeKey": "notice:silent-busy"
+        },
+        {
+          "pid": 11967,
+          "kind": "settled"
+        },
+        {
+          "pid": 11967,
+          "kind": "acked",
+          "dedupeKey": "notice:silent-busy",
+          "entryId": "86e9a648"
+        },
+        {
+          "pid": 11967,
+          "kind": "snapshot",
+          "entries": [
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice notice:silent-busy",
+              "display": true,
+              "details": {
+                "dedupeKey": "notice:silent-busy",
+                "noticeId": "notice:silent-busy"
+              },
+              "id": "86e9a648",
+              "parentId": "6806aa4f",
+              "timestamp": "2026-11-05T14:23:53.873Z"
+            }
+          ],
+          "disk": [
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice notice:silent-busy",
+              "display": true,
+              "details": {
+                "dedupeKey": "notice:silent-busy",
+                "noticeId": "notice:silent-busy"
+              },
+              "id": "86e9a648",
+              "parentId": "6806aa4f",
+              "timestamp": "2026-11-05T14:23:53.873Z"
+            }
+          ]
+        }
+      ],
+      "daemon": [
+        {
+          "pid": 11965,
+          "kind": "delivery",
+          "keys": [
+            "notice:silent-busy"
+          ]
+        },
+        {
+          "pid": 11965,
+          "kind": "ack",
+          "dedupeKey": "notice:silent-busy",
+          "entryId": "86e9a648",
+          "onDisk": true
+        }
+      ],
+      "outbox": [
+        {
+          "dedupeKey": "notice:silent-busy",
+          "payload": {
+            "dedupeKey": "notice:silent-busy",
+            "silent": true
+          },
+          "visibleAfter": 1793888634117,
+          "attempts": 1,
+          "persistedAt": 1793888633875,
+          "ackedAt": 1793888633875,
+          "entryId": "86e9a648"
+        }
+      ],
+      "requests": [
+        {
+          "request": 1,
+          "lastUser": "P0 seed"
+        },
+        {
+          "request": 2,
+          "lastUser": "P0 busy"
+        }
+      ],
+      "exits": []
+    },
+    {
+      "name": "#7 clear_queue response",
+      "response": {
+        "id": "p0-20",
+        "type": "response",
+        "command": "clear_queue",
+        "success": true,
+        "data": {
+          "steering": [],
+          "followUp": []
+        }
+      }
+    },
+    {
+      "name": "#7 clear_queue",
+      "notices": [
+        {
+          "id": "d53ab076",
+          "dedupeKey": "notice:clear_queue"
+        }
+      ],
+      "extension": [
+        {
+          "pid": 11974,
+          "kind": "settled"
+        },
+        {
+          "pid": 11974,
+          "kind": "inject",
+          "dedupeKey": "notice:clear_queue",
+          "silent": false,
+          "idle": false
+        },
+        {
+          "pid": 11974,
+          "kind": "deduped",
+          "dedupeKey": "notice:clear_queue",
+          "inEntries": false,
+          "inFlight": true
+        },
+        {
+          "pid": 11974,
+          "kind": "settled"
+        },
+        {
+          "pid": 11974,
+          "kind": "reset_inflight",
+          "dedupeKey": "notice:clear_queue"
+        },
+        {
+          "pid": 11974,
+          "kind": "inject",
+          "dedupeKey": "notice:clear_queue",
+          "silent": false,
+          "idle": true
+        },
+        {
+          "pid": 11974,
+          "kind": "extension_message_end",
+          "dedupeKey": "notice:clear_queue",
+          "memoryCount": 0,
+          "diskCount": 0
+        },
+        {
+          "pid": 11974,
+          "kind": "public_dispatched",
+          "dedupeKey": "notice:clear_queue"
+        },
+        {
+          "pid": 11974,
+          "kind": "acked",
+          "dedupeKey": "notice:clear_queue",
+          "entryId": "d53ab076"
+        },
+        {
+          "pid": 11974,
+          "kind": "settled"
+        },
+        {
+          "pid": 11974,
+          "kind": "snapshot",
+          "entries": [
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice notice:clear_queue",
+              "display": true,
+              "details": {
+                "dedupeKey": "notice:clear_queue",
+                "noticeId": "notice:clear_queue"
+              },
+              "id": "d53ab076",
+              "parentId": "df895578",
+              "timestamp": "2026-11-05T14:23:54.995Z"
+            }
+          ],
+          "disk": [
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice notice:clear_queue",
+              "display": true,
+              "details": {
+                "dedupeKey": "notice:clear_queue",
+                "noticeId": "notice:clear_queue"
+              },
+              "id": "d53ab076",
+              "parentId": "df895578",
+              "timestamp": "2026-11-05T14:23:54.995Z"
+            }
+          ]
+        }
+      ],
+      "daemon": [
+        {
+          "pid": 11971,
+          "kind": "delivery",
+          "keys": [
+            "notice:clear_queue"
+          ]
+        },
+        {
+          "pid": 11971,
+          "kind": "delivery",
+          "keys": [
+            "notice:clear_queue"
+          ]
+        },
+        {
+          "pid": 11971,
+          "kind": "delivery",
+          "keys": [
+            "notice:clear_queue"
+          ]
+        },
+        {
+          "pid": 11971,
+          "kind": "ack",
+          "dedupeKey": "notice:clear_queue",
+          "entryId": "d53ab076",
+          "onDisk": true
+        }
+      ],
+      "outbox": [
+        {
+          "dedupeKey": "notice:clear_queue",
+          "payload": {
+            "dedupeKey": "notice:clear_queue",
+            "silent": false
+          },
+          "visibleAfter": 1793888635244,
+          "attempts": 3,
+          "persistedAt": 1793888634999,
+          "ackedAt": 1793888634999,
+          "entryId": "d53ab076"
+        }
+      ],
+      "requests": [
+        {
+          "request": 1,
+          "lastUser": "P0 seed"
+        },
+        {
+          "request": 2,
+          "lastUser": "P0 busy"
+        },
+        {
+          "request": 3,
+          "lastUser": "P0 notice notice:clear_queue"
+        }
+      ],
+      "exits": []
+    },
+    {
+      "name": "#8 extension-message-end",
+      "attempt": 1,
+      "beforeDisk": 0,
+      "injectCount": 2,
+      "recoveredExactlyOnce": true,
+      "daemonKilled": false,
+      "rpcMessageEndObservedBeforeKill": false,
+      "notices": [
+        {
+          "id": "e015ac20",
+          "dedupeKey": "fault:extension-message-end:1"
+        }
+      ],
+      "extension": [
+        {
+          "pid": 11985,
+          "kind": "settled"
+        },
+        {
+          "pid": 11985,
+          "kind": "inject",
+          "dedupeKey": "fault:extension-message-end:1",
+          "silent": false,
+          "idle": true
+        },
+        {
+          "pid": 11985,
+          "kind": "extension_message_end",
+          "dedupeKey": "fault:extension-message-end:1",
+          "memoryCount": 0,
+          "diskCount": 0
+        },
+        {
+          "pid": 11985,
+          "kind": "fault",
+          "point": "extension-message-end",
+          "dedupeKey": "fault:extension-message-end:1"
+        },
+        {
+          "pid": 11987,
+          "kind": "inject",
+          "dedupeKey": "fault:extension-message-end:1",
+          "silent": false,
+          "idle": true
+        },
+        {
+          "pid": 11987,
+          "kind": "extension_message_end",
+          "dedupeKey": "fault:extension-message-end:1",
+          "memoryCount": 0,
+          "diskCount": 0
+        },
+        {
+          "pid": 11987,
+          "kind": "public_dispatched",
+          "dedupeKey": "fault:extension-message-end:1"
+        },
+        {
+          "pid": 11987,
+          "kind": "acked",
+          "dedupeKey": "fault:extension-message-end:1",
+          "entryId": "e015ac20"
+        },
+        {
+          "pid": 11987,
+          "kind": "settled"
+        },
+        {
+          "pid": 11987,
+          "kind": "snapshot",
+          "entries": [
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice fault:extension-message-end:1",
+              "display": true,
+              "details": {
+                "dedupeKey": "fault:extension-message-end:1",
+                "noticeId": "fault:extension-message-end:1"
+              },
+              "id": "e015ac20",
+              "parentId": "89759ff2",
+              "timestamp": "2026-11-05T14:23:55.882Z"
+            }
+          ],
+          "disk": [
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice fault:extension-message-end:1",
+              "display": true,
+              "details": {
+                "dedupeKey": "fault:extension-message-end:1",
+                "noticeId": "fault:extension-message-end:1"
+              },
+              "id": "e015ac20",
+              "parentId": "89759ff2",
+              "timestamp": "2026-11-05T14:23:55.882Z"
+            }
+          ]
+        }
+      ],
+      "daemon": [
+        {
+          "pid": 11983,
+          "kind": "delivery",
+          "keys": [
+            "fault:extension-message-end:1"
+          ]
+        },
+        {
+          "pid": 11983,
+          "kind": "delivery",
+          "keys": [
+            "fault:extension-message-end:1"
+          ]
+        },
+        {
+          "pid": 11983,
+          "kind": "ack",
+          "dedupeKey": "fault:extension-message-end:1",
+          "entryId": "e015ac20",
+          "onDisk": true
+        }
+      ],
+      "outbox": [
+        {
+          "dedupeKey": "fault:extension-message-end:1",
+          "payload": {
+            "dedupeKey": "fault:extension-message-end:1",
+            "silent": false
+          },
+          "visibleAfter": 1793888636125,
+          "attempts": 2,
+          "persistedAt": 1793888635889,
+          "ackedAt": 1793888635889,
+          "entryId": "e015ac20"
+        }
+      ],
+      "requests": [
+        {
+          "request": 1,
+          "lastUser": "P0 seed"
+        },
+        {
+          "request": 2,
+          "lastUser": "P0 notice fault:extension-message-end:1"
+        }
+      ],
+      "exits": [
+        {
+          "code": null,
+          "signal": "SIGKILL"
+        }
+      ]
+    },
+    {
+      "name": "#8 extension-message-end",
+      "attempt": 2,
+      "beforeDisk": 0,
+      "injectCount": 2,
+      "recoveredExactlyOnce": true,
+      "daemonKilled": false,
+      "rpcMessageEndObservedBeforeKill": false,
+      "notices": [
+        {
+          "id": "7be347e3",
+          "dedupeKey": "fault:extension-message-end:2"
+        }
+      ],
+      "extension": [
+        {
+          "pid": 11993,
+          "kind": "settled"
+        },
+        {
+          "pid": 11993,
+          "kind": "inject",
+          "dedupeKey": "fault:extension-message-end:2",
+          "silent": false,
+          "idle": true
+        },
+        {
+          "pid": 11993,
+          "kind": "extension_message_end",
+          "dedupeKey": "fault:extension-message-end:2",
+          "memoryCount": 0,
+          "diskCount": 0
+        },
+        {
+          "pid": 11993,
+          "kind": "fault",
+          "point": "extension-message-end",
+          "dedupeKey": "fault:extension-message-end:2"
+        },
+        {
+          "pid": 11995,
+          "kind": "inject",
+          "dedupeKey": "fault:extension-message-end:2",
+          "silent": false,
+          "idle": true
+        },
+        {
+          "pid": 11995,
+          "kind": "extension_message_end",
+          "dedupeKey": "fault:extension-message-end:2",
+          "memoryCount": 0,
+          "diskCount": 0
+        },
+        {
+          "pid": 11995,
+          "kind": "public_dispatched",
+          "dedupeKey": "fault:extension-message-end:2"
+        },
+        {
+          "pid": 11995,
+          "kind": "acked",
+          "dedupeKey": "fault:extension-message-end:2",
+          "entryId": "7be347e3"
+        },
+        {
+          "pid": 11995,
+          "kind": "settled"
+        },
+        {
+          "pid": 11995,
+          "kind": "snapshot",
+          "entries": [
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice fault:extension-message-end:2",
+              "display": true,
+              "details": {
+                "dedupeKey": "fault:extension-message-end:2",
+                "noticeId": "fault:extension-message-end:2"
+              },
+              "id": "7be347e3",
+              "parentId": "57906db8",
+              "timestamp": "2026-11-05T14:23:56.790Z"
+            }
+          ],
+          "disk": [
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice fault:extension-message-end:2",
+              "display": true,
+              "details": {
+                "dedupeKey": "fault:extension-message-end:2",
+                "noticeId": "fault:extension-message-end:2"
+              },
+              "id": "7be347e3",
+              "parentId": "57906db8",
+              "timestamp": "2026-11-05T14:23:56.790Z"
+            }
+          ]
+        }
+      ],
+      "daemon": [
+        {
+          "pid": 11991,
+          "kind": "delivery",
+          "keys": [
+            "fault:extension-message-end:2"
+          ]
+        },
+        {
+          "pid": 11991,
+          "kind": "delivery",
+          "keys": [
+            "fault:extension-message-end:2"
+          ]
+        },
+        {
+          "pid": 11991,
+          "kind": "ack",
+          "dedupeKey": "fault:extension-message-end:2",
+          "entryId": "7be347e3",
+          "onDisk": true
+        }
+      ],
+      "outbox": [
+        {
+          "dedupeKey": "fault:extension-message-end:2",
+          "payload": {
+            "dedupeKey": "fault:extension-message-end:2",
+            "silent": false
+          },
+          "visibleAfter": 1793888637033,
+          "attempts": 2,
+          "persistedAt": 1793888636796,
+          "ackedAt": 1793888636796,
+          "entryId": "7be347e3"
+        }
+      ],
+      "requests": [
+        {
+          "request": 1,
+          "lastUser": "P0 seed"
+        },
+        {
+          "request": 2,
+          "lastUser": "P0 notice fault:extension-message-end:2"
+        }
+      ],
+      "exits": [
+        {
+          "code": null,
+          "signal": "SIGKILL"
+        }
+      ]
+    },
+    {
+      "name": "#8 extension-message-end",
+      "attempt": 3,
+      "beforeDisk": 0,
+      "injectCount": 2,
+      "recoveredExactlyOnce": true,
+      "daemonKilled": false,
+      "rpcMessageEndObservedBeforeKill": false,
+      "notices": [
+        {
+          "id": "230c4c57",
+          "dedupeKey": "fault:extension-message-end:3"
+        }
+      ],
+      "extension": [
+        {
+          "pid": 12011,
+          "kind": "settled"
+        },
+        {
+          "pid": 12011,
+          "kind": "inject",
+          "dedupeKey": "fault:extension-message-end:3",
+          "silent": false,
+          "idle": true
+        },
+        {
+          "pid": 12011,
+          "kind": "extension_message_end",
+          "dedupeKey": "fault:extension-message-end:3",
+          "memoryCount": 0,
+          "diskCount": 0
+        },
+        {
+          "pid": 12011,
+          "kind": "fault",
+          "point": "extension-message-end",
+          "dedupeKey": "fault:extension-message-end:3"
+        },
+        {
+          "pid": 12024,
+          "kind": "inject",
+          "dedupeKey": "fault:extension-message-end:3",
+          "silent": false,
+          "idle": true
+        },
+        {
+          "pid": 12024,
+          "kind": "extension_message_end",
+          "dedupeKey": "fault:extension-message-end:3",
+          "memoryCount": 0,
+          "diskCount": 0
+        },
+        {
+          "pid": 12024,
+          "kind": "public_dispatched",
+          "dedupeKey": "fault:extension-message-end:3"
+        },
+        {
+          "pid": 12024,
+          "kind": "acked",
+          "dedupeKey": "fault:extension-message-end:3",
+          "entryId": "230c4c57"
+        },
+        {
+          "pid": 12024,
+          "kind": "settled"
+        },
+        {
+          "pid": 12024,
+          "kind": "snapshot",
+          "entries": [
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice fault:extension-message-end:3",
+              "display": true,
+              "details": {
+                "dedupeKey": "fault:extension-message-end:3",
+                "noticeId": "fault:extension-message-end:3"
+              },
+              "id": "230c4c57",
+              "parentId": "bb4b3ff4",
+              "timestamp": "2026-11-05T14:23:57.718Z"
+            }
+          ],
+          "disk": [
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice fault:extension-message-end:3",
+              "display": true,
+              "details": {
+                "dedupeKey": "fault:extension-message-end:3",
+                "noticeId": "fault:extension-message-end:3"
+              },
+              "id": "230c4c57",
+              "parentId": "bb4b3ff4",
+              "timestamp": "2026-11-05T14:23:57.718Z"
+            }
+          ]
+        }
+      ],
+      "daemon": [
+        {
+          "pid": 12006,
+          "kind": "delivery",
+          "keys": [
+            "fault:extension-message-end:3"
+          ]
+        },
+        {
+          "pid": 12006,
+          "kind": "delivery",
+          "keys": [
+            "fault:extension-message-end:3"
+          ]
+        },
+        {
+          "pid": 12006,
+          "kind": "ack",
+          "dedupeKey": "fault:extension-message-end:3",
+          "entryId": "230c4c57",
+          "onDisk": true
+        }
+      ],
+      "outbox": [
+        {
+          "dedupeKey": "fault:extension-message-end:3",
+          "payload": {
+            "dedupeKey": "fault:extension-message-end:3",
+            "silent": false
+          },
+          "visibleAfter": 1793888637961,
+          "attempts": 2,
+          "persistedAt": 1793888637725,
+          "ackedAt": 1793888637725,
+          "entryId": "230c4c57"
+        }
+      ],
+      "requests": [
+        {
+          "request": 1,
+          "lastUser": "P0 seed"
+        },
+        {
+          "request": 2,
+          "lastUser": "P0 notice fault:extension-message-end:3"
+        }
+      ],
+      "exits": [
+        {
+          "code": null,
+          "signal": "SIGKILL"
+        }
+      ]
+    },
+    {
+      "name": "#8 public-before-persist",
+      "attempt": 1,
+      "beforeDisk": 0,
+      "injectCount": 2,
+      "recoveredExactlyOnce": true,
+      "daemonKilled": false,
+      "rpcMessageEndObservedBeforeKill": false,
+      "notices": [
+        {
+          "id": "bd6c6442",
+          "dedupeKey": "fault:public-before-persist:1"
+        }
+      ],
+      "extension": [
+        {
+          "pid": 12035,
+          "kind": "settled"
+        },
+        {
+          "pid": 12035,
+          "kind": "inject",
+          "dedupeKey": "fault:public-before-persist:1",
+          "silent": false,
+          "idle": true
+        },
+        {
+          "pid": 12035,
+          "kind": "extension_message_end",
+          "dedupeKey": "fault:public-before-persist:1",
+          "memoryCount": 0,
+          "diskCount": 0
+        },
+        {
+          "pid": 12035,
+          "kind": "public_dispatched",
+          "dedupeKey": "fault:public-before-persist:1"
+        },
+        {
+          "pid": 12035,
+          "kind": "fault",
+          "point": "public-before-persist",
+          "dedupeKey": "fault:public-before-persist:1",
+          "diskCount": 0
+        },
+        {
+          "pid": 12039,
+          "kind": "inject",
+          "dedupeKey": "fault:public-before-persist:1",
+          "silent": false,
+          "idle": true
+        },
+        {
+          "pid": 12039,
+          "kind": "extension_message_end",
+          "dedupeKey": "fault:public-before-persist:1",
+          "memoryCount": 0,
+          "diskCount": 0
+        },
+        {
+          "pid": 12039,
+          "kind": "public_dispatched",
+          "dedupeKey": "fault:public-before-persist:1"
+        },
+        {
+          "pid": 12039,
+          "kind": "acked",
+          "dedupeKey": "fault:public-before-persist:1",
+          "entryId": "bd6c6442"
+        },
+        {
+          "pid": 12039,
+          "kind": "settled"
+        },
+        {
+          "pid": 12039,
+          "kind": "snapshot",
+          "entries": [
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice fault:public-before-persist:1",
+              "display": true,
+              "details": {
+                "dedupeKey": "fault:public-before-persist:1",
+                "noticeId": "fault:public-before-persist:1"
+              },
+              "id": "bd6c6442",
+              "parentId": "6aa4082a",
+              "timestamp": "2026-11-05T14:23:58.646Z"
+            }
+          ],
+          "disk": [
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice fault:public-before-persist:1",
+              "display": true,
+              "details": {
+                "dedupeKey": "fault:public-before-persist:1",
+                "noticeId": "fault:public-before-persist:1"
+              },
+              "id": "bd6c6442",
+              "parentId": "6aa4082a",
+              "timestamp": "2026-11-05T14:23:58.646Z"
+            }
+          ]
+        }
+      ],
+      "daemon": [
+        {
+          "pid": 12030,
+          "kind": "delivery",
+          "keys": [
+            "fault:public-before-persist:1"
+          ]
+        },
+        {
+          "pid": 12030,
+          "kind": "delivery",
+          "keys": [
+            "fault:public-before-persist:1"
+          ]
+        },
+        {
+          "pid": 12030,
+          "kind": "ack",
+          "dedupeKey": "fault:public-before-persist:1",
+          "entryId": "bd6c6442",
+          "onDisk": true
+        }
+      ],
+      "outbox": [
+        {
+          "dedupeKey": "fault:public-before-persist:1",
+          "payload": {
+            "dedupeKey": "fault:public-before-persist:1",
+            "silent": false
+          },
+          "visibleAfter": 1793888638889,
+          "attempts": 2,
+          "persistedAt": 1793888638653,
+          "ackedAt": 1793888638653,
+          "entryId": "bd6c6442"
+        }
+      ],
+      "requests": [
+        {
+          "request": 1,
+          "lastUser": "P0 seed"
+        },
+        {
+          "request": 2,
+          "lastUser": "P0 notice fault:public-before-persist:1"
+        }
+      ],
+      "exits": [
+        {
+          "code": null,
+          "signal": "SIGKILL"
+        }
+      ]
+    },
+    {
+      "name": "#8 public-before-persist",
+      "attempt": 2,
+      "beforeDisk": 0,
+      "injectCount": 2,
+      "recoveredExactlyOnce": true,
+      "daemonKilled": false,
+      "rpcMessageEndObservedBeforeKill": false,
+      "notices": [
+        {
+          "id": "a1ce851d",
+          "dedupeKey": "fault:public-before-persist:2"
+        }
+      ],
+      "extension": [
+        {
+          "pid": 12042,
+          "kind": "settled"
+        },
+        {
+          "pid": 12042,
+          "kind": "inject",
+          "dedupeKey": "fault:public-before-persist:2",
+          "silent": false,
+          "idle": true
+        },
+        {
+          "pid": 12042,
+          "kind": "extension_message_end",
+          "dedupeKey": "fault:public-before-persist:2",
+          "memoryCount": 0,
+          "diskCount": 0
+        },
+        {
+          "pid": 12042,
+          "kind": "public_dispatched",
+          "dedupeKey": "fault:public-before-persist:2"
+        },
+        {
+          "pid": 12042,
+          "kind": "fault",
+          "point": "public-before-persist",
+          "dedupeKey": "fault:public-before-persist:2",
+          "diskCount": 0
+        },
+        {
+          "pid": 12047,
+          "kind": "inject",
+          "dedupeKey": "fault:public-before-persist:2",
+          "silent": false,
+          "idle": true
+        },
+        {
+          "pid": 12047,
+          "kind": "extension_message_end",
+          "dedupeKey": "fault:public-before-persist:2",
+          "memoryCount": 0,
+          "diskCount": 0
+        },
+        {
+          "pid": 12047,
+          "kind": "public_dispatched",
+          "dedupeKey": "fault:public-before-persist:2"
+        },
+        {
+          "pid": 12047,
+          "kind": "acked",
+          "dedupeKey": "fault:public-before-persist:2",
+          "entryId": "a1ce851d"
+        },
+        {
+          "pid": 12047,
+          "kind": "settled"
+        },
+        {
+          "pid": 12047,
+          "kind": "snapshot",
+          "entries": [
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice fault:public-before-persist:2",
+              "display": true,
+              "details": {
+                "dedupeKey": "fault:public-before-persist:2",
+                "noticeId": "fault:public-before-persist:2"
+              },
+              "id": "a1ce851d",
+              "parentId": "4e5dc623",
+              "timestamp": "2026-11-05T14:23:59.549Z"
+            }
+          ],
+          "disk": [
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice fault:public-before-persist:2",
+              "display": true,
+              "details": {
+                "dedupeKey": "fault:public-before-persist:2",
+                "noticeId": "fault:public-before-persist:2"
+              },
+              "id": "a1ce851d",
+              "parentId": "4e5dc623",
+              "timestamp": "2026-11-05T14:23:59.549Z"
+            }
+          ]
+        }
+      ],
+      "daemon": [
+        {
+          "pid": 12040,
+          "kind": "delivery",
+          "keys": [
+            "fault:public-before-persist:2"
+          ]
+        },
+        {
+          "pid": 12040,
+          "kind": "delivery",
+          "keys": [
+            "fault:public-before-persist:2"
+          ]
+        },
+        {
+          "pid": 12040,
+          "kind": "ack",
+          "dedupeKey": "fault:public-before-persist:2",
+          "entryId": "a1ce851d",
+          "onDisk": true
+        }
+      ],
+      "outbox": [
+        {
+          "dedupeKey": "fault:public-before-persist:2",
+          "payload": {
+            "dedupeKey": "fault:public-before-persist:2",
+            "silent": false
+          },
+          "visibleAfter": 1793888639792,
+          "attempts": 2,
+          "persistedAt": 1793888639556,
+          "ackedAt": 1793888639556,
+          "entryId": "a1ce851d"
+        }
+      ],
+      "requests": [
+        {
+          "request": 1,
+          "lastUser": "P0 seed"
+        },
+        {
+          "request": 2,
+          "lastUser": "P0 notice fault:public-before-persist:2"
+        }
+      ],
+      "exits": [
+        {
+          "code": null,
+          "signal": "SIGKILL"
+        }
+      ]
+    },
+    {
+      "name": "#8 public-before-persist",
+      "attempt": 3,
+      "beforeDisk": 0,
+      "injectCount": 2,
+      "recoveredExactlyOnce": true,
+      "daemonKilled": false,
+      "rpcMessageEndObservedBeforeKill": false,
+      "notices": [
+        {
+          "id": "898ae354",
+          "dedupeKey": "fault:public-before-persist:3"
+        }
+      ],
+      "extension": [
+        {
+          "pid": 12050,
+          "kind": "settled"
+        },
+        {
+          "pid": 12050,
+          "kind": "inject",
+          "dedupeKey": "fault:public-before-persist:3",
+          "silent": false,
+          "idle": true
+        },
+        {
+          "pid": 12050,
+          "kind": "extension_message_end",
+          "dedupeKey": "fault:public-before-persist:3",
+          "memoryCount": 0,
+          "diskCount": 0
+        },
+        {
+          "pid": 12050,
+          "kind": "public_dispatched",
+          "dedupeKey": "fault:public-before-persist:3"
+        },
+        {
+          "pid": 12050,
+          "kind": "fault",
+          "point": "public-before-persist",
+          "dedupeKey": "fault:public-before-persist:3",
+          "diskCount": 0
+        },
+        {
+          "pid": 12075,
+          "kind": "inject",
+          "dedupeKey": "fault:public-before-persist:3",
+          "silent": false,
+          "idle": true
+        },
+        {
+          "pid": 12075,
+          "kind": "extension_message_end",
+          "dedupeKey": "fault:public-before-persist:3",
+          "memoryCount": 0,
+          "diskCount": 0
+        },
+        {
+          "pid": 12075,
+          "kind": "public_dispatched",
+          "dedupeKey": "fault:public-before-persist:3"
+        },
+        {
+          "pid": 12075,
+          "kind": "acked",
+          "dedupeKey": "fault:public-before-persist:3",
+          "entryId": "898ae354"
+        },
+        {
+          "pid": 12075,
+          "kind": "settled"
+        },
+        {
+          "pid": 12075,
+          "kind": "snapshot",
+          "entries": [
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice fault:public-before-persist:3",
+              "display": true,
+              "details": {
+                "dedupeKey": "fault:public-before-persist:3",
+                "noticeId": "fault:public-before-persist:3"
+              },
+              "id": "898ae354",
+              "parentId": "e2cdc121",
+              "timestamp": "2026-11-05T14:24:00.454Z"
+            }
+          ],
+          "disk": [
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice fault:public-before-persist:3",
+              "display": true,
+              "details": {
+                "dedupeKey": "fault:public-before-persist:3",
+                "noticeId": "fault:public-before-persist:3"
+              },
+              "id": "898ae354",
+              "parentId": "e2cdc121",
+              "timestamp": "2026-11-05T14:24:00.454Z"
+            }
+          ]
+        }
+      ],
+      "daemon": [
+        {
+          "pid": 12048,
+          "kind": "delivery",
+          "keys": [
+            "fault:public-before-persist:3"
+          ]
+        },
+        {
+          "pid": 12048,
+          "kind": "delivery",
+          "keys": [
+            "fault:public-before-persist:3"
+          ]
+        },
+        {
+          "pid": 12048,
+          "kind": "ack",
+          "dedupeKey": "fault:public-before-persist:3",
+          "entryId": "898ae354",
+          "onDisk": true
+        }
+      ],
+      "outbox": [
+        {
+          "dedupeKey": "fault:public-before-persist:3",
+          "payload": {
+            "dedupeKey": "fault:public-before-persist:3",
+            "silent": false
+          },
+          "visibleAfter": 1793888640697,
+          "attempts": 2,
+          "persistedAt": 1793888640461,
+          "ackedAt": 1793888640461,
+          "entryId": "898ae354"
+        }
+      ],
+      "requests": [
+        {
+          "request": 1,
+          "lastUser": "P0 seed"
+        },
+        {
+          "request": 2,
+          "lastUser": "P0 notice fault:public-before-persist:3"
+        }
+      ],
+      "exits": [
+        {
+          "code": null,
+          "signal": "SIGKILL"
+        }
+      ]
+    },
+    {
+      "name": "#8 silent-after-send",
+      "attempt": 1,
+      "beforeDisk": 1,
+      "beforeMemory": 1,
+      "injectCount": 1,
+      "recoveredExactlyOnce": true,
+      "daemonKilled": false,
+      "rpcMessageEndObservedBeforeKill": false,
+      "notices": [
+        {
+          "id": "805cc650",
+          "dedupeKey": "fault:silent-after-send:1"
+        }
+      ],
+      "extension": [
+        {
+          "pid": 12078,
+          "kind": "settled"
+        },
+        {
+          "pid": 12078,
+          "kind": "inject",
+          "dedupeKey": "fault:silent-after-send:1",
+          "silent": true,
+          "idle": true
+        },
+        {
+          "pid": 12078,
+          "kind": "public_dispatched",
+          "dedupeKey": "fault:silent-after-send:1"
+        },
+        {
+          "pid": 12078,
+          "kind": "silent_returned",
+          "dedupeKey": "fault:silent-after-send:1",
+          "memoryCount": 1,
+          "diskCount": 1
+        },
+        {
+          "pid": 12078,
+          "kind": "fault",
+          "point": "silent-after-send"
+        },
+        {
+          "pid": 12083,
+          "kind": "acked",
+          "dedupeKey": "fault:silent-after-send:1",
+          "entryId": "805cc650"
+        },
+        {
+          "pid": 12083,
+          "kind": "snapshot",
+          "entries": [
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice fault:silent-after-send:1",
+              "display": true,
+              "details": {
+                "dedupeKey": "fault:silent-after-send:1",
+                "noticeId": "fault:silent-after-send:1"
+              },
+              "id": "805cc650",
+              "parentId": "f2fee166",
+              "timestamp": "2026-11-05T14:24:01.070Z"
+            }
+          ],
+          "disk": [
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice fault:silent-after-send:1",
+              "display": true,
+              "details": {
+                "dedupeKey": "fault:silent-after-send:1",
+                "noticeId": "fault:silent-after-send:1"
+              },
+              "id": "805cc650",
+              "parentId": "f2fee166",
+              "timestamp": "2026-11-05T14:24:01.070Z"
+            }
+          ]
+        }
+      ],
+      "daemon": [
+        {
+          "pid": 12076,
+          "kind": "delivery",
+          "keys": [
+            "fault:silent-after-send:1"
+          ]
+        },
+        {
+          "pid": 12076,
+          "kind": "ack",
+          "dedupeKey": "fault:silent-after-send:1",
+          "entryId": "805cc650",
+          "onDisk": true
+        }
+      ],
+      "outbox": [
+        {
+          "dedupeKey": "fault:silent-after-send:1",
+          "payload": {
+            "dedupeKey": "fault:silent-after-send:1",
+            "silent": true
+          },
+          "visibleAfter": 1793888641316,
+          "attempts": 1,
+          "persistedAt": 1793888641347,
+          "ackedAt": 1793888641347,
+          "entryId": "805cc650"
+        }
+      ],
+      "requests": [
+        {
+          "request": 1,
+          "lastUser": "P0 seed"
+        }
+      ],
+      "exits": [
+        {
+          "code": null,
+          "signal": "SIGKILL"
+        }
+      ]
+    },
+    {
+      "name": "#8 silent-after-send",
+      "attempt": 2,
+      "beforeDisk": 1,
+      "beforeMemory": 1,
+      "injectCount": 1,
+      "recoveredExactlyOnce": true,
+      "daemonKilled": false,
+      "rpcMessageEndObservedBeforeKill": false,
+      "notices": [
+        {
+          "id": "6eafc298",
+          "dedupeKey": "fault:silent-after-send:2"
+        }
+      ],
+      "extension": [
+        {
+          "pid": 12086,
+          "kind": "settled"
+        },
+        {
+          "pid": 12086,
+          "kind": "inject",
+          "dedupeKey": "fault:silent-after-send:2",
+          "silent": true,
+          "idle": true
+        },
+        {
+          "pid": 12086,
+          "kind": "public_dispatched",
+          "dedupeKey": "fault:silent-after-send:2"
+        },
+        {
+          "pid": 12086,
+          "kind": "silent_returned",
+          "dedupeKey": "fault:silent-after-send:2",
+          "memoryCount": 1,
+          "diskCount": 1
+        },
+        {
+          "pid": 12086,
+          "kind": "fault",
+          "point": "silent-after-send"
+        },
+        {
+          "pid": 12091,
+          "kind": "acked",
+          "dedupeKey": "fault:silent-after-send:2",
+          "entryId": "6eafc298"
+        },
+        {
+          "pid": 12091,
+          "kind": "snapshot",
+          "entries": [
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice fault:silent-after-send:2",
+              "display": true,
+              "details": {
+                "dedupeKey": "fault:silent-after-send:2",
+                "noticeId": "fault:silent-after-send:2"
+              },
+              "id": "6eafc298",
+              "parentId": "34733892",
+              "timestamp": "2026-11-05T14:24:01.969Z"
+            }
+          ],
+          "disk": [
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice fault:silent-after-send:2",
+              "display": true,
+              "details": {
+                "dedupeKey": "fault:silent-after-send:2",
+                "noticeId": "fault:silent-after-send:2"
+              },
+              "id": "6eafc298",
+              "parentId": "34733892",
+              "timestamp": "2026-11-05T14:24:01.969Z"
+            }
+          ]
+        }
+      ],
+      "daemon": [
+        {
+          "pid": 12084,
+          "kind": "delivery",
+          "keys": [
+            "fault:silent-after-send:2"
+          ]
+        },
+        {
+          "pid": 12084,
+          "kind": "ack",
+          "dedupeKey": "fault:silent-after-send:2",
+          "entryId": "6eafc298",
+          "onDisk": true
+        }
+      ],
+      "outbox": [
+        {
+          "dedupeKey": "fault:silent-after-send:2",
+          "payload": {
+            "dedupeKey": "fault:silent-after-send:2",
+            "silent": true
+          },
+          "visibleAfter": 1793888642214,
+          "attempts": 1,
+          "persistedAt": 1793888642248,
+          "ackedAt": 1793888642248,
+          "entryId": "6eafc298"
+        }
+      ],
+      "requests": [
+        {
+          "request": 1,
+          "lastUser": "P0 seed"
+        }
+      ],
+      "exits": [
+        {
+          "code": null,
+          "signal": "SIGKILL"
+        }
+      ]
+    },
+    {
+      "name": "#8 silent-after-send",
+      "attempt": 3,
+      "beforeDisk": 1,
+      "beforeMemory": 1,
+      "injectCount": 1,
+      "recoveredExactlyOnce": true,
+      "daemonKilled": false,
+      "rpcMessageEndObservedBeforeKill": false,
+      "notices": [
+        {
+          "id": "20ad3863",
+          "dedupeKey": "fault:silent-after-send:3"
+        }
+      ],
+      "extension": [
+        {
+          "pid": 12094,
+          "kind": "settled"
+        },
+        {
+          "pid": 12094,
+          "kind": "inject",
+          "dedupeKey": "fault:silent-after-send:3",
+          "silent": true,
+          "idle": true
+        },
+        {
+          "pid": 12094,
+          "kind": "public_dispatched",
+          "dedupeKey": "fault:silent-after-send:3"
+        },
+        {
+          "pid": 12094,
+          "kind": "silent_returned",
+          "dedupeKey": "fault:silent-after-send:3",
+          "memoryCount": 1,
+          "diskCount": 1
+        },
+        {
+          "pid": 12094,
+          "kind": "fault",
+          "point": "silent-after-send"
+        },
+        {
+          "pid": 12110,
+          "kind": "acked",
+          "dedupeKey": "fault:silent-after-send:3",
+          "entryId": "20ad3863"
+        },
+        {
+          "pid": 12110,
+          "kind": "snapshot",
+          "entries": [
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice fault:silent-after-send:3",
+              "display": true,
+              "details": {
+                "dedupeKey": "fault:silent-after-send:3",
+                "noticeId": "fault:silent-after-send:3"
+              },
+              "id": "20ad3863",
+              "parentId": "e7265640",
+              "timestamp": "2026-11-05T14:24:02.876Z"
+            }
+          ],
+          "disk": [
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice fault:silent-after-send:3",
+              "display": true,
+              "details": {
+                "dedupeKey": "fault:silent-after-send:3",
+                "noticeId": "fault:silent-after-send:3"
+              },
+              "id": "20ad3863",
+              "parentId": "e7265640",
+              "timestamp": "2026-11-05T14:24:02.876Z"
+            }
+          ]
+        }
+      ],
+      "daemon": [
+        {
+          "pid": 12092,
+          "kind": "delivery",
+          "keys": [
+            "fault:silent-after-send:3"
+          ]
+        },
+        {
+          "pid": 12092,
+          "kind": "ack",
+          "dedupeKey": "fault:silent-after-send:3",
+          "entryId": "20ad3863",
+          "onDisk": true
+        }
+      ],
+      "outbox": [
+        {
+          "dedupeKey": "fault:silent-after-send:3",
+          "payload": {
+            "dedupeKey": "fault:silent-after-send:3",
+            "silent": true
+          },
+          "visibleAfter": 1793888643122,
+          "attempts": 1,
+          "persistedAt": 1793888643160,
+          "ackedAt": 1793888643160,
+          "entryId": "20ad3863"
+        }
+      ],
+      "requests": [
+        {
+          "request": 1,
+          "lastUser": "P0 seed"
+        }
+      ],
+      "exits": [
+        {
+          "code": null,
+          "signal": "SIGKILL"
+        }
+      ]
+    },
+    {
+      "name": "#8 silent-new-after-send",
+      "attempt": 1,
+      "beforeDisk": 0,
+      "beforeMemory": 1,
+      "injectCount": 2,
+      "recoveredExactlyOnce": true,
+      "daemonKilled": false,
+      "rpcMessageEndObservedBeforeKill": false,
+      "notices": [
+        {
+          "id": "1906c743",
+          "dedupeKey": "fault:silent-new-after-send:1"
+        }
+      ],
+      "extension": [
+        {
+          "pid": 12120,
+          "kind": "inject",
+          "dedupeKey": "fault:silent-new-after-send:1",
+          "silent": true,
+          "idle": true
+        },
+        {
+          "pid": 12120,
+          "kind": "public_dispatched",
+          "dedupeKey": "fault:silent-new-after-send:1"
+        },
+        {
+          "pid": 12120,
+          "kind": "silent_returned",
+          "dedupeKey": "fault:silent-new-after-send:1",
+          "memoryCount": 1,
+          "diskCount": 0
+        },
+        {
+          "pid": 12120,
+          "kind": "fault",
+          "point": "silent-after-send"
+        },
+        {
+          "pid": 12122,
+          "kind": "inject",
+          "dedupeKey": "fault:silent-new-after-send:1",
+          "silent": true,
+          "idle": true
+        },
+        {
+          "pid": 12122,
+          "kind": "public_dispatched",
+          "dedupeKey": "fault:silent-new-after-send:1"
+        },
+        {
+          "pid": 12122,
+          "kind": "silent_returned",
+          "dedupeKey": "fault:silent-new-after-send:1",
+          "memoryCount": 1,
+          "diskCount": 0
+        },
+        {
+          "pid": 12122,
+          "kind": "acked",
+          "dedupeKey": "fault:silent-new-after-send:1",
+          "entryId": "1906c743"
+        },
+        {
+          "pid": 12122,
+          "kind": "settled"
+        },
+        {
+          "pid": 12122,
+          "kind": "snapshot",
+          "entries": [
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice fault:silent-new-after-send:1",
+              "display": true,
+              "details": {
+                "dedupeKey": "fault:silent-new-after-send:1",
+                "noticeId": "fault:silent-new-after-send:1"
+              },
+              "id": "1906c743",
+              "parentId": "2852035a",
+              "timestamp": "2026-11-05T14:24:04.049Z"
+            }
+          ],
+          "disk": [
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice fault:silent-new-after-send:1",
+              "display": true,
+              "details": {
+                "dedupeKey": "fault:silent-new-after-send:1",
+                "noticeId": "fault:silent-new-after-send:1"
+              },
+              "id": "1906c743",
+              "parentId": "2852035a",
+              "timestamp": "2026-11-05T14:24:04.049Z"
+            }
+          ]
+        }
+      ],
+      "daemon": [
+        {
+          "pid": 12118,
+          "kind": "delivery",
+          "keys": [
+            "fault:silent-new-after-send:1"
+          ]
+        },
+        {
+          "pid": 12118,
+          "kind": "delivery",
+          "keys": [
+            "fault:silent-new-after-send:1"
+          ]
+        },
+        {
+          "pid": 12118,
+          "kind": "ack",
+          "dedupeKey": "fault:silent-new-after-send:1",
+          "entryId": "1906c743",
+          "onDisk": true
+        }
+      ],
+      "outbox": [
+        {
+          "dedupeKey": "fault:silent-new-after-send:1",
+          "payload": {
+            "dedupeKey": "fault:silent-new-after-send:1",
+            "silent": true
+          },
+          "visibleAfter": 1793888644295,
+          "attempts": 2,
+          "persistedAt": 1793888644058,
+          "ackedAt": 1793888644058,
+          "entryId": "1906c743"
+        }
+      ],
+      "requests": [
+        {
+          "request": 1,
+          "lastUser": "P0 seed"
+        }
+      ],
+      "exits": [
+        {
+          "code": null,
+          "signal": "SIGKILL"
+        }
+      ]
+    },
+    {
+      "name": "#8 silent-new-after-send",
+      "attempt": 2,
+      "beforeDisk": 0,
+      "beforeMemory": 1,
+      "injectCount": 2,
+      "recoveredExactlyOnce": true,
+      "daemonKilled": false,
+      "rpcMessageEndObservedBeforeKill": false,
+      "notices": [
+        {
+          "id": "103cedb9",
+          "dedupeKey": "fault:silent-new-after-send:2"
+        }
+      ],
+      "extension": [
+        {
+          "pid": 12128,
+          "kind": "inject",
+          "dedupeKey": "fault:silent-new-after-send:2",
+          "silent": true,
+          "idle": true
+        },
+        {
+          "pid": 12128,
+          "kind": "public_dispatched",
+          "dedupeKey": "fault:silent-new-after-send:2"
+        },
+        {
+          "pid": 12128,
+          "kind": "silent_returned",
+          "dedupeKey": "fault:silent-new-after-send:2",
+          "memoryCount": 1,
+          "diskCount": 0
+        },
+        {
+          "pid": 12128,
+          "kind": "fault",
+          "point": "silent-after-send"
+        },
+        {
+          "pid": 12150,
+          "kind": "inject",
+          "dedupeKey": "fault:silent-new-after-send:2",
+          "silent": true,
+          "idle": true
+        },
+        {
+          "pid": 12150,
+          "kind": "public_dispatched",
+          "dedupeKey": "fault:silent-new-after-send:2"
+        },
+        {
+          "pid": 12150,
+          "kind": "silent_returned",
+          "dedupeKey": "fault:silent-new-after-send:2",
+          "memoryCount": 1,
+          "diskCount": 0
+        },
+        {
+          "pid": 12150,
+          "kind": "acked",
+          "dedupeKey": "fault:silent-new-after-send:2",
+          "entryId": "103cedb9"
+        },
+        {
+          "pid": 12150,
+          "kind": "settled"
+        },
+        {
+          "pid": 12150,
+          "kind": "snapshot",
+          "entries": [
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice fault:silent-new-after-send:2",
+              "display": true,
+              "details": {
+                "dedupeKey": "fault:silent-new-after-send:2",
+                "noticeId": "fault:silent-new-after-send:2"
+              },
+              "id": "103cedb9",
+              "parentId": "b6e1e691",
+              "timestamp": "2026-11-05T14:24:04.970Z"
+            }
+          ],
+          "disk": [
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice fault:silent-new-after-send:2",
+              "display": true,
+              "details": {
+                "dedupeKey": "fault:silent-new-after-send:2",
+                "noticeId": "fault:silent-new-after-send:2"
+              },
+              "id": "103cedb9",
+              "parentId": "b6e1e691",
+              "timestamp": "2026-11-05T14:24:04.970Z"
+            }
+          ]
+        }
+      ],
+      "daemon": [
+        {
+          "pid": 12126,
+          "kind": "delivery",
+          "keys": [
+            "fault:silent-new-after-send:2"
+          ]
+        },
+        {
+          "pid": 12126,
+          "kind": "delivery",
+          "keys": [
+            "fault:silent-new-after-send:2"
+          ]
+        },
+        {
+          "pid": 12126,
+          "kind": "ack",
+          "dedupeKey": "fault:silent-new-after-send:2",
+          "entryId": "103cedb9",
+          "onDisk": true
+        }
+      ],
+      "outbox": [
+        {
+          "dedupeKey": "fault:silent-new-after-send:2",
+          "payload": {
+            "dedupeKey": "fault:silent-new-after-send:2",
+            "silent": true
+          },
+          "visibleAfter": 1793888645215,
+          "attempts": 2,
+          "persistedAt": 1793888644979,
+          "ackedAt": 1793888644979,
+          "entryId": "103cedb9"
+        }
+      ],
+      "requests": [
+        {
+          "request": 1,
+          "lastUser": "P0 seed"
+        }
+      ],
+      "exits": [
+        {
+          "code": null,
+          "signal": "SIGKILL"
+        }
+      ]
+    },
+    {
+      "name": "#8 silent-new-after-send",
+      "attempt": 3,
+      "beforeDisk": 0,
+      "beforeMemory": 1,
+      "injectCount": 2,
+      "recoveredExactlyOnce": true,
+      "daemonKilled": false,
+      "rpcMessageEndObservedBeforeKill": false,
+      "notices": [
+        {
+          "id": "006826c4",
+          "dedupeKey": "fault:silent-new-after-send:3"
+        }
+      ],
+      "extension": [
+        {
+          "pid": 12156,
+          "kind": "inject",
+          "dedupeKey": "fault:silent-new-after-send:3",
+          "silent": true,
+          "idle": true
+        },
+        {
+          "pid": 12156,
+          "kind": "public_dispatched",
+          "dedupeKey": "fault:silent-new-after-send:3"
+        },
+        {
+          "pid": 12156,
+          "kind": "silent_returned",
+          "dedupeKey": "fault:silent-new-after-send:3",
+          "memoryCount": 1,
+          "diskCount": 0
+        },
+        {
+          "pid": 12156,
+          "kind": "fault",
+          "point": "silent-after-send"
+        },
+        {
+          "pid": 12158,
+          "kind": "inject",
+          "dedupeKey": "fault:silent-new-after-send:3",
+          "silent": true,
+          "idle": true
+        },
+        {
+          "pid": 12158,
+          "kind": "public_dispatched",
+          "dedupeKey": "fault:silent-new-after-send:3"
+        },
+        {
+          "pid": 12158,
+          "kind": "silent_returned",
+          "dedupeKey": "fault:silent-new-after-send:3",
+          "memoryCount": 1,
+          "diskCount": 0
+        },
+        {
+          "pid": 12158,
+          "kind": "acked",
+          "dedupeKey": "fault:silent-new-after-send:3",
+          "entryId": "006826c4"
+        },
+        {
+          "pid": 12158,
+          "kind": "settled"
+        },
+        {
+          "pid": 12158,
+          "kind": "snapshot",
+          "entries": [
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice fault:silent-new-after-send:3",
+              "display": true,
+              "details": {
+                "dedupeKey": "fault:silent-new-after-send:3",
+                "noticeId": "fault:silent-new-after-send:3"
+              },
+              "id": "006826c4",
+              "parentId": "477a438a",
+              "timestamp": "2026-11-05T14:24:05.872Z"
+            }
+          ],
+          "disk": [
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice fault:silent-new-after-send:3",
+              "display": true,
+              "details": {
+                "dedupeKey": "fault:silent-new-after-send:3",
+                "noticeId": "fault:silent-new-after-send:3"
+              },
+              "id": "006826c4",
+              "parentId": "477a438a",
+              "timestamp": "2026-11-05T14:24:05.872Z"
+            }
+          ]
+        }
+      ],
+      "daemon": [
+        {
+          "pid": 12154,
+          "kind": "delivery",
+          "keys": [
+            "fault:silent-new-after-send:3"
+          ]
+        },
+        {
+          "pid": 12154,
+          "kind": "delivery",
+          "keys": [
+            "fault:silent-new-after-send:3"
+          ]
+        },
+        {
+          "pid": 12154,
+          "kind": "ack",
+          "dedupeKey": "fault:silent-new-after-send:3",
+          "entryId": "006826c4",
+          "onDisk": true
+        }
+      ],
+      "outbox": [
+        {
+          "dedupeKey": "fault:silent-new-after-send:3",
+          "payload": {
+            "dedupeKey": "fault:silent-new-after-send:3",
+            "silent": true
+          },
+          "visibleAfter": 1793888646117,
+          "attempts": 2,
+          "persistedAt": 1793888645880,
+          "ackedAt": 1793888645880,
+          "entryId": "006826c4"
+        }
+      ],
+      "requests": [
+        {
+          "request": 1,
+          "lastUser": "P0 seed"
+        }
+      ],
+      "exits": [
+        {
+          "code": null,
+          "signal": "SIGKILL"
+        }
+      ]
+    },
+    {
+      "name": "#8 daemon-before-ack",
+      "attempt": 1,
+      "beforeDisk": 1,
+      "injectCount": 1,
+      "recoveredExactlyOnce": true,
+      "daemonKilled": true,
+      "rpcMessageEndObservedBeforeKill": true,
+      "notices": [
+        {
+          "id": "5f28857e",
+          "dedupeKey": "fault:daemon-before-ack:1"
+        }
+      ],
+      "extension": [
+        {
+          "pid": 12164,
+          "kind": "settled"
+        },
+        {
+          "pid": 12164,
+          "kind": "inject",
+          "dedupeKey": "fault:daemon-before-ack:1",
+          "silent": false,
+          "idle": true
+        },
+        {
+          "pid": 12164,
+          "kind": "extension_message_end",
+          "dedupeKey": "fault:daemon-before-ack:1",
+          "memoryCount": 0,
+          "diskCount": 0
+        },
+        {
+          "pid": 12164,
+          "kind": "public_dispatched",
+          "dedupeKey": "fault:daemon-before-ack:1"
+        },
+        {
+          "pid": 12164,
+          "kind": "before_ack",
+          "dedupeKey": "fault:daemon-before-ack:1",
+          "entryId": "5f28857e",
+          "onDisk": true
+        },
+        {
+          "pid": 12164,
+          "kind": "transport_error",
+          "error": "TypeError: fetch failed"
+        },
+        {
+          "pid": 12164,
+          "kind": "settled"
+        },
+        {
+          "pid": 12164,
+          "kind": "transport_error",
+          "error": "TypeError: fetch failed"
+        },
+        {
+          "pid": 12167,
+          "kind": "acked",
+          "dedupeKey": "fault:daemon-before-ack:1",
+          "entryId": "5f28857e"
+        },
+        {
+          "pid": 12167,
+          "kind": "snapshot",
+          "entries": [
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice fault:daemon-before-ack:1",
+              "display": true,
+              "details": {
+                "dedupeKey": "fault:daemon-before-ack:1",
+                "noticeId": "fault:daemon-before-ack:1"
+              },
+              "id": "5f28857e",
+              "parentId": "4663e914",
+              "timestamp": "2026-11-05T14:24:06.498Z"
+            }
+          ],
+          "disk": [
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice fault:daemon-before-ack:1",
+              "display": true,
+              "details": {
+                "dedupeKey": "fault:daemon-before-ack:1",
+                "noticeId": "fault:daemon-before-ack:1"
+              },
+              "id": "5f28857e",
+              "parentId": "4663e914",
+              "timestamp": "2026-11-05T14:24:06.498Z"
+            }
+          ]
+        }
+      ],
+      "daemon": [
+        {
+          "pid": 12159,
+          "kind": "delivery",
+          "keys": [
+            "fault:daemon-before-ack:1"
+          ]
+        },
+        {
+          "pid": 12165,
+          "kind": "ack",
+          "dedupeKey": "fault:daemon-before-ack:1",
+          "entryId": "5f28857e",
+          "onDisk": true
+        }
+      ],
+      "outbox": [
+        {
+          "dedupeKey": "fault:daemon-before-ack:1",
+          "payload": {
+            "dedupeKey": "fault:daemon-before-ack:1",
+            "silent": false
+          },
+          "visibleAfter": 1793888646743,
+          "attempts": 1,
+          "persistedAt": 1793888647003,
+          "ackedAt": 1793888647003,
+          "entryId": "5f28857e"
+        }
+      ],
+      "requests": [
+        {
+          "request": 1,
+          "lastUser": "P0 seed"
+        },
+        {
+          "request": 2,
+          "lastUser": "P0 notice fault:daemon-before-ack:1"
+        }
+      ],
+      "exits": [
+        {
+          "code": null,
+          "signal": "SIGKILL"
+        }
+      ]
+    },
+    {
+      "name": "#8 daemon-before-ack",
+      "attempt": 2,
+      "beforeDisk": 1,
+      "injectCount": 1,
+      "recoveredExactlyOnce": true,
+      "daemonKilled": true,
+      "rpcMessageEndObservedBeforeKill": true,
+      "notices": [
+        {
+          "id": "b5f74608",
+          "dedupeKey": "fault:daemon-before-ack:2"
+        }
+      ],
+      "extension": [
+        {
+          "pid": 12173,
+          "kind": "settled"
+        },
+        {
+          "pid": 12173,
+          "kind": "inject",
+          "dedupeKey": "fault:daemon-before-ack:2",
+          "silent": false,
+          "idle": true
+        },
+        {
+          "pid": 12173,
+          "kind": "extension_message_end",
+          "dedupeKey": "fault:daemon-before-ack:2",
+          "memoryCount": 0,
+          "diskCount": 0
+        },
+        {
+          "pid": 12173,
+          "kind": "public_dispatched",
+          "dedupeKey": "fault:daemon-before-ack:2"
+        },
+        {
+          "pid": 12173,
+          "kind": "before_ack",
+          "dedupeKey": "fault:daemon-before-ack:2",
+          "entryId": "b5f74608",
+          "onDisk": true
+        },
+        {
+          "pid": 12173,
+          "kind": "transport_error",
+          "error": "TypeError: fetch failed"
+        },
+        {
+          "pid": 12173,
+          "kind": "settled"
+        },
+        {
+          "pid": 12173,
+          "kind": "transport_error",
+          "error": "TypeError: fetch failed"
+        },
+        {
+          "pid": 12176,
+          "kind": "acked",
+          "dedupeKey": "fault:daemon-before-ack:2",
+          "entryId": "b5f74608"
+        },
+        {
+          "pid": 12176,
+          "kind": "snapshot",
+          "entries": [
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice fault:daemon-before-ack:2",
+              "display": true,
+              "details": {
+                "dedupeKey": "fault:daemon-before-ack:2",
+                "noticeId": "fault:daemon-before-ack:2"
+              },
+              "id": "b5f74608",
+              "parentId": "e85758b2",
+              "timestamp": "2026-11-05T14:24:07.622Z"
+            }
+          ],
+          "disk": [
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice fault:daemon-before-ack:2",
+              "display": true,
+              "details": {
+                "dedupeKey": "fault:daemon-before-ack:2",
+                "noticeId": "fault:daemon-before-ack:2"
+              },
+              "id": "b5f74608",
+              "parentId": "e85758b2",
+              "timestamp": "2026-11-05T14:24:07.622Z"
+            }
+          ]
+        }
+      ],
+      "daemon": [
+        {
+          "pid": 12171,
+          "kind": "delivery",
+          "keys": [
+            "fault:daemon-before-ack:2"
+          ]
+        },
+        {
+          "pid": 12174,
+          "kind": "ack",
+          "dedupeKey": "fault:daemon-before-ack:2",
+          "entryId": "b5f74608",
+          "onDisk": true
+        }
+      ],
+      "outbox": [
+        {
+          "dedupeKey": "fault:daemon-before-ack:2",
+          "payload": {
+            "dedupeKey": "fault:daemon-before-ack:2",
+            "silent": false
+          },
+          "visibleAfter": 1793888647867,
+          "attempts": 1,
+          "persistedAt": 1793888648128,
+          "ackedAt": 1793888648128,
+          "entryId": "b5f74608"
+        }
+      ],
+      "requests": [
+        {
+          "request": 1,
+          "lastUser": "P0 seed"
+        },
+        {
+          "request": 2,
+          "lastUser": "P0 notice fault:daemon-before-ack:2"
+        }
+      ],
+      "exits": [
+        {
+          "code": null,
+          "signal": "SIGKILL"
+        }
+      ]
+    },
+    {
+      "name": "#8 daemon-before-ack",
+      "attempt": 3,
+      "beforeDisk": 1,
+      "injectCount": 1,
+      "recoveredExactlyOnce": true,
+      "daemonKilled": true,
+      "rpcMessageEndObservedBeforeKill": true,
+      "notices": [
+        {
+          "id": "3518a829",
+          "dedupeKey": "fault:daemon-before-ack:3"
+        }
+      ],
+      "extension": [
+        {
+          "pid": 12195,
+          "kind": "settled"
+        },
+        {
+          "pid": 12195,
+          "kind": "inject",
+          "dedupeKey": "fault:daemon-before-ack:3",
+          "silent": false,
+          "idle": true
+        },
+        {
+          "pid": 12195,
+          "kind": "extension_message_end",
+          "dedupeKey": "fault:daemon-before-ack:3",
+          "memoryCount": 0,
+          "diskCount": 0
+        },
+        {
+          "pid": 12195,
+          "kind": "public_dispatched",
+          "dedupeKey": "fault:daemon-before-ack:3"
+        },
+        {
+          "pid": 12195,
+          "kind": "before_ack",
+          "dedupeKey": "fault:daemon-before-ack:3",
+          "entryId": "3518a829",
+          "onDisk": true
+        },
+        {
+          "pid": 12195,
+          "kind": "transport_error",
+          "error": "TypeError: fetch failed"
+        },
+        {
+          "pid": 12195,
+          "kind": "settled"
+        },
+        {
+          "pid": 12195,
+          "kind": "transport_error",
+          "error": "TypeError: fetch failed"
+        },
+        {
+          "pid": 12202,
+          "kind": "acked",
+          "dedupeKey": "fault:daemon-before-ack:3",
+          "entryId": "3518a829"
+        },
+        {
+          "pid": 12202,
+          "kind": "snapshot",
+          "entries": [
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice fault:daemon-before-ack:3",
+              "display": true,
+              "details": {
+                "dedupeKey": "fault:daemon-before-ack:3",
+                "noticeId": "fault:daemon-before-ack:3"
+              },
+              "id": "3518a829",
+              "parentId": "7b8fefea",
+              "timestamp": "2026-11-05T14:24:08.760Z"
+            }
+          ],
+          "disk": [
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice fault:daemon-before-ack:3",
+              "display": true,
+              "details": {
+                "dedupeKey": "fault:daemon-before-ack:3",
+                "noticeId": "fault:daemon-before-ack:3"
+              },
+              "id": "3518a829",
+              "parentId": "7b8fefea",
+              "timestamp": "2026-11-05T14:24:08.760Z"
+            }
+          ]
+        }
+      ],
+      "daemon": [
+        {
+          "pid": 12180,
+          "kind": "delivery",
+          "keys": [
+            "fault:daemon-before-ack:3"
+          ]
+        },
+        {
+          "pid": 12198,
+          "kind": "ack",
+          "dedupeKey": "fault:daemon-before-ack:3",
+          "entryId": "3518a829",
+          "onDisk": true
+        }
+      ],
+      "outbox": [
+        {
+          "dedupeKey": "fault:daemon-before-ack:3",
+          "payload": {
+            "dedupeKey": "fault:daemon-before-ack:3",
+            "silent": false
+          },
+          "visibleAfter": 1793888649005,
+          "attempts": 1,
+          "persistedAt": 1793888649276,
+          "ackedAt": 1793888649276,
+          "entryId": "3518a829"
+        }
+      ],
+      "requests": [
+        {
+          "request": 1,
+          "lastUser": "P0 seed"
+        },
+        {
+          "request": 2,
+          "lastUser": "P0 notice fault:daemon-before-ack:3"
+        }
+      ],
+      "exits": [
+        {
+          "code": null,
+          "signal": "SIGKILL"
+        }
+      ]
+    },
+    {
+      "name": "#7 abort without clear_queue deviation",
+      "attempt": 1,
+      "expectedExactlyOnce": 1,
+      "actualCount": 2,
+      "designPass": false,
+      "notices": [
+        {
+          "id": "51d54344",
+          "dedupeKey": "notice:abort-queue:1"
+        },
+        {
+          "id": "b000b032",
+          "dedupeKey": "notice:abort-queue:1"
+        }
+      ],
+      "extension": [
+        {
+          "pid": 12208,
+          "kind": "settled"
+        },
+        {
+          "pid": 12208,
+          "kind": "inject",
+          "dedupeKey": "notice:abort-queue:1",
+          "silent": false,
+          "idle": false
+        },
+        {
+          "pid": 12208,
+          "kind": "deduped",
+          "dedupeKey": "notice:abort-queue:1",
+          "inEntries": false,
+          "inFlight": true
+        },
+        {
+          "pid": 12208,
+          "kind": "settled"
+        },
+        {
+          "pid": 12208,
+          "kind": "reset_inflight",
+          "dedupeKey": "notice:abort-queue:1"
+        },
+        {
+          "pid": 12208,
+          "kind": "inject",
+          "dedupeKey": "notice:abort-queue:1",
+          "silent": false,
+          "idle": true
+        },
+        {
+          "pid": 12208,
+          "kind": "extension_message_end",
+          "dedupeKey": "notice:abort-queue:1",
+          "memoryCount": 0,
+          "diskCount": 0
+        },
+        {
+          "pid": 12208,
+          "kind": "public_dispatched",
+          "dedupeKey": "notice:abort-queue:1"
+        },
+        {
+          "pid": 12208,
+          "kind": "acked",
+          "dedupeKey": "notice:abort-queue:1",
+          "entryId": "51d54344"
+        },
+        {
+          "pid": 12208,
+          "kind": "extension_message_end",
+          "dedupeKey": "notice:abort-queue:1",
+          "memoryCount": 1,
+          "diskCount": 1
+        },
+        {
+          "pid": 12208,
+          "kind": "public_dispatched",
+          "dedupeKey": "notice:abort-queue:1"
+        },
+        {
+          "pid": 12208,
+          "kind": "settled"
+        },
+        {
+          "pid": 12208,
+          "kind": "snapshot",
+          "entries": [
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice notice:abort-queue:1",
+              "display": true,
+              "details": {
+                "dedupeKey": "notice:abort-queue:1",
+                "noticeId": "notice:abort-queue:1"
+              },
+              "id": "51d54344",
+              "parentId": "94de4236",
+              "timestamp": "2026-11-05T14:24:10.435Z"
+            },
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice notice:abort-queue:1",
+              "display": true,
+              "details": {
+                "dedupeKey": "notice:abort-queue:1",
+                "noticeId": "notice:abort-queue:1"
+              },
+              "id": "b000b032",
+              "parentId": "12025468",
+              "timestamp": "2026-11-05T14:24:10.440Z"
+            }
+          ],
+          "disk": [
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice notice:abort-queue:1",
+              "display": true,
+              "details": {
+                "dedupeKey": "notice:abort-queue:1",
+                "noticeId": "notice:abort-queue:1"
+              },
+              "id": "51d54344",
+              "parentId": "94de4236",
+              "timestamp": "2026-11-05T14:24:10.435Z"
+            },
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice notice:abort-queue:1",
+              "display": true,
+              "details": {
+                "dedupeKey": "notice:abort-queue:1",
+                "noticeId": "notice:abort-queue:1"
+              },
+              "id": "b000b032",
+              "parentId": "12025468",
+              "timestamp": "2026-11-05T14:24:10.440Z"
+            }
+          ]
+        }
+      ],
+      "daemon": [
+        {
+          "pid": 12206,
+          "kind": "delivery",
+          "keys": [
+            "notice:abort-queue:1"
+          ]
+        },
+        {
+          "pid": 12206,
+          "kind": "delivery",
+          "keys": [
+            "notice:abort-queue:1"
+          ]
+        },
+        {
+          "pid": 12206,
+          "kind": "delivery",
+          "keys": [
+            "notice:abort-queue:1"
+          ]
+        },
+        {
+          "pid": 12206,
+          "kind": "ack",
+          "dedupeKey": "notice:abort-queue:1",
+          "entryId": "51d54344",
+          "onDisk": true
+        }
+      ],
+      "outbox": [
+        {
+          "dedupeKey": "notice:abort-queue:1",
+          "payload": {
+            "dedupeKey": "notice:abort-queue:1",
+            "silent": false
+          },
+          "visibleAfter": 1793888650683,
+          "attempts": 3,
+          "persistedAt": 1793888650439,
+          "ackedAt": 1793888650439,
+          "entryId": "51d54344"
+        }
+      ],
+      "requests": [
+        {
+          "request": 1,
+          "lastUser": "P0 seed"
+        },
+        {
+          "request": 2,
+          "lastUser": "P0 abort queue"
+        },
+        {
+          "request": 3,
+          "lastUser": "P0 notice notice:abort-queue:1"
+        },
+        {
+          "request": 4,
+          "lastUser": "P0 notice notice:abort-queue:1"
+        }
+      ],
+      "exits": []
+    },
+    {
+      "name": "#7 abort without clear_queue deviation",
+      "attempt": 2,
+      "expectedExactlyOnce": 1,
+      "actualCount": 2,
+      "designPass": false,
+      "notices": [
+        {
+          "id": "4f897790",
+          "dedupeKey": "notice:abort-queue:2"
+        },
+        {
+          "id": "1b6b9590",
+          "dedupeKey": "notice:abort-queue:2"
+        }
+      ],
+      "extension": [
+        {
+          "pid": 12214,
+          "kind": "settled"
+        },
+        {
+          "pid": 12214,
+          "kind": "inject",
+          "dedupeKey": "notice:abort-queue:2",
+          "silent": false,
+          "idle": false
+        },
+        {
+          "pid": 12214,
+          "kind": "deduped",
+          "dedupeKey": "notice:abort-queue:2",
+          "inEntries": false,
+          "inFlight": true
+        },
+        {
+          "pid": 12214,
+          "kind": "settled"
+        },
+        {
+          "pid": 12214,
+          "kind": "reset_inflight",
+          "dedupeKey": "notice:abort-queue:2"
+        },
+        {
+          "pid": 12214,
+          "kind": "inject",
+          "dedupeKey": "notice:abort-queue:2",
+          "silent": false,
+          "idle": true
+        },
+        {
+          "pid": 12214,
+          "kind": "extension_message_end",
+          "dedupeKey": "notice:abort-queue:2",
+          "memoryCount": 0,
+          "diskCount": 0
+        },
+        {
+          "pid": 12214,
+          "kind": "public_dispatched",
+          "dedupeKey": "notice:abort-queue:2"
+        },
+        {
+          "pid": 12214,
+          "kind": "acked",
+          "dedupeKey": "notice:abort-queue:2",
+          "entryId": "4f897790"
+        },
+        {
+          "pid": 12214,
+          "kind": "extension_message_end",
+          "dedupeKey": "notice:abort-queue:2",
+          "memoryCount": 1,
+          "diskCount": 1
+        },
+        {
+          "pid": 12214,
+          "kind": "public_dispatched",
+          "dedupeKey": "notice:abort-queue:2"
+        },
+        {
+          "pid": 12214,
+          "kind": "settled"
+        },
+        {
+          "pid": 12214,
+          "kind": "snapshot",
+          "entries": [
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice notice:abort-queue:2",
+              "display": true,
+              "details": {
+                "dedupeKey": "notice:abort-queue:2",
+                "noticeId": "notice:abort-queue:2"
+              },
+              "id": "4f897790",
+              "parentId": "6be448bd",
+              "timestamp": "2026-11-05T14:24:11.604Z"
+            },
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice notice:abort-queue:2",
+              "display": true,
+              "details": {
+                "dedupeKey": "notice:abort-queue:2",
+                "noticeId": "notice:abort-queue:2"
+              },
+              "id": "1b6b9590",
+              "parentId": "f615d73a",
+              "timestamp": "2026-11-05T14:24:11.609Z"
+            }
+          ],
+          "disk": [
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice notice:abort-queue:2",
+              "display": true,
+              "details": {
+                "dedupeKey": "notice:abort-queue:2",
+                "noticeId": "notice:abort-queue:2"
+              },
+              "id": "4f897790",
+              "parentId": "6be448bd",
+              "timestamp": "2026-11-05T14:24:11.604Z"
+            },
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice notice:abort-queue:2",
+              "display": true,
+              "details": {
+                "dedupeKey": "notice:abort-queue:2",
+                "noticeId": "notice:abort-queue:2"
+              },
+              "id": "1b6b9590",
+              "parentId": "f615d73a",
+              "timestamp": "2026-11-05T14:24:11.609Z"
+            }
+          ]
+        }
+      ],
+      "daemon": [
+        {
+          "pid": 12212,
+          "kind": "delivery",
+          "keys": [
+            "notice:abort-queue:2"
+          ]
+        },
+        {
+          "pid": 12212,
+          "kind": "delivery",
+          "keys": [
+            "notice:abort-queue:2"
+          ]
+        },
+        {
+          "pid": 12212,
+          "kind": "delivery",
+          "keys": [
+            "notice:abort-queue:2"
+          ]
+        },
+        {
+          "pid": 12212,
+          "kind": "ack",
+          "dedupeKey": "notice:abort-queue:2",
+          "entryId": "4f897790",
+          "onDisk": true
+        }
+      ],
+      "outbox": [
+        {
+          "dedupeKey": "notice:abort-queue:2",
+          "payload": {
+            "dedupeKey": "notice:abort-queue:2",
+            "silent": false
+          },
+          "visibleAfter": 1793888651852,
+          "attempts": 3,
+          "persistedAt": 1793888651608,
+          "ackedAt": 1793888651608,
+          "entryId": "4f897790"
+        }
+      ],
+      "requests": [
+        {
+          "request": 1,
+          "lastUser": "P0 seed"
+        },
+        {
+          "request": 2,
+          "lastUser": "P0 abort queue"
+        },
+        {
+          "request": 3,
+          "lastUser": "P0 notice notice:abort-queue:2"
+        },
+        {
+          "request": 4,
+          "lastUser": "P0 notice notice:abort-queue:2"
+        }
+      ],
+      "exits": []
+    },
+    {
+      "name": "#7 abort without clear_queue deviation",
+      "attempt": 3,
+      "expectedExactlyOnce": 1,
+      "actualCount": 2,
+      "designPass": false,
+      "notices": [
+        {
+          "id": "a7d27daf",
+          "dedupeKey": "notice:abort-queue:3"
+        },
+        {
+          "id": "f1548b27",
+          "dedupeKey": "notice:abort-queue:3"
+        }
+      ],
+      "extension": [
+        {
+          "pid": 12242,
+          "kind": "settled"
+        },
+        {
+          "pid": 12242,
+          "kind": "inject",
+          "dedupeKey": "notice:abort-queue:3",
+          "silent": false,
+          "idle": false
+        },
+        {
+          "pid": 12242,
+          "kind": "deduped",
+          "dedupeKey": "notice:abort-queue:3",
+          "inEntries": false,
+          "inFlight": true
+        },
+        {
+          "pid": 12242,
+          "kind": "settled"
+        },
+        {
+          "pid": 12242,
+          "kind": "reset_inflight",
+          "dedupeKey": "notice:abort-queue:3"
+        },
+        {
+          "pid": 12242,
+          "kind": "inject",
+          "dedupeKey": "notice:abort-queue:3",
+          "silent": false,
+          "idle": true
+        },
+        {
+          "pid": 12242,
+          "kind": "extension_message_end",
+          "dedupeKey": "notice:abort-queue:3",
+          "memoryCount": 0,
+          "diskCount": 0
+        },
+        {
+          "pid": 12242,
+          "kind": "public_dispatched",
+          "dedupeKey": "notice:abort-queue:3"
+        },
+        {
+          "pid": 12242,
+          "kind": "acked",
+          "dedupeKey": "notice:abort-queue:3",
+          "entryId": "a7d27daf"
+        },
+        {
+          "pid": 12242,
+          "kind": "extension_message_end",
+          "dedupeKey": "notice:abort-queue:3",
+          "memoryCount": 1,
+          "diskCount": 1
+        },
+        {
+          "pid": 12242,
+          "kind": "public_dispatched",
+          "dedupeKey": "notice:abort-queue:3"
+        },
+        {
+          "pid": 12242,
+          "kind": "settled"
+        },
+        {
+          "pid": 12242,
+          "kind": "snapshot",
+          "entries": [
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice notice:abort-queue:3",
+              "display": true,
+              "details": {
+                "dedupeKey": "notice:abort-queue:3",
+                "noticeId": "notice:abort-queue:3"
+              },
+              "id": "a7d27daf",
+              "parentId": "22048b36",
+              "timestamp": "2026-11-05T14:24:12.784Z"
+            },
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice notice:abort-queue:3",
+              "display": true,
+              "details": {
+                "dedupeKey": "notice:abort-queue:3",
+                "noticeId": "notice:abort-queue:3"
+              },
+              "id": "f1548b27",
+              "parentId": "46296b49",
+              "timestamp": "2026-11-05T14:24:12.790Z"
+            }
+          ],
+          "disk": [
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice notice:abort-queue:3",
+              "display": true,
+              "details": {
+                "dedupeKey": "notice:abort-queue:3",
+                "noticeId": "notice:abort-queue:3"
+              },
+              "id": "a7d27daf",
+              "parentId": "22048b36",
+              "timestamp": "2026-11-05T14:24:12.784Z"
+            },
+            {
+              "type": "custom_message",
+              "customType": "agora:notice",
+              "content": "P0 notice notice:abort-queue:3",
+              "display": true,
+              "details": {
+                "dedupeKey": "notice:abort-queue:3",
+                "noticeId": "notice:abort-queue:3"
+              },
+              "id": "f1548b27",
+              "parentId": "46296b49",
+              "timestamp": "2026-11-05T14:24:12.790Z"
+            }
+          ]
+        }
+      ],
+      "daemon": [
+        {
+          "pid": 12239,
+          "kind": "delivery",
+          "keys": [
+            "notice:abort-queue:3"
+          ]
+        },
+        {
+          "pid": 12239,
+          "kind": "delivery",
+          "keys": [
+            "notice:abort-queue:3"
+          ]
+        },
+        {
+          "pid": 12239,
+          "kind": "delivery",
+          "keys": [
+            "notice:abort-queue:3"
+          ]
+        },
+        {
+          "pid": 12239,
+          "kind": "ack",
+          "dedupeKey": "notice:abort-queue:3",
+          "entryId": "a7d27daf",
+          "onDisk": true
+        }
+      ],
+      "outbox": [
+        {
+          "dedupeKey": "notice:abort-queue:3",
+          "payload": {
+            "dedupeKey": "notice:abort-queue:3",
+            "silent": false
+          },
+          "visibleAfter": 1793888653032,
+          "attempts": 3,
+          "persistedAt": 1793888652788,
+          "ackedAt": 1793888652788,
+          "entryId": "a7d27daf"
+        }
+      ],
+      "requests": [
+        {
+          "request": 1,
+          "lastUser": "P0 seed"
+        },
+        {
+          "request": 2,
+          "lastUser": "P0 abort queue"
+        },
+        {
+          "request": 3,
+          "lastUser": "P0 notice notice:abort-queue:3"
+        },
+        {
+          "request": 4,
+          "lastUser": "P0 notice notice:abort-queue:3"
+        }
+      ],
+      "exits": []
+    }
+  ]
+}

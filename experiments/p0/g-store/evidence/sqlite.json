@@ -1,0 +1,367 @@
+{
+  "node": "v26.12.0",
+  "platform": "darwin",
+  "startedAt": "2026-11-05T14:23:36.033Z",
+  "basics": {
+    "node": "v26.12.0",
+    "sqlite": "3.54.1",
+    "journalMode": "wal",
+    "synchronous": 2,
+    "busyTimeout": 0,
+    "readOnlyWrite": "ERR_SQLITE_ERROR errcode=8 attempt to write a readonly database"
+  },
+  "walConcurrency": [
+    {
+      "variant": "读者 busy timeout 0，写者每 20 个事务 TRUNCATE 检查点",
+      "durationMs": 3000,
+      "committed": 1040,
+      "readers": [
+        {
+          "reads": 6181,
+          "txReads": 6181,
+          "violations": [],
+          "errors": {},
+          "openError": null,
+          "maxTx": 1040
+        },
+        {
+          "reads": 6186,
+          "txReads": 6186,
+          "violations": [],
+          "errors": {},
+          "openError": null,
+          "maxTx": 1040
+        }
+      ],
+      "final": {
+        "integrity": [
+          "ok"
+        ],
+        "journalMode": "wal",
+        "revision": 1040,
+        "maxTx": 1040,
+        "problems": []
+      }
+    },
+    {
+      "variant": "读者 busy timeout 0，无手动检查点（自动检查点）",
+      "durationMs": 3000,
+      "committed": 28708,
+      "readers": [
+        {
+          "reads": 191,
+          "txReads": 191,
+          "violations": [],
+          "errors": {},
+          "openError": null,
+          "maxTx": 28252
+        },
+        {
+          "reads": 190,
+          "txReads": 190,
+          "violations": [],
+          "errors": {},
+          "openError": null,
+          "maxTx": 28064
+        }
+      ],
+      "final": {
+        "integrity": [
+          "ok"
+        ],
+        "journalMode": "wal",
+        "revision": 28709,
+        "maxTx": 28709,
+        "problems": []
+      }
+    },
+    {
+      "variant": "读者 busy timeout 5000，写者每 20 个事务 TRUNCATE 检查点",
+      "durationMs": 3000,
+      "committed": 1100,
+      "readers": [
+        {
+          "reads": 6001,
+          "txReads": 6001,
+          "violations": [],
+          "errors": {},
+          "openError": null,
+          "maxTx": 1100
+        },
+        {
+          "reads": 5989,
+          "txReads": 5989,
+          "violations": [],
+          "errors": {},
+          "openError": null,
+          "maxTx": 1100
+        }
+      ],
+      "final": {
+        "integrity": [
+          "ok"
+        ],
+        "journalMode": "wal",
+        "revision": 1100,
+        "maxTx": 1100,
+        "problems": []
+      }
+    }
+  ],
+  "readOnlyOffline": {
+    "afterClose": [
+      "agora.db"
+    ],
+    "afterReadOnly": [
+      "agora.db",
+      "agora.db-shm",
+      "agora.db-wal"
+    ],
+    "result": {
+      "integrity": [
+        "ok"
+      ],
+      "journalMode": "wal",
+      "revision": 10,
+      "maxTx": 10,
+      "problems": []
+    },
+    "readOnlyDirectory": "打开或读取失败：ERR_SQLITE_ERROR errcode=1544 attempt to write a readonly database"
+  },
+  "randomKill": {
+    "iterations": 24,
+    "stats": {
+      "unackedWindow": 23,
+      "afterAck": 1,
+      "ackedLost": 0,
+      "beyondLastBegin": 0
+    },
+    "runs": [
+      "#0 rows=1 ckpt=0 k=837 lastBegin=838 lastAcked=837 ro.maxTx=838 rw.maxTx=838 ro.problems=0 rw.problems=0",
+      "#1 rows=1 ckpt=5 k=1459 lastBegin=1460 lastAcked=1459 ro.maxTx=1459 rw.maxTx=1459 ro.problems=0 rw.problems=0",
+      "#2 rows=20000 ckpt=0 k=1 lastBegin=1 lastAcked=0 ro.maxTx=0 rw.maxTx=0 ro.problems=0 rw.problems=0",
+      "#3 rows=20000 ckpt=1 k=3 lastBegin=3 lastAcked=2 ro.maxTx=2 rw.maxTx=2 ro.problems=0 rw.problems=0",
+      "#4 rows=1 ckpt=0 k=944 lastBegin=1782 lastAcked=1781 ro.maxTx=1782 rw.maxTx=1782 ro.problems=0 rw.problems=0",
+      "#5 rows=1 ckpt=5 k=2815 lastBegin=4520 lastAcked=4520 ro.maxTx=4520 rw.maxTx=4520 ro.problems=0 rw.problems=0",
+      "#6 rows=20000 ckpt=0 k=1 lastBegin=1 lastAcked=0 ro.maxTx=0 rw.maxTx=0 ro.problems=0 rw.problems=0",
+      "#7 rows=20000 ckpt=1 k=2 lastBegin=4 lastAcked=3 ro.maxTx=3 rw.maxTx=3 ro.problems=0 rw.problems=0",
+      "#8 rows=1 ckpt=0 k=627 lastBegin=2410 lastAcked=2409 ro.maxTx=2409 rw.maxTx=2409 ro.problems=0 rw.problems=0",
+      "#9 rows=1 ckpt=5 k=521 lastBegin=5041 lastAcked=5040 ro.maxTx=5040 rw.maxTx=5040 ro.problems=0 rw.problems=0",
+      "#10 rows=20000 ckpt=0 k=3 lastBegin=3 lastAcked=2 ro.maxTx=2 rw.maxTx=2 ro.problems=0 rw.problems=0",
+      "#11 rows=20000 ckpt=1 k=2 lastBegin=5 lastAcked=4 ro.maxTx=4 rw.maxTx=4 ro.problems=0 rw.problems=0",
+      "#12 rows=1 ckpt=0 k=213 lastBegin=2623 lastAcked=2622 ro.maxTx=2622 rw.maxTx=2622 ro.problems=0 rw.problems=0",
+      "#13 rows=1 ckpt=5 k=53 lastBegin=5093 lastAcked=5092 ro.maxTx=5092 rw.maxTx=5092 ro.problems=0 rw.problems=0",
+      "#14 rows=20000 ckpt=0 k=6 lastBegin=8 lastAcked=7 ro.maxTx=7 rw.maxTx=7 ro.problems=0 rw.problems=0",
+      "#15 rows=20000 ckpt=1 k=1 lastBegin=5 lastAcked=4 ro.maxTx=4 rw.maxTx=4 ro.problems=0 rw.problems=0",
+      "#16 rows=1 ckpt=0 k=1440 lastBegin=4115 lastAcked=4114 ro.maxTx=4115 rw.maxTx=4115 ro.problems=0 rw.problems=0",
+      "#17 rows=1 ckpt=5 k=161 lastBegin=5253 lastAcked=5252 ro.maxTx=5253 rw.maxTx=5253 ro.problems=0 rw.problems=0",
+      "#18 rows=20000 ckpt=0 k=3 lastBegin=10 lastAcked=9 ro.maxTx=9 rw.maxTx=9 ro.problems=0 rw.problems=0",
+      "#19 rows=20000 ckpt=1 k=1 lastBegin=5 lastAcked=4 ro.maxTx=4 rw.maxTx=4 ro.problems=0 rw.problems=0",
+      "#20 rows=1 ckpt=0 k=1689 lastBegin=5969 lastAcked=5968 ro.maxTx=5968 rw.maxTx=5968 ro.problems=0 rw.problems=0",
+      "#21 rows=1 ckpt=5 k=1238 lastBegin=6491 lastAcked=6490 ro.maxTx=6491 rw.maxTx=6491 ro.problems=0 rw.problems=0",
+      "#22 rows=20000 ckpt=0 k=1 lastBegin=10 lastAcked=9 ro.maxTx=9 rw.maxTx=9 ro.problems=0 rw.problems=0",
+      "#23 rows=20000 ckpt=1 k=6 lastBegin=10 lastAcked=9 ro.maxTx=9 rw.maxTx=9 ro.problems=0 rw.problems=0"
+    ]
+  },
+  "barrierKill": [
+    {
+      "variant": "新库的第一个业务事务，写入 10 行 outbox、5 行 changes 后",
+      "barrier": "barrier 1 10 5",
+      "heldTx": 1,
+      "walBytesAtBarrier": 45352,
+      "ro": {
+        "integrity": [
+          "ok"
+        ],
+        "journalMode": "wal",
+        "revision": 0,
+        "maxTx": 0,
+        "problems": []
+      },
+      "rw": {
+        "integrity": [
+          "ok"
+        ],
+        "journalMode": "wal",
+        "revision": 0,
+        "maxTx": 0,
+        "problems": []
+      }
+    },
+    {
+      "variant": "已提交 200 个事务（每 20 个 TRUNCATE 检查点）之后的事务",
+      "barrier": "barrier 201 10 5",
+      "heldTx": 201,
+      "walBytesAtBarrier": 0,
+      "ro": {
+        "integrity": [
+          "ok"
+        ],
+        "journalMode": "wal",
+        "revision": 200,
+        "maxTx": 200,
+        "problems": []
+      },
+      "rw": {
+        "integrity": [
+          "ok"
+        ],
+        "journalMode": "wal",
+        "revision": 200,
+        "maxTx": 200,
+        "problems": []
+      }
+    },
+    {
+      "variant": "大事务、页缓存 50 页（未提交的页提前写进 WAL），写入 20000 行 outbox、10000 行 changes 后",
+      "barrier": "barrier 4 20000 10000",
+      "heldTx": 4,
+      "walBytesAtBarrier": 6324232,
+      "ro": {
+        "integrity": [
+          "ok"
+        ],
+        "journalMode": "wal",
+        "revision": 3,
+        "maxTx": 3,
+        "problems": []
+      },
+      "rw": {
+        "integrity": [
+          "ok"
+        ],
+        "journalMode": "wal",
+        "revision": 3,
+        "maxTx": 3,
+        "problems": []
+      }
+    }
+  ],
+  "backup": [
+    {
+      "variant": "独立连接，另一进程每 2 ms 写一个事务，rate 100",
+      "expect": "observe",
+      "summary": {
+        "mode": "own",
+        "rate": 100,
+        "progressCalls": 84733,
+        "writesDuringBackup": 0,
+        "pages": null,
+        "ms": 19900,
+        "error": "terminated before completion",
+        "startedAt": 1793888634765,
+        "restarts": 7718,
+        "endedAt": 1793888654666,
+        "lastProgress": {
+          "totalPages": 8866,
+          "remainingPages": 7466
+        }
+      },
+      "writesDuring": 7719,
+      "timedOut": true
+    },
+    {
+      "variant": "独立连接，另一进程每 50 ms 写一个事务，rate 100",
+      "expect": "complete",
+      "summary": {
+        "mode": "own",
+        "rate": 100,
+        "progressCalls": 90,
+        "writesDuringBackup": 0,
+        "pages": 8217,
+        "ms": 53,
+        "error": null,
+        "startedAt": 1793888655088,
+        "restarts": 1,
+        "endedAt": 1793888655142
+      },
+      "writesDuring": 2,
+      "timedOut": false,
+      "check": {
+        "integrity": [
+          "ok"
+        ],
+        "journalMode": "wal",
+        "revision": 13,
+        "maxTx": 13,
+        "problems": []
+      },
+      "filesBeforeOpen": [
+        "backup.db"
+      ],
+      "filesAfterReadOnlyOpen": [
+        "backup.db",
+        "backup.db-shm",
+        "backup.db-wal"
+      ]
+    },
+    {
+      "variant": "独立连接，另一进程不停顿连续写，rate 1000000（一步复制全部页）",
+      "expect": "complete",
+      "summary": {
+        "mode": "own",
+        "rate": 1000000,
+        "progressCalls": 0,
+        "writesDuringBackup": 0,
+        "pages": 8344,
+        "ms": 64,
+        "error": null,
+        "startedAt": 1793888655585,
+        "endedAt": 1793888655649
+      },
+      "writesDuring": 538,
+      "timedOut": false,
+      "check": {
+        "integrity": [
+          "ok"
+        ],
+        "journalMode": "wal",
+        "revision": 1515,
+        "maxTx": 1515,
+        "problems": []
+      },
+      "filesBeforeOpen": [
+        "backup.db"
+      ],
+      "filesAfterReadOnlyOpen": [
+        "backup.db",
+        "backup.db-shm",
+        "backup.db-wal"
+      ]
+    },
+    {
+      "variant": "同一连接，备份期间本进程每 1 ms 写一个事务，rate 50",
+      "expect": "complete",
+      "summary": {
+        "mode": "same",
+        "rate": 50,
+        "progressCalls": 164,
+        "writesDuringBackup": 52,
+        "pages": 8219,
+        "ms": 62,
+        "error": null,
+        "startedAt": 1793888655989,
+        "endedAt": 1793888656051
+      },
+      "writesDuring": 52,
+      "timedOut": false,
+      "check": {
+        "integrity": [
+          "ok"
+        ],
+        "journalMode": "wal",
+        "revision": 61,
+        "maxTx": 61,
+        "problems": []
+      },
+      "filesBeforeOpen": [
+        "backup.db"
+      ],
+      "filesAfterReadOnlyOpen": [
+        "backup.db",
+        "backup.db-shm",
+        "backup.db-wal"
+      ]
+    }
+  ]
+}

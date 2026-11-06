@@ -1,0 +1,103 @@
+{
+  "processes": [
+    {
+      "pid": 14683,
+      "exit": {
+        "code": 143,
+        "signal": null
+      }
+    },
+    {
+      "pid": 14689,
+      "exit": {
+        "code": 143,
+        "signal": null
+      }
+    },
+    {
+      "pid": 14708,
+      "exit": {
+        "code": null,
+        "signal": "SIGKILL"
+      }
+    },
+    {
+      "pid": 14716,
+      "exit": {
+        "code": 143,
+        "signal": null
+      }
+    },
+    {
+      "pid": 14721,
+      "exit": {
+        "code": 143,
+        "signal": null
+      }
+    },
+    {
+      "pid": 14725,
+      "exit": {
+        "code": 143,
+        "signal": null
+      }
+    },
+    {
+      "pid": 14731,
+      "exit": {
+        "code": 143,
+        "signal": null
+      }
+    },
+    {
+      "pid": 14737,
+      "exit": {
+        "code": 143,
+        "signal": null
+      }
+    },
+    {
+      "pid": 14740,
+      "exit": {
+        "code": 143,
+        "signal": null
+      }
+    },
+    {
+      "pid": 14742,
+      "exit": {
+        "code": 143,
+        "signal": null
+      }
+    },
+    {
+      "pid": 14760,
+      "exit": {
+        "code": 143,
+        "signal": null
+      }
+    },
+    {
+      "pid": 14773,
+      "exit": {
+        "code": 143,
+        "signal": null
+      }
+    },
+    {
+      "pid": 14775,
+      "exit": {
+        "code": 143,
+        "signal": null
+      }
+    },
+    {
+      "pid": 14788,
+      "exit": {
+        "code": 143,
+        "signal": null
+      }
+    }
+  ],
+  "alive": []
+}
