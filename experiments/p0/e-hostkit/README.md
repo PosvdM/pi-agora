@@ -47,5 +47,6 @@ P0_RECORD=1 node --test experiments/p0/e-hostkit/hostkit.test.mjs
 | `worker.mjs` | 锁竞争者、命令后代和带真实 pi RPC 子进程的 daemon。 |
 | `hostkit.test.mjs` | 自动实验、故障注入、断言和观察日志。 |
 | `test-cleanup.mjs` | 测试专用的现场清理、tracker 的 `finally` 管理、daemon 清理日志和证据写入开关。 |
+| `manual-terminal-close/` | 在真实图形终端里关窗口、检查 daemon 存活的手动测试工具，见其 [README](manual-terminal-close/README.md)。 |
 
 `ProcessTracker.stop()` 的默认等待值与设计一致：abort 10 秒、stdin 宽限 5 秒、TERM 宽限 3 秒。实验明确传入 200/150/150 毫秒缩短等待；运行期快照仍为设计的 5 秒。原型对崩溃后无法取得的 RPC 和 stdin 记录失败，再继续信号阶段。
