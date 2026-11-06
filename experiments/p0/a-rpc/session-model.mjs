@@ -1,7 +1,16 @@
 import { randomUUID } from 'node:crypto';
 
 const copy = value => structuredClone(value);
-const key = message => JSON.stringify(message);
+// custom_message has entry metadata instead of message.timestamp; match its stored payload.
+const key = message => message.role === 'custom'
+  ? JSON.stringify(['custom_message', message.customType, message.content ?? [], message.display, message.details ?? null])
+  : JSON.stringify(['message', message]);
+
+function entryKey(entry) {
+  if (entry.type === 'message') return key(entry.message);
+  if (entry.type === 'custom_message') return key({ role: 'custom', ...entry });
+  return undefined;
+}
 export function emptyState() { return { entries: [], leafId: null, inFlight: { active: null, completed: [] } }; }
 
 export function reduce(state, event) {
@@ -9,7 +18,7 @@ export function reduce(state, event) {
     const ids = new Set(state.entries.map(e => e.id));
     for (const entry of event.entries) if (!ids.has(entry.id)) { state.entries.push(copy(entry)); ids.add(entry.id); }
     state.leafId = event.leafId;
-    const persisted = new Set(state.entries.filter(e => e.type === 'message').map(e => key(e.message)));
+    const persisted = new Set(state.entries.map(entryKey).filter(k => k !== undefined));
     state.inFlight.completed = state.inFlight.completed.filter(m => !persisted.has(key(m)));
   }
   if (event.type === 'message_start' && event.message.role === 'assistant') state.inFlight.active = copy(event.message);
@@ -29,7 +38,7 @@ export function reduce(state, event) {
     if (delta.type === 'thinking_end') active.content[index] = { type: 'thinking', thinking: delta.content };
   }
   if (event.type === 'message_end') {
-    const persisted = state.entries.some(e => e.type === 'message' && key(e.message) === key(event.message));
+    const persisted = state.entries.some(e => entryKey(e) === key(event.message));
     if (!persisted) state.inFlight.completed.push(copy(event.message));
     if (event.message.role === 'assistant') state.inFlight.active = null;
   }

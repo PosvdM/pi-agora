@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { writeFile } from 'node:fs/promises';
+import { recordEvidence } from './record.mjs';
 import { join } from 'node:path';
 import { createExperiment } from './experiment.mjs';
 
@@ -17,7 +17,7 @@ test('A9 automatic retry emits an intermediate agent_end before final agent_sett
     assert.equal(events.find(r => r.type === 'agent_end').willRetry, true);
     assert.equal(events.at(-1).type, 'agent_settled');
     t.diagnostic('retry: ' + JSON.stringify(events));
-    await writeFile(new URL('./retry-evidence.json', import.meta.url), JSON.stringify({ events }, null, 2) + '\n');
+    await recordEvidence('retry-evidence.json', { events });
     await e.cleanup();
   } catch (error) { await e.stop(); t.diagnostic('retained: ' + e.root); throw error; }
 });
@@ -40,7 +40,7 @@ test('A10 an uncompacted session restores both users and assistants to the fake 
     assert.match(JSON.stringify(messages), /saved first user/);
     assert.match(JSON.stringify(messages), /saved second user/);
     t.diagnostic('restored roles: ' + messages.map(m => m.role).join(','));
-    await writeFile(new URL('./restore-evidence.json', import.meta.url), JSON.stringify({ messages, fileMatches: (await rpc.command({ type: 'get_state' })).data.sessionFile === file }, null, 2) + '\n');
+    await recordEvidence('restore-evidence.json', { messages, fileMatches: (await rpc.command({ type: 'get_state' })).data.sessionFile === file });
     await e.cleanup();
   } catch (error) { await e.stop(); t.diagnostic('retained: ' + e.root); throw error; }
 });
