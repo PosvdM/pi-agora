@@ -1,6 +1,7 @@
-import { appendFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, writeFileSync, existsSync } from 'node:fs';
+import { join, dirname } from 'node:path';
 import { spawn } from 'node:child_process';
-import { loadNative, identity, piArgs, RpcTransport } from './prototype.mjs';
+import { loadNative, identity, piArgs, RpcTransport, delay } from './prototype.mjs';
 const [mode, addonPath, log, detail] = process.argv.slice(2);
 const native = loadNative(addonPath);
 if (mode === 'lock') {
@@ -12,8 +13,16 @@ if (mode === 'lock') {
   });
   process.send({ ready: true });
 } else if (mode === 'daemon') {
+  const oracle = join(dirname(detail), 'cleanup-oracle.jsonl');
+  appendFileSync(oracle, `${JSON.stringify(identity(native, process.pid))}\n`);
   const child = spawn(process.execPath, piArgs(), { detached: true, stdio: ['pipe', 'pipe', 'pipe'], env: process.env });
+  appendFileSync(oracle, `${JSON.stringify(identity(native, child.pid))}\n`);
   const rpc = new RpcTransport(child);
+  // A test-only barrier keeps daemon.json absent while both processes already exist.
+  if (process.env.E_DAEMON_READY_GATE) {
+    writeFileSync(`${process.env.E_DAEMON_READY_GATE}.waiting`, 'ready');
+    while (!existsSync(process.env.E_DAEMON_READY_GATE)) await delay(20);
+  }
   const state = await rpc.command({ type: 'get_state' });
   if (!state.success) throw new Error(JSON.stringify(state));
   await rpc.prompt('daemon child fake-provider ready');

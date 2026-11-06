@@ -5,17 +5,26 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, append
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { createExperiment } from '../harness/index.mjs';
-import { here, build, requireLocalDisk, snapshot, identity, isSameProcess, signalIdentity, ProcessTracker, BoundedDecoder, RpcTransport, piInstall, fixtureEnv, piArgs, spawnPi, sessionPaths, canonicalPath, comparisonKey, isWithin, checkPrivate, ensurePrivateDir, writePrivateFile, until, delay } from './prototype.mjs';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { FixtureCleanup, createSafeFixture, withCleanup, withTracker, writeEvidence, daemonExtensionSource } from './test-cleanup.mjs';
+import { here, build, requireLocalDisk, snapshot, identity, isSameProcess, signalIdentity, BoundedDecoder, RpcTransport, piInstall, fixtureEnv, piArgs, spawnPi, sessionPaths, canonicalPath, comparisonKey, isWithin, checkPrivate, ensurePrivateDir, writePrivateFile, until, delay } from './prototype.mjs';
 
 const mac = process.platform === 'darwin';
 const root = mkdtempSync(join(tmpdir(), 'e-hostkit-'));
 const observations = [];
 const owned = new Map();
-let built;
+const contexts = new AsyncLocalStorage();
+const fixtures = [];
+let built, failed = false;
 function note(name, value) { observations.push({ name, ...value }); appendFileSync(join(root, 'observations.jsonl'), JSON.stringify({ name, ...value }) + '\n'); console.log('OBS', name, JSON.stringify(value)); }
 function remember(id) { owned.set(`${id.pid}:${id.startTime}`, id); return id; }
-function trackChild(child) { const id = remember(identity(built.native, child.pid)); child.on('error', () => {}); return id; }
+function trackChild(child) {
+  child.on('error', () => {});
+  const context = contexts.getStore();
+  const id = context.emergency.remember(identity(built.native, child.pid));
+  context.fixture?.emergency.remember(id);
+  return id;
+}
 function messages(child) { const list = []; child.on('message', m => list.push(m)); return state => until(() => list.find(m => m.state === state || m[state] === true)); }
 function jsonFile(file) { return existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : undefined; }
 function jsonLines(file) { return existsSync(file) ? readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse) : []; }
@@ -23,7 +32,9 @@ const quote = s => `'${s.replaceAll("'", "'\\''")}'`;
 const textReply = { segments: [{ type: 'text', text: 'fake-only' }] };
 const fastStop = { abortTimeoutMs: 200, graceMs: 150, termGraceMs: 150 };
 async function fixture(script = { fallback: textReply }) {
-  const e = await createExperiment({ script });
+  const context = contexts.getStore();
+  const e = await createSafeFixture(context.t, built.native, { script }, remember);
+  fixtures.push(e); context.fixtures.push(e); context.fixture = e;
   appendFileSync(join(root, 'fixtures.txt'), `${e.root}\n`);
   return e;
 }
@@ -32,9 +43,10 @@ async function start(e, args = [], env = {}) {
   await rpc.command({ type: 'get_state' }); return rpc;
 }
 async function finish(rpc) {
-  const tracker = new ProcessTracker(built.native, identity(built.native, rpc.child.pid)); tracker.capture();
-  for (const p of tracker.records.values()) remember(p);
-  const result = await tracker.stop(rpc, fastStop); assert.equal(result.leftovers.length, 0); return result;
+  return withTracker(contexts.getStore().fixture, built.native, identity(built.native, rpc.child.pid), async tracker => {
+    tracker.capture();
+    const result = await tracker.stop(rpc, fastStop); assert.equal(result.leftovers.length, 0); return result;
+  });
 }
 before(() => {
   console.log('E_HOSTKIT_FIXTURE', root);
@@ -42,17 +54,32 @@ before(() => {
 });
 after(async () => {
   if (!mac || !built) return;
+  const recovery = await Promise.allSettled(fixtures.map(e => e.emergency.run()));
+  const recoveryErrors = recovery.filter(r => r.status === 'rejected').map(r => String(r.reason));
   const beforeCleanup = [...owned.values()].filter(id => isSameProcess(built.native, id) === 'alive');
   for (const id of beforeCleanup) signalIdentity(built.native, id, 'SIGKILL');
   await delay(300);
   const leftovers = [...owned.values()].filter(id => isSameProcess(built.native, id) === 'alive');
   const zombies = snapshot(built.native).filter(p => p.status === 5 && owned.has(`${p.pid}:${p.startTime}`));
   writeFileSync(join(root, 'owned-identities.json'), JSON.stringify([...owned.values()], null, 2));
-  note('cleanup', { recorded: owned.size, beforeCleanup: beforeCleanup.map(p => p.pid), leftovers, zombies });
+  note('cleanup', { recorded: owned.size, beforeCleanup: beforeCleanup.map(p => p.pid), leftovers, zombies, recoveryErrors });
+  writeEvidence(root, join(here, 'evidence.jsonl'), observations, process.env.P0_RECORD === '1' && !failed && !leftovers.length && !zombies.length && !recoveryErrors.length);
   assert.equal(leftovers.length, 0);
+  assert.equal(zombies.length, 0);
+  assert.deepEqual(recoveryErrors, []);
 });
 
-const mt = (name, fn) => test(name, { skip: !mac }, fn);
+const mt = (name, fn) => test(name, { skip: !mac }, async t => {
+  // Even cases without a pi fixture own a cleanup scope before spawning anything.
+  const emergency = new FixtureCleanup(built.native, mkdtempSync(join(root, 'case-')), remember);
+  fixtures.push({ emergency });
+  t.after(() => emergency.run());
+  return contexts.run({ t, emergency, fixtures: [] }, async () => {
+    try {
+      return await withCleanup(() => [...contexts.getStore().fixtures.map(e => e.emergency), emergency], () => fn(t));
+    } catch (error) { failed = true; throw error; }
+  });
+});
 mt('native: helper and N-API identity, snapshot, invalid paths, local filesystem', async () => {
   const id = identity(built.native, process.pid);
   const helperId = JSON.parse(execFileSync(built.helper, ['identity', String(process.pid)]));
@@ -139,27 +166,91 @@ for (const scenario of ['independent', 'nohup', 'parent-exit', 'pi-SIGKILL', 'es
     if (scenario === 'parent-exit') command = `nohup ${worker} >/dev/null 2>&1 & while [ ! -f ${quote(release)} ]; do sleep 0.05; done; exit 0`;
     if (scenario === 'escape-between-snapshots') command = `while [ ! -f ${quote(trigger)} ]; do sleep 0.05; done; ${quote(built.helper)} escape ${quote(oracle)} ${quote(release)}; sleep 1000`;
     await e.setScript({ turns: [{ segments: [{ type: 'toolCall', name: 'bash', arguments: { command } }] }], fallback: textReply });
-    const rpc = await start(e, ['--tools', 'bash']); const rootId = identity(built.native, rpc.child.pid); const tracker = new ProcessTracker(built.native, rootId); tracker.start();
-    await rpc.command({ type: 'prompt', message: 'run fixture command' });
-    await until(() => rpc.events.find(x => x.type === 'tool_execution_start'));
-    if (scenario !== 'escape-between-snapshots') await until(() => jsonLines(oracle).length);
-    await delay(5150);
-    if (scenario === 'parent-exit') { writeFileSync(release, 'go'); await until(() => rpc.events.find(x => x.type === 'tool_execution_end')); }
-    if (scenario === 'escape-between-snapshots') { writeFileSync(trigger, 'go'); await until(() => jsonLines(oracle).length); }
-    const oracleIds = jsonLines(oracle); oracleIds.forEach(remember);
-    assert.ok(oracleIds.every(p => p.pgid !== rootId.pgid));
-    for (const p of tracker.records.values()) remember(p);
-    if (scenario === 'pi-SIGKILL' || scenario === 'escape-between-snapshots') { signalIdentity(built.native, rootId, 'SIGKILL'); await rpc.exit; }
-    const report = await tracker.stop(rpc.exited ? undefined : rpc, fastStop);
-    const actual = oracleIds.filter(id => isSameProcess(built.native, id) === 'alive');
-    note(`process-${scenario}`, { round, fixture: e.root, snapshotMs: 5000, recorded: tracker.records.size, reportLeftovers: report.leftovers.length, oracleLeftovers: actual.map(x => x.pid), steps: report.steps });
-    if (['escape-between-snapshots', 'nohup-before-first-snapshot'].includes(scenario)) assert.equal(actual.length, 1, 'Fault injection must demonstrate the snapshot blind window');
-    else assert.equal(actual.length, 0);
-    assert.equal(report.leftovers.length, 0);
-    // Keep the fixture and record the observation before cleaning only oracle-owned survivors.
-    for (const id of actual) signalIdentity(built.native, id, 'SIGKILL');
-    await until(() => oracleIds.every(id => isSameProcess(built.native, id) === 'gone'));
+    const rpc = await start(e, ['--tools', 'bash']); const rootId = identity(built.native, rpc.child.pid);
+    await withTracker(e, built.native, rootId, async tracker => {
+      tracker.start();
+      await rpc.command({ type: 'prompt', message: 'run fixture command' });
+      await until(() => rpc.events.find(x => x.type === 'tool_execution_start'));
+      if (scenario !== 'escape-between-snapshots') await until(() => jsonLines(oracle).length);
+      await delay(5150);
+      if (scenario === 'parent-exit') { writeFileSync(release, 'go'); await until(() => rpc.events.find(x => x.type === 'tool_execution_end')); }
+      if (scenario === 'escape-between-snapshots') { writeFileSync(trigger, 'go'); await until(() => jsonLines(oracle).length); }
+      const oracleIds = jsonLines(oracle); oracleIds.forEach(id => e.emergency.remember(id));
+      assert.ok(oracleIds.every(p => p.pgid !== rootId.pgid));
+      for (const p of tracker.records.values()) remember(p);
+      if (scenario === 'pi-SIGKILL' || scenario === 'escape-between-snapshots') { signalIdentity(built.native, rootId, 'SIGKILL'); await rpc.exit; }
+      const report = await tracker.stop(rpc.exited ? undefined : rpc, fastStop);
+      const actual = oracleIds.filter(id => isSameProcess(built.native, id) === 'alive');
+      note(`process-${scenario}`, { round, fixture: e.root, snapshotMs: 5000, recorded: tracker.records.size, reportLeftovers: report.leftovers.length, oracleLeftovers: actual.map(x => x.pid), steps: report.steps });
+      if (['escape-between-snapshots', 'nohup-before-first-snapshot'].includes(scenario)) assert.equal(actual.length, 1, 'Fault injection must demonstrate the snapshot blind window');
+      else assert.equal(actual.length, 0);
+      assert.equal(report.leftovers.length, 0);
+      // Keep the fixture and record the observation before cleaning only oracle-owned survivors.
+      for (const id of actual) signalIdentity(built.native, id, 'SIGKILL');
+      await until(() => oracleIds.every(id => isSameProcess(built.native, id) === 'gone'));
+    });
   }
+});
+
+for (const scenario of ['nohup', 'native-escape']) mt(`cleanup failure: ${scenario} throws before oracle registration`, async () => {
+  const e = await fixture(); const oracle = join(e.root, 'oracle.jsonl');
+  const command = scenario === 'nohup'
+    ? `nohup ${quote(process.execPath)} ${quote(join(here, 'worker.mjs'))} stubborn ${quote(built.addonPath)} ${quote(oracle)} >/dev/null 2>&1 & exit 0`
+    : `${quote(built.helper)} escape ${quote(oracle)} ${quote(join(e.root, 'release'))}`;
+  await e.setScript({ turns: [{ segments: [{ type: 'toolCall', name: 'bash', arguments: { command } }] }], fallback: textReply });
+  let rootId, tracker, timer, identitiesBefore;
+  const injected = new Error('Injected failure before oracle registration');
+  await assert.rejects(withCleanup(() => [e.emergency], async () => {
+    const rpc = await start(e, ['--tools', 'bash']); rootId = identity(built.native, rpc.child.pid);
+    await withTracker(e, built.native, rootId, async measured => {
+      tracker = measured; tracker.start(); timer = tracker.timer;
+      await rpc.command({ type: 'prompt', message: 'run cleanup fault' });
+      await until(() => existsSync(oracle) && statSync(oracle).size > 0);
+      await until(() => rpc.events.some(event => event.type === 'tool_execution_end'));
+      // No oracle identities have been read or registered by the test at this point.
+      identitiesBefore = new Set(e.emergency.identities.keys());
+      throw injected;
+    });
+  }), error => error === injected);
+  const ids = jsonLines(oracle);
+  assert.equal(ids.length, 1);
+  assert.notEqual(ids[0].pgid, rootId.pgid);
+  assert.ok(ids.every(id => !identitiesBefore.has(`${id.pid}:${id.startTime}`)));
+  assert.ok(ids.every(id => !tracker.records.has(`${id.pid}:${id.startTime}`)));
+  assert.equal(timer._destroyed, true);
+  const report = await e.emergency.run();
+  assert.ok(ids.every(id => e.emergency.identities.has(`${id.pid}:${id.startTime}`)));
+  assert.deepEqual(report.remaining, []);
+  assert.ok(ids.every(id => isSameProcess(built.native, id) === 'gone'));
+  note('cleanup-before-oracle', { scenario, fixture: e.root, injectedBeforeRegistration: true, independentGroup: true, trackerPaused: true, oracleIdentities: ids.length, remaining: report.remaining });
+});
+
+mt('cleanup failure: daemon throws before daemon.json and oracle registration', async () => {
+  const e = await fixture(); const info = join(e.root, 'daemon.json'); const oracle = join(e.root, 'cleanup-oracle.jsonl');
+  const gate = join(e.root, 'daemon-ready');
+  const ext = await e.write('daemon.ts', daemonExtensionSource({ addonPath: built.addonPath, worker: join(here, 'worker.mjs'), log: join(e.root, 'heartbeat'), info, oracle }));
+  let rootId, identitiesBefore;
+  const injected = new Error('Injected failure before daemon ready');
+  await assert.rejects(withCleanup(() => [e.emergency], async () => {
+    const child = spawn(built.helper, ['pty', process.execPath, ...piArgs(['-e', ext])], { cwd: e.cwd, env: fixtureEnv(e, { E_DAEMON_READY_GATE: gate }), stdio: ['pipe', 'pipe', 'pipe'] });
+    rootId = trackChild(child);
+    child.stdout.resume(); child.stderr.resume();
+    // The worker creates this marker only after journaling itself and its pi child.
+    await until(() => existsSync(`${gate}.waiting`));
+    assert.equal(existsSync(info), false);
+    identitiesBefore = new Set(e.emergency.identities.keys());
+    throw injected;
+  }), error => error === injected);
+  const ids = [...new Map(jsonLines(oracle).map(id => [`${id.pid}:${id.startTime}`, id])).values()];
+  assert.equal(ids.length, 2);
+  assert.ok(ids.every(id => !identitiesBefore.has(`${id.pid}:${id.startTime}`)));
+  assert.ok(ids.every(id => id.pgid !== rootId.pgid));
+  assert.equal(existsSync(info), false);
+  const report = await e.emergency.run();
+  assert.ok(ids.every(id => e.emergency.identities.has(`${id.pid}:${id.startTime}`)));
+  assert.deepEqual(report.remaining, []);
+  assert.ok(ids.every(id => isSameProcess(built.native, id) === 'gone'));
+  note('cleanup-before-daemon-ready', { fixture: e.root, injectedBeforeRegistration: true, daemonInfoAbsent: true, independentGroup: true, oracleIdentities: ids.length, remaining: report.remaining });
 });
 
 mt('process: unresponsive abort times out, then stdin/TERM/KILL sequence completes', async () => {
@@ -255,12 +346,12 @@ mt('spawn gate: persisted identity survives exec; pipe EOF prevents execution', 
 mt('daemon: pi extension in a real PTY launches detached daemon; HUP and master close (3 rounds)', async () => {
   for (let round = 1; round <= 3; round++) {
     const e = await fixture(); const info = join(e.root, 'daemon.json'); const heartbeat = join(e.root, 'heartbeat');
-    const ext = await e.write('daemon.ts', `import {spawn} from 'node:child_process'; export default function(pi){pi.on('session_start',()=>{const d=spawn(process.execPath,${JSON.stringify([join(here, 'worker.mjs'), 'daemon', built.addonPath, heartbeat, info])},{detached:true,windowsHide:true,stdio:'ignore',env:process.env});d.unref();});}`);
+    const ext = await e.write('daemon.ts', daemonExtensionSource({ addonPath: built.addonPath, worker: join(here, 'worker.mjs'), log: heartbeat, info, oracle: join(e.root, 'cleanup-oracle.jsonl') }));
     const child = spawn(built.helper, ['pty', process.execPath, ...piArgs(['-e', ext])], { cwd: e.cwd, env: fixtureEnv(e), stdio: ['pipe', 'pipe', 'pipe'] }); const supervisor = trackChild(child);
     let out = ''; child.stdout.on('data', c => out += c);
     const terminalPid = await until(() => { try { return JSON.parse(out.split('\n')[0]).terminalPid; } catch {} });
-    const terminal = remember(identity(built.native, terminalPid));
-    const data = await until(() => jsonFile(info)); remember(data.daemon); remember(data.child);
+    const terminal = e.emergency.remember(identity(built.native, terminalPid));
+    const data = await until(() => jsonFile(info)); e.emergency.remember(data.daemon); e.emergency.remember(data.child);
     assert.notEqual(data.daemon.pgid, terminal.pgid);
     await until(() => existsSync(heartbeat)); const size = statSync(heartbeat).size;
     if (round % 2) signalIdentity(built.native, terminal, 'SIGHUP');
