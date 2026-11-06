@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createExperiment, readJsonl, guardStop } from './safe-harness.mjs';
-import { hardenedGit, gitEnv } from './git-policy.mjs';
+import { hardenedGit, gitEnv, gitExecutable } from './git-policy.mjs';
 import { canonicalPath } from './path-policy.mjs';
 const exec = promisify(execFile);
 const here = dirname(fileURLToPath(import.meta.url));
@@ -75,7 +75,7 @@ async function fixture(t, { fault, profile = 'explore', tools, args = [], settin
     await writeFile(join(e.agentDir, 'mcp.json'), JSON.stringify({ mcpServers }));
   }
   e.startManaged = async (extraArgs = []) => {
-    e.rpc = await e.start({ args: ['-e', join(here, 'managed-extension.ts'), '--tools', selected, ...(projectTrust === 'saved' ? [] : ['--no-approve']), ...args, ...extraArgs], env: { C_TOOLS_CONTROL: e.root, AGORA_LAUNCH_TICKET: 'p0-ticket', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(e.root, 'empty.gitconfig') } });
+    e.rpc = await e.start({ args: ['-e', join(here, 'managed-extension.ts'), '--tools', selected, ...(projectTrust === 'saved' ? [] : ['--no-approve']), ...args, ...extraArgs], env: { C_TOOLS_CONTROL: e.root, P0_GIT: gitExecutable, AGORA_LAUNCH_TICKET: 'p0-ticket', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(e.root, 'empty.gitconfig') } });
     return e.rpc;
   };
   e.approve = async () => {
@@ -353,8 +353,8 @@ test('#5 deterministic TOCTOU between guard and pi read', async t => {
 
 async function setupGit(e) {
   await writeFile(join(e.root, 'empty.gitconfig'), '');
-  const env = { PATH: process.env.PATH, HOME: e.home, GIT_CONFIG_GLOBAL: join(e.root, 'empty.gitconfig'), GIT_CONFIG_NOSYSTEM: '1', GIT_AUTHOR_NAME: 'P0', GIT_AUTHOR_EMAIL: 'p0@example.invalid', GIT_COMMITTER_NAME: 'P0', GIT_COMMITTER_EMAIL: 'p0@example.invalid', LC_ALL: 'C' };
-  const git = async (...args) => (await exec('git', args, { cwd: e.cwd, env })).stdout;
+  const env = { PATH: process.env.PATH, HOME: e.home, GIT_CONFIG_GLOBAL: join(e.root, 'empty.gitconfig'), GIT_CONFIG_NOSYSTEM: '1', GIT_AUTHOR_NAME: 'P0', GIT_AUTHOR_EMAIL: 'p0@example.invalid', GIT_COMMITTER_NAME: 'P0', GIT_COMMITTER_EMAIL: 'p0@example.invalid', LC_ALL: 'C', GIT_TRACE2_EVENT: join(e.root, 'git-trace.jsonl') };
+  const git = async (...args) => (await exec(gitExecutable, args, { cwd: e.cwd, env })).stdout;
   await git('init', '-q');
   await e.write('tracked.txt', 'version one\n');
   await e.write('.gitattributes', '*.txt diff=evil filter=evil\n');
@@ -386,7 +386,9 @@ async function setupGit(e) {
 test('#19 hostile git config, fixed argv, real provider invocation, rejects', async t => {
   const e = await fixture(t, { profile: 'review' });
   const { env, git, marker, shell, gpg } = await setupGit(e);
-  logCase({ group: 19, git: (await git('--version')).trim() });
+  await writeFile(env.GIT_TRACE2_EVENT, '');
+  const version = (await git('--version')).trim();
+  logCase({ group: 19, executable: gitExecutable, git: version });
   const inputs = [
     { command: 'status' }, { command: 'diff' }, { command: 'diff', options: ['--cached'] },
     { command: 'diff', revision: 'HEAD~1..HEAD' }, { command: 'log', options: ['-p', '-n', '2'] },
@@ -395,24 +397,28 @@ test('#19 hostile git config, fixed argv, real provider invocation, rejects', as
   for (const input of inputs) {
     const result = await hardenedGit(e.cwd, input, { env });
     assert.equal(existsSync(marker), false);
-    logCase({ group: 19, input, argv: result.argv, stdout: result.stdout.slice(0, 240), markerCount: 0 });
+    assert.match(result.stdout, input.command === 'status' ? /MM tracked\.txt/ : /diff --git/);
+    logCase({ group: 19, input, argv: result.argv, stdout: result.stdout.slice(0, 240), stderr: result.stderr, markerCount: 0 });
   }
   for (const key of ['clean', 'smudge']) {
     await git('config', '--unset', 'filter.evil.process').catch(() => {});
     const result = await hardenedGit(e.cwd, { command: 'diff' }, { env });
     assert.equal(existsSync(marker), false);
-    logCase({ group: 19, variant: key + '-without-process', argv: result.argv, markerCount: 0 });
+    logCase({ group: 19, variant: key + '-without-process', argv: result.argv, stderr: result.stderr, markerCount: 0 });
   }
   await e.startManaged();
   assert.equal((await e.approve()).accepted, true);
   const providerResult = await e.call('agora_git', { command: 'status' });
   assert.equal(providerResult.isError, false);
+  assert.equal(providerResult.result.details.executable, gitExecutable);
+  assert.match(textOf(providerResult.result), /MM tracked\.txt/);
   assert.equal(existsSync(marker), false);
-  logCase({ group: 19, providerTool: 'agora_git', result: textOf(providerResult.result) });
+  logCase({ group: 19, providerTool: 'agora_git', executable: providerResult.result.details.executable, stderr: providerResult.result.details.stderr, result: textOf(providerResult.result) });
   const attacks = ['-c', '--output=owned', '--exec=touch owned', '--git-dir=/tmp', '--work-tree=/tmp', '-C', '--ext-diff', '--textconv', '--show-signature', '--config-env=core.pager=X', '--color=always', '--no-index'];
   for (const option of attacks) {
     const result = await e.call('agora_git', { command: 'diff', options: [option] });
     assert.equal(result.isError, true);
+    assert.match(textOf(result.result), /option not allowed/);
     logCase({ group: 19, rejectedOption: option, result: textOf(result.result) });
   }
   for (const input of [{ command: 'checkout' }, { command: 'show', revision: 'HEAD:tracked.txt' }, { command: 'show', revision: '--help' }, { command: 'diff', paths: ['../outside'] }, { command: 'diff', paths: [':(top)*'] }, { command: 'status', paths: ['protected'] }]) {
@@ -420,6 +426,8 @@ test('#19 hostile git config, fixed argv, real provider invocation, rejects', as
   }
   const stripped = gitEnv({ ...env, GIT_DIR: '/bad', GIT_WORK_TREE: '/bad', GIT_CONFIG_PARAMETERS: 'bad', GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'diff.external', GIT_CONFIG_VALUE_0: 'bad' });
   assert.equal(Object.keys(stripped).some(k => /^(GIT_DIR|GIT_WORK_TREE|GIT_CONFIG_PARAMETERS|GIT_CONFIG_COUNT|GIT_CONFIG_KEY_\d+|GIT_CONFIG_VALUE_\d+)$/.test(k)), false);
+  const trace = await readJsonl(env.GIT_TRACE2_EVENT);
+  logCase({ group: 19, hardenedChildArgv: trace.filter(x => x.event === 'child_start').map(x => x.argv) });
   // Unsafe controls run only marker programs in this temporary repository.
   const neutral = ['--no-pager', '-c', 'core.fsmonitor=false', '-c', 'filter.evil.process=', '-c', 'filter.evil.clean=', '-c', 'filter.evil.smudge=', '-c', 'log.showSignature=false'];
   const noProcess = neutral.filter((value, index) => value !== 'filter.evil.process=' && !(value === '-c' && neutral[index + 1] === 'filter.evil.process='));
@@ -433,18 +441,18 @@ test('#19 hostile git config, fixed argv, real provider invocation, rejects', as
     ['gpg', [...neutral, '-c', 'log.showSignature=true', 'log', '-1']],
   ];
   for (const [kind, argv] of controls) {
-    await exec('git', argv, { cwd: e.cwd, env, timeout: 3000, maxBuffer: 1_048_576 }).catch(error => {
+    await exec(gitExecutable, argv, { cwd: e.cwd, env, timeout: 3000, maxBuffer: 1_048_576 }).catch(error => {
       if (error.killed) throw error;
     });
     assert.ok((await readJsonl(marker)).some(x => x.kind === kind), 'unsafe control must trigger ' + kind);
   }
   // The macOS positive control uses Python's standard-library PTY; hardened RPC calls have no TTY.
   if (process.platform === 'darwin' && existsSync('/usr/bin/python3')) {
-    await exec('/usr/bin/python3', ['-c', 'import os,pty,subprocess,sys; m,s=pty.openpty(); r=subprocess.run(sys.argv[1:],stdin=subprocess.DEVNULL,stdout=s,stderr=s,timeout=2); os.close(s); os.close(m); sys.exit(r.returncode)', 'git', '-c', 'core.fsmonitor=false', '-c', 'log.showSignature=false', '-c', 'core.pager=' + shell('pager'), 'log', '-1'], { cwd: e.cwd, env: { ...env, TERM: 'xterm' }, timeout: 3000 });
+    await exec('/usr/bin/python3', ['-c', 'import os,pty,subprocess,sys; m,s=pty.openpty(); r=subprocess.run(sys.argv[1:],stdin=subprocess.DEVNULL,stdout=s,stderr=s,timeout=2); os.close(s); os.close(m); sys.exit(r.returncode)', gitExecutable, '-c', 'core.fsmonitor=false', '-c', 'log.showSignature=false', '-c', 'core.pager=' + shell('pager'), 'log', '-1'], { cwd: e.cwd, env: { ...env, TERM: 'xterm' }, timeout: 3000 });
     assert.ok((await readJsonl(marker)).some(x => x.kind === 'pager'));
   }
   const positive = await readJsonl(marker);
-  logCase({ group: 19, positiveMarkers: [...new Set(positive.map(x => x.kind))], hardenedMarkers: 0, minimumGitVersionTested: false });
+  logCase({ group: 19, positiveMarkers: [...new Set(positive.map(x => x.kind))], hardenedMarkers: 0, minimumGitVersion: '2.34', minimumGitVersionTested: /^git version 2\.34\./.test(version) });
   e.pass();
 });
 

@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { canonicalPath, isWithin } from './path-policy.mjs';
 const exec = promisify(execFile);
+export const gitExecutable = process.env.P0_GIT || 'git';
 
 export function gitEnv(input = process.env) {
   const env = { ...input, GIT_CONFIG_NOSYSTEM: '1', GIT_PAGER: 'cat', PAGER: 'cat', GIT_EXTERNAL_DIFF: '', GIT_TERMINAL_PROMPT: '0' };
@@ -34,7 +35,7 @@ export async function hardenedGit(cwd, input, { env = process.env, protectedPath
   validate(input);
   const runEnv = gitEnv(env);
   const prefix = ['--no-pager', '--no-optional-locks', '-c', 'core.fsmonitor=false', '-c', 'core.pager=cat', '-c', 'color.ui=never', '-c', 'log.showSignature=false'];
-  const config = await exec('git', ['config', '--get-regexp', '^filter\\.'], { cwd, env: runEnv, timeout: 30_000, maxBuffer: 1_048_576 }).catch(error => {
+  const config = await exec(gitExecutable, ['config', '--get-regexp', '^filter\\.'], { cwd, env: runEnv, timeout: 30_000, maxBuffer: 1_048_576 }).catch(error => {
     if (error.code === 1 && !error.stdout) return { stdout: '' };
     throw error;
   });
@@ -50,6 +51,6 @@ export async function hardenedGit(cwd, input, { env = process.env, protectedPath
   if (command === 'status') flags = ['--porcelain=v1', '--ignore-submodules=all', '--untracked-files=normal'];
   else flags = ['--no-ext-diff', '--no-textconv', '--no-color', ...(['log', 'show'].includes(command) ? ['--no-show-signature'] : []), ...(input.options ?? [])];
   const argv = [...prefix, command, ...flags, ...(input.revision ? [input.revision] : []), '--', ...(input.paths ?? [])];
-  const result = await exec('git', argv, { cwd, env: runEnv, timeout: 30_000, maxBuffer: 1_048_576 });
-  return { argv, stdout: result.stdout, stderr: result.stderr };
+  const result = await exec(gitExecutable, argv, { cwd, env: runEnv, timeout: 30_000, maxBuffer: 1_048_576 });
+  return { executable: gitExecutable, argv, stdout: result.stdout, stderr: result.stderr };
 }
