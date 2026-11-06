@@ -2,7 +2,7 @@
 
 > 状态：设计草案。接口、端点和默认值是草案，P0 验证后冻结。
 
-本文定义 agora daemon 的身份、鉴权、用户确认、设备配对、资源访问控制、审计和剩余风险。进程与存储见 [architecture.md](architecture.md)，平台相关的实现（密钥目录权限、路径规范化）见 [hostkit.md](hostkit.md)，HTTP 端点见 [integration.md](integration.md)。
+本文定义 agora daemon 的身份、鉴权、用户确认、设备配对、资源访问控制、审计和剩余风险。进程与存储见 [architecture.md](architecture.md)，平台相关的实现（密钥目录权限、路径规范化）见 [pi-hostkit 设计文档](https://github.com/PosvdM/pi-hostkit/blob/main/docs/design.md)，HTTP 端点见 [integration.md](integration.md)。
 
 ## 前提与目标
 
@@ -52,7 +52,7 @@ principal 是 daemon 里的行为主体。所有任务、提问、board 条目�
 ## 磁盘凭证与连接 token
 
 ```text
-<AGORA_HOME>/secret/          # 目录仅当前用户可访问，见 hostkit.md“密钥目录权限”
+<AGORA_HOME>/secret/          # 目录仅当前用户可访问，见 pi-hostkit 设计文档“密钥目录权限”
   host.key                    # 32 字节随机数，首次启动生成
   principals/<principalId>.key  # 主会话的恢复凭证
 ```

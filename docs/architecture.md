@@ -7,7 +7,7 @@ pi-agora 是 pi 的协作引擎：一个每用户单实例的后台进程（daem
 本文覆盖组件、进程模型、daemon 生命周期、存储、权限档位、worktree、崩溃与恢复、资源与回收和平台注意事项。其他内容见：
 
 - 安全模型（身份、用户确认、设备配对、访问控制、剩余风险）：[security.md](security.md)
-- 平台相关能力（pi 定位、RPC 传输、进程树终止、锁、路径规范化）：[hostkit.md](hostkit.md)
+- 平台相关能力（pi 定位、RPC 传输、进程树终止、锁、路径规范化）：[pi-hostkit 设计文档](https://github.com/PosvdM/pi-hostkit/blob/main/docs/design.md)
 - 任务（子代理）：[tasks.md](tasks.md)
 - 共享桌面：[board.md](board.md)
 - 会议：[meetings.md](meetings.md)
@@ -16,7 +16,7 @@ pi-agora 是 pi 的协作引擎：一个每用户单实例的后台进程（daem
 
 ## 设计约束
 
-- **基座是 pi**（`@earendil-works/pi-coding-agent` 1.5.x）。不重写 Agent 循环、Provider、上下文压缩。pi 的定位方式和版本检查见 [hostkit.md](hostkit.md#定位-pi)。文档中对 pi 行为的依据以 pi 1.5.0 的文件为准，路径相对于 pi 包目录。
+- **基座是 pi**（`@earendil-works/pi-coding-agent` 1.5.x）。不重写 Agent 循环、Provider、上下文压缩。pi 的定位方式和版本检查见 [pi-hostkit 设计文档的“定位 pi”](https://github.com/PosvdM/pi-hostkit/blob/main/docs/design.md#定位-pi)。文档中对 pi 行为的依据以 pi 1.5.0 的文件为准，路径相对于 pi 包目录。
 - **三个平台同时支持**：Windows、macOS、Linux。与平台相关的部分都放在共享包 pi-hostkit 里。
 - **每个会话一个 `pi --mode rpc` 子进程**。某个会话里的工具卡死或进程崩溃，不影响其他会话和 daemon。
 - **单一驱动**：MVP 只实现 RPC 子进程这一种会话驱动，保留 `SessionDriver` 接口，不同时维护进程内 SDK 驱动。
@@ -49,7 +49,7 @@ pi-agora 是 pi 的协作引擎：一个每用户单实例的后台进程（daem
 | archive adapter | `packages/archive` | 版本化只读存档读取库与用户聊天视图投影，daemon 不运行时也能用，详见 [archive.md](archive.md) |
 | pane 插件 | `packages/pane-plugin` | 运行在 pi-pane 服务端，把 daemon 的数据映射成 pi-pane 的树节点、面板、动作、表单，详见 [integration.md](integration.md) |
 | 协议类型 | `packages/protocol` | daemon HTTP API 的 TypeScript 类型与 JSON schema |
-| 平台能力 | `pi-hostkit`（独立包） | pi 定位、RPC 传输、进程树终止、锁、密钥权限、路径规范化，详见 [hostkit.md](hostkit.md) |
+| 平台能力 | `pi-hostkit`（独立仓库 [PosvdM/pi-hostkit](https://github.com/PosvdM/pi-hostkit)） | pi 定位、RPC 传输、进程树终止、锁、密钥权限、路径规范化，详见 [pi-hostkit 设计文档](https://github.com/PosvdM/pi-hostkit/blob/main/docs/design.md) |
 
 依赖方向：
 
@@ -73,11 +73,11 @@ interface SessionDriver {
 }
 
 interface DriverHandle {
-  readonly identity: ProcessIdentity;                    // pid + 创建时间 + runId + instanceId，见 hostkit.md
+  readonly identity: ProcessIdentity;                    // pid + 创建时间 + runId + instanceId，见 pi-hostkit 设计文档
   send(cmd: RpcCommand, opts?: { timeoutMs?: number }): Promise<RpcResponse>; // pi RPC 命令，见 pi docs/rpc-commands.md
   onEvent(listener: (ev: RpcEvent) => void): () => void; // 会话事件与 extension_ui_request
   respondUi(res: ExtensionUiResponse): void;
-  stop(opts: StopOptions): Promise<StopReport>;           // 进程树终止，见 hostkit.md
+  stop(opts: StopOptions): Promise<StopReport>;           // 进程树终止，见 pi-hostkit 设计文档
 }
 
 interface LaunchSpec {
@@ -92,9 +92,9 @@ interface LaunchSpec {
 }
 ```
 
-MVP 的唯一实现是 `RpcSubprocessDriver`，用 pi-hostkit 的 `spawnManaged` 和 `RpcTransport`（JSONL 只按 LF 切分，不用 `readline`，见 [hostkit.md](hostkit.md#rpc-传输)）。
+MVP 的唯一实现是 `RpcSubprocessDriver`，用 pi-hostkit 的 `spawnManaged` 和 `RpcTransport`（JSONL 只按 LF 切分，不用 `readline`，见 [pi-hostkit 设计文档的“RPC 传输”](https://github.com/PosvdM/pi-hostkit/blob/main/docs/design.md#rpc-传输)）。
 
-拉起前，daemon 先用 pi-hostkit 取得该会话文件的**会话写锁**（[hostkit.md](hostkit.md#会话写锁)），保证 pi-pane 和 daemon 不会同时托管同一个会话文件。取得锁后先按共享记录清理上一个写者（可能是 pi-pane 留下的，见 [hostkit.md](hostkit.md#取得锁之后)），拉起 pi 后立即把它的进程身份写入记录；确认进程树已退出后才释放。
+拉起前，daemon 先用 pi-hostkit 取得该会话文件的**会话写锁**（[pi-hostkit 设计文档的“会话写锁”](https://github.com/PosvdM/pi-hostkit/blob/main/docs/design.md#会话写锁)），保证 pi-pane 和 daemon 不会同时托管同一个会话文件。取得锁后先按共享记录清理上一个写者（可能是 pi-pane 留下的，见[“取得锁之后”](https://github.com/PosvdM/pi-hostkit/blob/main/docs/design.md#取得锁之后)），再用 `spawnWriter` 拉起 pi：pi 停在启动门闩，进程身份写入记录后才加载；确认进程树已退出后才释放锁。
 
 ### 启动参数
 
@@ -115,7 +115,7 @@ node <pi>/dist/bundle/cli.js --mode rpc
 
 - `-ne` 关闭自动发现、配置和内置的扩展，包括内置 MCP 支持；显式 `-e` 仍加载（依据：`docs/cli.md` 的 `-ne` 说明）。所以协作会话默认没有 MCP，不需要 `--no-mcp`。协作会话只加载 agora 扩展，避免把用户的其他扩展带进子会话。
 - `-ns`、`-np` 关闭自动发现的 skill 和提示词模板，协作会话的行为只由任务书决定。
-- **会话文件路径由 daemon 预先分配**：daemon 先取得该路径的会话写锁，再用 `--session <路径>` 拉起。文件不存在时 pi 新建会话并沿用这个路径（依据：`dist/main.js` 的 `resolveSessionPath`、`dist/core/session-manager.js` 的 `_setSessionFile`），所以不用 `--session-id`（它让 pi 自己生成文件名，daemon 无法在 pi 打开文件之前取锁，见 [hostkit.md](hostkit.md#取得锁的时机)）。pi 的会话 id 由 pi 生成，启动后用 RPC `get_state` 读出 `sessionFile` 和 `sessionId` 核对并记入 SQLite（依据：`docs/rpc-commands.md` 的 `get_state`）。
+- **会话文件路径由 daemon 预先分配**：daemon 先取得该路径的会话写锁，再用 `--session <路径>` 拉起。文件不存在时 pi 新建会话并沿用这个路径（依据：`dist/main.js` 的 `resolveSessionPath`、`dist/core/session-manager.js` 的 `_setSessionFile`），所以不用 `--session-id`（它让 pi 自己生成文件名，daemon 无法在 pi 打开文件之前取锁，见 [pi-hostkit 设计文档的“取得锁的时机”](https://github.com/PosvdM/pi-hostkit/blob/main/docs/design.md#取得锁的时机)）。pi 的会话 id 由 pi 生成，启动后用 RPC `get_state` 读出 `sessionFile` 和 `sessionId` 核对并记入 SQLite（依据：`docs/rpc-commands.md` 的 `get_state`）。
 
 #### 项目信任
 
@@ -135,7 +135,7 @@ node <pi>/dist/bundle/cli.js --mode rpc
 
 ### 禁止会话替换
 
-协作会话的会话文件由 daemon 分配并持有写锁，进程内不能切换到别的会话。daemon 不发 RPC `new_session`、`switch_session`、`fork`、`clone`；agora 扩展注册 `session_before_switch` 和 `session_before_fork`，一律返回 `{ cancel: true }`。pi 只要有一个处理器返回取消就取消替换，不再执行后面的处理器（依据：`dist/core/extensions/runner.js:813–825`），所以 implement 档位按白名单加载的其他扩展调用 `newSession`、`fork`、`switchSession` 也会被取消。万一仍出现 `session_shutdown`（`reason` 为 `new`、`resume`、`fork`），daemon 立即停止该 run 并标为中断。规则与 [hostkit.md](hostkit.md#取得锁的时机) 一致。
+协作会话的会话文件由 daemon 分配并持有写锁，进程内不能切换到别的会话。daemon 不发 RPC `new_session`、`switch_session`、`fork`、`clone`；agora 扩展注册 `session_before_switch` 和 `session_before_fork`，一律返回 `{ cancel: true }`。pi 只要有一个处理器返回取消就取消替换，不再执行后面的处理器（依据：`dist/core/extensions/runner.js:813–825`），所以 implement 档位按白名单加载的其他扩展调用 `newSession`、`fork`、`switchSession` 也会被取消。万一仍出现 `session_shutdown`（`reason` 为 `new`、`resume`、`fork`），daemon 立即停止该 run 并标为中断。规则与 [pi-hostkit 设计文档的“取得锁的时机”](https://github.com/PosvdM/pi-hostkit/blob/main/docs/design.md#取得锁的时机) 一致。
 
 ### 扩展 UI 请求
 
@@ -167,7 +167,7 @@ node <pi>/dist/bundle/cli.js --mode rpc
 
 ### 数据目录
 
-默认 `~/.pi/agora/`，可用环境变量 `AGORA_HOME` 覆盖。必须在本地磁盘上（见 [hostkit.md](hostkit.md#支持的平台)）。
+默认 `~/.pi/agora/`，可用环境变量 `AGORA_HOME` 覆盖。必须在本地磁盘上（见 [pi-hostkit 设计文档的“本地磁盘”](https://github.com/PosvdM/pi-hostkit/blob/main/docs/design.md#本地磁盘)）。
 
 ```text
 <AGORA_HOME>/
@@ -181,7 +181,7 @@ node <pi>/dist/bundle/cli.js --mode rpc
   logs/
 ```
 
-`secret/` 目录只允许当前用户访问，由 pi-hostkit 的 `ensurePrivateDir` 设置和检查（见 [hostkit.md](hostkit.md#密钥目录权限)）。
+`secret/` 目录只允许当前用户访问，由 pi-hostkit 的 `ensurePrivateDir` 设置和检查（见 [pi-hostkit 设计文档的“密钥目录权限”](https://github.com/PosvdM/pi-hostkit/blob/main/docs/design.md#密钥目录权限)）。
 
 ### 单实例与启动
 
@@ -281,7 +281,7 @@ node <pi>/dist/bundle/cli.js --mode rpc
 
 ### 路径校验
 
-agora 扩展注册 `tool_call` 钩子（依据：`docs/extensions.md` 的 `tool_call`），对文件类工具的路径参数用 pi-hostkit 的 `canonicalPath` 规范化（与 pi 解析路径的规则一致，再取真实路径，见 [hostkit.md](hostkit.md#路径规范化)）后检查：
+agora 扩展注册 `tool_call` 钩子（依据：`docs/extensions.md` 的 `tool_call`），对文件类工具的路径参数用 pi-hostkit 的 `canonicalPath` 规范化（与 pi 解析路径的规则一致，再取真实路径，见 [pi-hostkit 设计文档的“路径规范化”](https://github.com/PosvdM/pi-hostkit/blob/main/docs/design.md#路径规范化)）后检查：
 
 - **允许根目录**：explore/review 的 `read`、`grep`、`find`、`ls` 的目标必须在允许根目录（会话 cwd 加配置的额外只读根）内。
 - **受保护目录**：所有档位的文件类工具都拒绝受保护目录（`AGORA_HOME/secret` 和配置项 `protectedPaths`）及其下的路径。
@@ -356,7 +356,7 @@ P0 用一个带恶意配置的测试仓库验证：仓库配置了 textconv、`d
 
 ### daemon 崩溃或重启
 
-daemon 被强杀时，Windows 上 Job Object 关闭，受管进程随之终止；macOS 和 Linux 上受管 pi 自成进程组，可能仍在运行（见 [hostkit.md](hostkit.md#场景)）。所以启动时：
+daemon 被强杀时，Windows 上 Job Object 关闭，受管进程随之终止；macOS 和 Linux 上受管 pi 自成进程组，可能仍在运行（见 [pi-hostkit 设计文档的“场景”](https://github.com/PosvdM/pi-hostkit/blob/main/docs/design.md#场景)）。所以启动时：
 
 1. 扫描 `process_runs` 中没有 `exited_at` 的记录，用 pi-hostkit 的 `isSameProcess` 按 pid + 创建时间判断进程是否还在。
 2. 仍在运行的旧进程（属于上一个 `daemon_instance_id`）：新 daemon 不接管它的 RPC 管道（管道已随旧 daemon 断开），用 `stopByIdentity` 停止整棵进程树并确认退出，写诊断。
@@ -383,10 +383,10 @@ daemon 被强杀时，Windows 上 Job Object 关闭，受管进程随之终止�
 
 ## 平台注意事项
 
-进程树终止、锁、密钥权限、路径比较的平台差异都在 pi-hostkit 里处理，见 [hostkit.md](hostkit.md#平台差异汇总)。agora 自己需要注意的：
+进程树终止、锁、密钥权限、路径比较的平台差异都在 pi-hostkit 里处理，见 [pi-hostkit 设计文档的“平台差异汇总”](https://github.com/PosvdM/pi-hostkit/blob/main/docs/design.md#平台差异汇总)。agora 自己需要注意的：
 
 - 启动 pi 用 Node 直接执行 JS 入口，不经 shell；`cwd` 作为 spawn 参数；Windows 上 `windowsHide: true`。
-- **停止后不能留下受管命令进程（MVP 验收项）**。停止顺序和三平台的实现见 [hostkit.md](hostkit.md#进程树终止)；daemon 在调用 `stop` 之前按自己的语义先发 `clear_queue`（见 [tasks.md](tasks.md)）。
+- **停止后不能留下受管命令进程（MVP 验收项）**。停止顺序和三平台的实现见 [pi-hostkit 设计文档的“进程树终止”](https://github.com/PosvdM/pi-hostkit/blob/main/docs/design.md#进程树终止)；daemon 在调用 `stop` 之前按自己的语义先发 `clear_queue`（见 [tasks.md](tasks.md)）。
 - Windows：pi 的 `bash` 工具默认用 Git Bash，按 `shellPath` 设置、`%ProgramFiles%\Git\bin\bash.exe` 等顺序查找（依据：`docs/windows.md`）；可选的 `powershell` 工具只在原生 Windows 上可用。daemon 不改这套逻辑，只保证协作会话继承正确的环境。
 - Windows：被打开的文件不能删除或改名，清理 worktree 前确认相关会话进程已停止。
 - macOS 和 Linux：daemon 被强杀后受管 pi 可能存活，重启时按“daemon 崩溃或重启”处理。

@@ -16,7 +16,7 @@
 | 内容 | 以哪里为准 |
 | --- | --- |
 | pane 协议（`TreeNode`、`TreeChange`、`SessionSnapshot`、`SessionStreamEvent`、`PanelSpec`、`PanelContent`、`ActionSpec`、`ActionTarget`、`ActionInvocation`、`FormSpec`、`PaneNotification`、`RequestOrigin`、`userPresence` 等类型，渲染与同步规则，pane 协议版本） | pi-pane 仓库的 `docs/plugin-api.md` |
-| pi-hostkit（RPC 传输、进程、锁、路径） | 本仓库 [hostkit.md](hostkit.md) |
+| pi-hostkit（RPC 传输、进程、锁、路径） | pi-hostkit 仓库的 [docs/design.md](https://github.com/PosvdM/pi-hostkit/blob/main/docs/design.md) |
 | 安全模型（principal、用户确认、设备配对、访问控制） | 本仓库 [security.md](security.md) |
 | daemon HTTP API、daemon 侧会话视图与变更流、agora → pane 协议的映射、archive adapter | 本文及 pi-agora 的其他文档 |
 
@@ -456,7 +456,7 @@ pane 插件与 pi-pane 服务端在同一进程里运行，pi-pane 对插件调�
 | archive adapter | pi-agora（[archive.md](archive.md)） | `openArchive({ apiVersion })` | 1 |
 | pane 协议 | pi-pane（`docs/plugin-api.md`） | 插件声明 `paneProtocol: [min, max]`，pi-pane 协商 | 1 |
 
-pi-hostkit 按 semver 发布，会话写锁协议的版本见 [hostkit.md](hostkit.md#会话写锁)。
+pi-hostkit 是独立仓库，版本为 0.x，不发布到 npm，使用方以 git 依赖或本地路径安装。会话写锁协议的版本见 [pi-hostkit 设计文档的“外部写者与协议版本”](https://github.com/PosvdM/pi-hostkit/blob/main/docs/design.md#外部写者与协议版本)。
 
 daemon HTTP API：
 
