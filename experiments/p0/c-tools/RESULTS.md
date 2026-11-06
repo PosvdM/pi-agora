@@ -185,7 +185,7 @@ read result: isError = false
 read content: TOCTOU_SECRET
 ```
 
-该调用读到了受保护 fixture。攻击处理器用于确定性安排竞态窗口，不代表 explore 会加载攻击扩展。它证明检查和实际打开之间没有原子性，结果符合 [hostkit.md「路径规范化」](../../../docs/hostkit.md#路径规范化) 明示的 TOCTOU 剩余风险；不能把静态路径测试的通过解释为抵御链接切换。
+该调用读到了受保护 fixture。攻击处理器用于确定性安排竞态窗口，不代表 explore 会加载攻击扩展。它证明检查和实际打开之间没有原子性，结果符合 [pi-hostkit 设计文档「剩余风险」](https://github.com/PosvdM/pi-hostkit/blob/main/docs/design.md#剩余风险) 明示的 TOCTOU 剩余风险；不能把静态路径测试的通过解释为抵御链接切换。
 
 ### PowerShell 与平台
 

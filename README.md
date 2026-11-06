@@ -41,7 +41,7 @@ pi-pane 不认识“子代理”“会议”这些概念。pi-agora 提供一个
 - pane 插件接口（树节点、面板、动作、表单、通知等）以 pi-pane 仓库的 `docs/plugin-api.md` 为准。
 - daemon HTTP API 和 agora 数据到 pane 接口的映射以本仓库的 [docs/integration.md](docs/integration.md) 为准。
 - 只有 `pane-plugin` 依赖 pi-pane 的插件接口包，其余包都不依赖 pi-pane。
-- 两者共用平台相关的小包 `pi-hostkit`（定位 pi、RPC 传输、进程树终止、锁、路径规范化），它的定义在本仓库的 [docs/hostkit.md](docs/hostkit.md)。
+- 两者共用平台相关的包 [pi-hostkit](https://github.com/PosvdM/pi-hostkit)（定位 pi、RPC 传输、进程树终止、锁、路径规范化）。它是独立仓库，权威设计见其 [docs/design.md](https://github.com/PosvdM/pi-hostkit/blob/main/docs/design.md)。
 
 不装 pi-pane 时，pi-agora 的全部功能都可以在 pi 终端和 `agora` CLI 里使用；其中的用户级操作需要已配对的浏览器确认，或按 [docs/security.md](docs/security.md#只用终端) 关闭这项保护。
 
@@ -57,7 +57,7 @@ packages/
   protocol/      协议类型与 schema
 ```
 
-运行环境（计划）：Node.js 24 及以上（使用内置 `node:sqlite`），pi 1.5.x；Windows、macOS、Linux 同时支持。pi 从配置项 `piPath` 或全局 npm 目录查找，见 [docs/hostkit.md](docs/hostkit.md#定位-pi)。
+运行环境（计划）：Node.js 24 及以上（使用内置 `node:sqlite`），pi 1.5.x；Windows、macOS、Linux 同时支持。pi 从配置项 `piPath` 或全局 npm 目录查找，见 [pi-hostkit 的“定位 pi”](https://github.com/PosvdM/pi-hostkit/blob/main/docs/design.md#定位-pi)。
 
 ## 文档
 
@@ -65,7 +65,6 @@ packages/
 | --- | --- |
 | [docs/architecture.md](docs/architecture.md) | 总体架构、进程模型、受管扩展就绪检查、控制队列、daemon 生命周期、存储、权限档位与路径校验、worktree、崩溃与恢复、资源、平台注意事项 |
 | [docs/security.md](docs/security.md) | 安全模型：principal、主 Agent 级与用户级权限、用户确认、设备配对、只用终端、资源级访问控制、审计、剩余风险 |
-| [docs/hostkit.md](docs/hostkit.md) | 共享包 pi-hostkit 的权威定义：定位 pi、RPC 传输、进程树终止、锁、密钥目录权限、路径规范化 |
 | [docs/tasks.md](docs/tasks.md) | 任务（子代理）：工具接口、状态机、返工与送达追踪、可靠通知、提问与转交、召集人离线 |
 | [docs/board.md](docs/board.md) | 共享桌面：数据模型、条目类型、可见性、投递与增量、工具、prompt cache |
 | [docs/meetings.md](docs/meetings.md) | 会议：召集、定方案流程、认可、反对意见、阶段 fencing、僵局、预算、书记与纪要、插话、崩溃 |
