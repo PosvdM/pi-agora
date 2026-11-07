@@ -51,7 +51,7 @@ node packages/cli/dist/main.js show <ID> --home <本地目录>
 node packages/cli/dist/main.js shutdown --timeout 600 --home <本地目录>
 ```
 
-`daemon start` 和主会话扩展会自动启动 daemon。`status`、`ls`、`show`、`shutdown` 只连接已有实例，不为查询启动后台服务。发现信息存在但无法通过 host.key 核验时，客户端拒绝发送客户端证明；单实例锁阻止并行启动两个服务。CLI 输出 JSON，错误返回非零退出码。
+`daemon start` 和主会话扩展会自动启动 daemon。`status`、`ls`、`show`、`shutdown` 只连接已有实例，不为查询启动后台服务。发现信息存在但无法通过 host.key 核验时，客户端拒绝发送客户端证明；单实例锁阻止并行启动两个服务。CLI 输出 JSON，错误返回非零退出码。生产 daemon 和重连测试夹具均使用同目录临时文件加原子改名发布发现记录。客户端对外部非原子写入产生的 JSON 截断最多读取 10 次，间隔 50 毫秒；持续畸形或结构无效时拒绝认证，不发送凭证或另启 daemon。
 
 daemon 的独立入口还接受 `--pi-path <pi 包或入口>` 和 `--extension-path <扩展入口>`：
 
@@ -61,13 +61,13 @@ node packages/daemon/dist/main.js --home <本地目录> --pi-path <pi 包目录>
 
 这条命令在前台运行 daemon。通常使用 CLI 的后台启动方式；程序化测试可调用 `startDaemon` 并注入 `SessionDriver`。生产 HTTP 不接受额外扩展列表，协作会话只加载 agora 扩展。假 provider 和故障钩子仅由测试 driver / fixture 注入。
 
-`shutdown` 默认等已接受的任务 settled，600 秒后仍未完成则报 `drain_timeout`，不自动强制终止。用户需显式执行 `shutdown --force`。停止先发 `clear_queue`，再通过 hostkit abort 并清理进程树；停止或写锁释放无法确认时保留现场。`snapshot_visible` 只保证快照见过的进程，不把空 leftovers 声称为完整进程树已经退出。
+`shutdown` 默认等已接受的任务 settled，600 秒后仍未完成则报 `drain_timeout`，不自动强制终止。用户需显式执行 `shutdown --force`。停止先发 `clear_queue`，再通过 hostkit abort 并清理进程树；停止或写锁释放无法确认时保留现场。所有成功的 stop（含已完成、失败或已停止任务、无 handle 和重复调用）都清除 status_detail 与 stopping 控制标志并重新读取返回，不改写已有终态的结果、业务 revision 或更新时间；stop_incomplete 保留停止中标志。`snapshot_visible` 只保证快照见过的进程，不把空 leftovers 声称为完整进程树已经退出。
 
 ## 关键约束
 
 - **启动与就绪分两层**：hostkit 的 gate 确保会话写者身份写入共享锁记录后才加载 pi。扩展用一次性 ticket 报告就绪；HTTP 响应后 pi 才结束 `session_start` 并开始读取 RPC，daemon 随后再核对 RPC 模型、thinking、会话路径和可用模型。全部通过前不发送任务书，见 [受管扩展的就绪检查](architecture.md#受管扩展的就绪检查)。
-- **停止条件**：stop 在任务控制队列内检查租约和 expectedGeneration / expectedRevision，失败不修改运行标志或回收定时器。所有 `exited_at IS NULL` 的持久化 run 都纳入 stop / shutdown 清理，即使没有内存 handle；安全重试失败时返回 stop_incomplete，保持 daemon 和诊断可用。
-- **停止与恢复**：正常停止和崩溃诊断保留 StopReport、最近 50 条事件、活动工具、stderr 和可能副作用。重启读取没有确认退出的 process_runs；旧写者按进程身份停止并确认退出后才可重新打开会话文件。1a 不开放恢复任务的用户动作，不自动重放运行中的任务。
+- **停止条件**：stop 在任务控制队列内检查租约和 expectedGeneration / expectedRevision，条件检查失败不修改运行标志或回收定时器。所有 `exited_at IS NULL` 的持久化 run 都纳入 stop / shutdown 清理，即使没有内存 handle；安全重试失败时返回 stop_incomplete，保持 daemon 和诊断可用。
+- **停止与恢复**：按身份重试清理成功时清除旧 cleanup_error；若本次诊断文件写入失败，独立保存诊断写入错误，不把它误报为进程仍未退出。正常停止和崩溃诊断保留 StopReport、最近 50 条事件、活动工具、stderr 和可能副作用。重启读取没有确认退出的 process_runs；旧写者按进程身份停止并确认退出后才可重新打开会话文件。1a 不开放恢复任务的用户动作，不自动重放运行中的任务。
 - **通知确认**：内存条目和磁盘上完整、带换行的 JSONL 行必须具有同一 entryId、noticeId 和 dedupeKey，才能确认持久通知。`message_end` 回调、排队中的消息以及未首次落盘的内存会话条目都不是磁盘证据。inbox 每批最多返回 200 条，扩展连续取到空批为止；可见性超时后的重投仍按 dedupeKey 去重。ephemeral 主会话只确认内存送达，不声明可恢复。
 - **幂等**：服务端按 principal 与 Idempotency-Key 记录请求指纹及当前操作状态；同 key 不同参数返回冲突，不启动第二个任务。调用方发生超时时需用原 key 重试，不通过换 key 推断上次没有执行。
 - **迁移**：schema v2 允许同一任务关联多个继承会话，tasks 指向当前会话，每代单独关联所属会话。迁移从 v1 回填代数关联，重建会话表保留数据、显式索引和触发器，提交前检查外键。同一个数据库连接调用 SQLite backup，再以只读连接核对备份完整性；所有 DDL 在事务中执行。备份或迁移失败不继续启动，不复制 WAL 主文件充当一致性备份。
@@ -89,7 +89,7 @@ node packages/daemon/dist/main.js --home <本地目录> --pi-path <pi 包目录>
 | `test/protocol-cli.test.mjs` | 协议版本、客户端地址限制、参数校验与 CLI 帮助 |
 | `test/cli.test.mjs` | 独立 CLI 进程自动启动、单实例复用、status / ls / show 和排空关闭 |
 
-通知故障测试在受控子进程里包装生产扩展调用点，强杀进程而不是用异常代替崩溃。ack 前杀 daemon 的夹具将重连握手挂起，直到旧 pi 退出，避免生产扩展自动启动实例与测试控制的重启争抢锁；生产自动重连路径另有测试。公共事件故障点只声称 pi 内部 listener 已运行，不声称 RPC 对端已收到消息。为缩短测试时间，fixture 把 inbox 可见性设为 150 毫秒，并直接使旧租约过期；生产仍使用 120 秒和 90 秒。无对话的静默通知用例预建仅含 header 和 principal 引用的会话，不预写通知；它验证通知首次落盘边界，不声称进程退出后能恢复尚未落盘的 principal 引用。
+通知故障测试在受控子进程里包装生产扩展调用点，强杀进程而不是用异常代替崩溃。ack 前杀 daemon 的夹具将重连握手挂起，直到旧 pi 退出，避免生产扩展自动启动实例与测试控制的重启争抢锁；生产自动重连路径另有测试。重连夹具通过屏障先固定实例已更换、发现记录尚未发布的窗口，确认首次重连失败后才原子发布；回归等待 15 秒，为生产 5 秒退避及请求延迟留余量，不依赖发布竞争偶然成功。公共事件故障点只声称 pi 内部 listener 已运行，不声称 RPC 对端已收到消息。为缩短测试时间，fixture 把 inbox 可见性设为 150 毫秒，并直接使旧租约过期；生产仍使用 120 秒和 90 秒。无对话的静默通知用例预建仅含 header 和 principal 引用的会话，不预写通知；它验证通知首次落盘边界，不声称进程退出后能恢复尚未落盘的 principal 引用。
 
 CI 的 `.github/workflows/ci.yml` 用 Node 24 安装原生依赖和 pi 1.5.0，执行相同的 `npm test`：Windows 和 macOS 各一次；Linux auto / snapshot 各一次。Linux auto 启动用户 systemd 实例并要求 cgroup 可用，避免静默退回快照模式。每项自动测试都在这四个矩阵组合运行，平台差异由 StopReport 断言区分。
 

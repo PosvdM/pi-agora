@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
 import { randomBytes } from 'node:crypto';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { hmacProof } from '../../packages/protocol/dist/client.js';
 
@@ -79,11 +79,20 @@ export async function extensionWire(root) {
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const port = server.address().port;
-  const discovery = async () => writeFile(join(root, 'run', 'daemon.json'), JSON.stringify({ port, instanceId, pid: process.pid, protocol: { min: 1, max: 1 } }));
+  let publication = 0;
+  const discovery = async () => {
+    const temporary = join(root, 'run', `daemon-${++publication}.tmp`);
+    await writeFile(temporary, JSON.stringify({ port, instanceId, pid: process.pid, protocol: { min: 1, max: 1 } }));
+    await rename(temporary, join(root, 'run', 'daemon.json'));
+  };
   await discovery();
   return { ...state, get invalidProof() { return state.invalidProof; }, set invalidProof(v) { state.invalidProof = v; },
     state, url: `http://127.0.0.1:${port}`, server,
-    async restart() { instanceId = 'instance-two'; tokens.clear(); state.leaseHeld = false; await discovery(); },
+    async restart({ beforePublish } = {}) {
+      instanceId = 'instance-two'; tokens.clear(); state.leaseHeld = false;
+      await beforePublish?.();
+      await discovery();
+    },
     async close() { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); },
   };
 }

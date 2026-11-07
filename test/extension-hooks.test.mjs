@@ -46,8 +46,8 @@ async function setup(t, { managed = false, tools = ['read', 'grep', 'find', 'ls'
     get shutdown() { return shutdown; }, setTools(value) { activeTools = value; }, setThinking(value) { thinking = value; },
   };
 }
-async function until(fn) {
-  const deadline = Date.now() + 5000;
+async function until(fn, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
   while (!fn()) { if (Date.now() >= deadline) throw new Error('测试等待超时'); await delay(20); }
 }
 
@@ -80,8 +80,19 @@ test('主会话初始化幂等，租约绑定并正确分发四个任务动作',
 test('daemon重启后重新发现握手并凭恢复证明认领原principal', async t => {
   const f = await setup(t);
   await f.handlers.get('session_start')({}, f.ctx);
-  await f.wire.restart();
-  await until(() => f.wire.state.reclaimCount === 1);
+  let releasePublish, publicationBlocked = false, probeSeen = false;
+  const gate = new Promise(resolve => { releasePublish = resolve; });
+  f.wire.state.beforeRequest = async call => {
+    if (publicationBlocked && call.path === '/v1/health') probeSeen = true;
+  };
+  const restart = f.wire.restart({ beforePublish: () => { publicationBlocked = true; return gate; } });
+  try {
+    // 确定首次重连读到旧发现记录而健康检查已是新实例，必然需要下一次合法退避重试。
+    await until(() => probeSeen, 10000);
+  } finally { releasePublish(); }
+  await restart;
+  await until(() => f.wire.state.reclaimCount === 1, 15000);
+  assert.ok(f.wire.calls.filter(c => c.path === '/v1/health').length >= 3, '初始化、发布前失败和发布后重试都须执行');
   const result = await f.registered[0].execute('after-restart', { action: 'status', taskId: 'task-one' }, undefined, undefined, f.ctx);
   assert.equal(result.details.taskId, 'task-one');
   assert.equal(f.wire.state.registerCount, 1);
@@ -92,7 +103,7 @@ test('休眠导致租约过期后重新握手认领，不重复注册principal',
   await f.handlers.get('session_start')({}, f.ctx);
   f.wire.state.enforceLease = true;
   f.wire.state.leaseHeld = false;
-  await until(() => f.wire.state.reclaimCount === 1);
+  await until(() => f.wire.state.reclaimCount === 1, 15000);
   assert.equal(f.wire.state.leaseHeld, true);
   assert.equal(f.wire.state.registerCount, 1);
 });

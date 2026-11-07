@@ -1,6 +1,8 @@
-import test from 'node:test';
+import test, { mock } from 'node:test';
+import fsPromises from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import assert from 'node:assert/strict';
-import { access, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { access, mkdtemp, readFile, rm, writeFile, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -16,6 +18,36 @@ async function fixture(t) {
   t.after(async () => { clients.forEach(c => c.close()); await wire.close(); await rm(home, { recursive: true, force: true }); });
   return { home, wire, clients, async connect() { const client = await connectHost({ home, as: 'host:cli', autoStart: false }); clients.push(client); return client; } };
 }
+
+test('发现记录短暂半写时重试完整发布，持续畸形时不发送任何凭证', { timeout: 10000 }, async t => {
+  const f = await fixture(t);
+  const file = join(f.home, 'run', 'daemon.json');
+  const original = await readFile(file, 'utf8');
+  await writeFile(file, '{"port":');
+  let observed;
+  const readStarted = new Promise(resolve => { observed = resolve; });
+  const read = fsPromises.readFile;
+  const spy = mock.method(fsPromises, 'readFile', async (...args) => {
+    const data = await read(...args);
+    if (String(args[0]) === file && data === '{"port":') observed();
+    return data;
+  });
+  syncBuiltinESMExports();
+  const connection = f.connect();
+  void connection.catch(() => {});
+  try {
+    await readStarted;
+    assert.equal(f.wire.calls.length, 0, '半写内容不能触发网络或证明发送');
+    await writeFile(`${file}.next`, original);
+    await rename(`${file}.next`, file);
+    assert.ok((await connection).token);
+  } finally { spy.mock.restore(); syncBuiltinESMExports(); }
+  f.wire.calls.length = 0;
+  await writeFile(file, '{"port":');
+  await assert.rejects(connectHost({ home: f.home, as: 'host:cli' }), /无法读取.*发现信息/);
+  assert.equal(f.wire.calls.length, 0);
+  await assert.rejects(access(join(f.home, 'logs')), '持续畸形不能自动拉起另一daemon');
+});
 
 test('主机双向握手、请求凭证、幂等键与refresh续期', async t => {
   const f = await fixture(t);

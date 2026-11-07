@@ -133,16 +133,21 @@ export function createClient(options: { url: string; token: string; connectionId
 }
 
 interface Discovery { port: number; instanceId: string }
-async function discover(home: string): Promise<Discovery | undefined> {
-  try {
-    const data = JSON.parse(await readFile(join(home, 'run', 'daemon.json'), 'utf8')) as Discovery;
-    if (!record(data) || !Number.isInteger(data.port) || data.port < 1 || data.port > 65535 || !nonempty(data.instanceId)) {
-      throw new Error('agora 后台发现信息无效');
+async function discover(home: string, signal?: AbortSignal): Promise<Discovery | undefined> {
+  // daemon 原子发布；同时容忍外部非原子写入造成的短暂截断，不将畸形内容用于认证。
+  for (let attempt = 0; ; attempt++) {
+    assertActive(signal);
+    try {
+      const data = JSON.parse(await readFile(join(home, 'run', 'daemon.json'), 'utf8')) as Discovery;
+      if (!record(data) || !Number.isInteger(data.port) || data.port < 1 || data.port > 65535 || !nonempty(data.instanceId)) {
+        throw new Error('agora 后台发现信息无效');
+      }
+      return data;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+      if (!(error instanceof SyntaxError) || attempt >= 9) throw new Error('无法读取 agora 后台发现信息');
+      try { await delay(50, undefined, { signal }); } catch { assertActive(signal); throw new Error('无法读取 agora 后台发现信息'); }
     }
-    return data;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
-    throw new Error('无法读取 agora 后台发现信息');
   }
 }
 async function startDaemon(home: string, entry: string, signal?: AbortSignal): Promise<void> {
@@ -172,7 +177,7 @@ export interface ConnectHostOptions {
 export async function connectHost(options: ConnectHostOptions): Promise<AgoraClient> {
   assertActive(options.signal);
   const home = agoraHome(options.home);
-  const existing = await discover(home);
+  const existing = await discover(home, options.signal);
   if (existing) {
     try { return await authenticateHost(home, existing, options); }
     catch (error) { if (!(error instanceof AgoraConnectionError) || options.autoStart === false) throw error; }
@@ -181,7 +186,7 @@ export async function connectHost(options: ConnectHostOptions): Promise<AgoraCli
   await startDaemon(home, entry, options.signal);
   const deadline = Date.now() + (options.startupTimeoutMs ?? 15000);
   while (Date.now() < deadline) {
-    const discovery = await discover(home);
+    const discovery = await discover(home, options.signal);
     if (discovery) {
       try { return await authenticateHost(home, discovery, options, deadline); }
       catch (error) { if (!(error instanceof AgoraConnectionError)) throw error; }
