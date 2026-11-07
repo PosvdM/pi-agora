@@ -46,7 +46,8 @@ principal 是 daemon 里的行为主体。所有任务、提问、board 条目�
 | `agent:main` | 一个主代理会话（终端或 pi-pane 托管），绑定 pi 的 sessionId | 主 Agent 级 |
 | `agent:child` | daemon 拉起的协作会话（kind = task / meeting-seat / secretary） | 子 Agent 级 |
 
-- 召集人（convener）是任务或会议的发起方，只能是 `agent:main` 或 `user`。`host:cli` 和 `host:pane` 创建任务和会议时召集人记为 `user`，同时记录实际发起的 principal；创建本身是主 Agent 级操作，之后对这些资源做的用户级决定仍需确认。
+- 任务的召集人（convener）是直接派出该任务的 `agent:main`、任务 `agent:child` 或 `user`。任务子代理可以成为自己直接下级的召集人；更高层祖先不因任务树关系成为直接召集人。
+- 会议的召集人只能是 `agent:main` 或 `user`。`host:cli` 和 `host:pane` 创建任务和会议时召集人记为 `user`，同时记录实际发起的 principal；创建本身是主 Agent 级操作，之后对这些资源做的用户级决定仍需确认。
 - 任务子代理可以在配置和父子树限制内派下级，不得升级档位或放宽层数 / 下级数；不能召开会议。所有子任务管理在 daemon 按 token 的 principal 和任务树核对，不按 cwd 授权。
 
 ## 磁盘凭证与连接 token
