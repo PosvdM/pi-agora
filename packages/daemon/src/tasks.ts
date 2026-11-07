@@ -270,7 +270,7 @@ export class TaskManager {
         }
       });
       handle.onExit(exit => {
-        runtime.usageClosed = true;
+        if (exit.cleanupConfirmed) runtime.usageClosed = true;
         runtime.rejectReady(new Error("运行在就绪前退出"));
         void this.control(taskId, () => this.exited(runtime, exit)).catch(() => {});
       });
@@ -458,6 +458,7 @@ export class TaskManager {
     if (runtime.idleTimer) clearTimeout(runtime.idleTimer);
     if (runtime.stallTimer) clearInterval(runtime.stallTimer);
     const clean = exit.cleanupConfirmed === true;
+    if (clean) runtime.usageClosed = true;
     this.store.run("UPDATE process_runs SET state=?,exited_at=?,exit_code=?,signal=?,diagnostics_path=?,cleanup_error=? WHERE id=?", clean ? "exited" : "stopping", clean ? now() : null, exit.code, exit.signal, exit.diagnosticsPath ?? null, clean ? null : "运行尚未确认退出", runtime.runId);
     const task = this.store.task(runtime.taskId);
     if (!runtime.stopped && ["created", "running", "waiting_children", "waiting_decision"].includes(task.status)) this.transition(task, runtime.accepted ? "interrupted" : "failed", "协作进程退出，请检查诊断", runtime.runId);

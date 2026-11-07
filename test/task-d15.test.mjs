@@ -28,7 +28,7 @@ class Driver {
     const h = { spec, client, commands: [], identity: { pid: 99000 + this.handles.length, startTime: 'fake', runId: spec.runId, instanceId: spec.instanceId },
       exited: new Promise(resolve => { resolveExit = resolve; }),
       onEvent(fn) { listeners.add(fn); return () => listeners.delete(fn); }, onExit(fn) { exits.add(fn); return () => exits.delete(fn); },
-      emit(event) { for (const fn of listeners) fn(event); }, markReady() { this.ready = true; }, diagnostics() { return {}; }, respondUi() {},
+      emit(event) { for (const fn of listeners) fn(event); }, emitExit(exit) { for (const fn of exits) fn(exit); }, markReady() { this.ready = true; }, diagnostics() { return {}; }, respondUi() {},
       async send(cmd) {
         this.commands.push(cmd);
         if (cmd.type === 'abort') { this.onAbort?.(); this.emit({ type: 'agent_settled', aborted: true }); }
@@ -141,6 +141,15 @@ test('N4 stop 收尾仍记录原代用量，确认退出后拒收，重复请求
   const rows = f.daemon.store.all('SELECT * FROM usage_records WHERE task_id=?', task.taskId);
   assert.equal(rows.length, 1); assert.equal(rows[0].request_id, 'abort-tail'); assert.equal(rows[0].generation, 1);
   assert.equal(rows[0].agora_session_id, task.agoraSessionId); assert.equal(rows[0].run_id, h.spec.runId);
+});
+
+test('N4 清理未确认的退出报告不提前关闭记账', async t => {
+  const f = await setup(t), main = await f.main(), task = await f.spawn(main), h = await f.handle(task);
+  h.emitExit({ identity: h.identity, code: null, signal: null, cleanupConfirmed: false }); await f.daemon.tasks.flush();
+  h.emit(usage('unconfirmed-tail'));
+  assert.equal(f.daemon.store.usage(task.taskId, false, 1).requests, 1);
+  await main.request('POST', `/v1/tasks/${task.taskId}/stop`, {});
+  h.emit(usage('confirmed-late')); assert.equal(f.daemon.store.usage(task.taskId).requests, 1);
 });
 
 test('N4 interrupt abort 收尾归旧代，复用运行的新代不重复、不误记', async t => {
