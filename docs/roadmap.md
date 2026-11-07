@@ -46,7 +46,10 @@ pi-agora 和 pi-pane 的 MVP 按同样的三个切片推进，两仓的 roadmap 
 | 步骤 | 范围 |
 | --- | --- |
 | 1a：最小闭环 | 四包工程和三平台 CI；daemon 单实例、握手、主会话注册与恢复、租约、launch ticket、就绪检查、排空、版本和迁移；RPC driver、会话写锁、并发、诊断、旧进程清理、扩展 UI；explore 的 spawn / status / result / stop；outbox 可靠通知；CLI start / shutdown / status / ls / show |
-| 1b–1d | 其余完整动作与状态机、steer、worktree、三个档位、提问、用户确认、配对、存档与其他 CLI；archive 包在 1d 创建 |
+| 1b：委派与任务状态 | 多层委派、steer、worktree、三个档位、提问与逐级转交；D15 子代理标记、skill 白名单、逐请求用量及任务树汇总、额度暂停和恢复 |
+| 1c：用户确认与预算 | 用户确认、配对、权限封顶；任务树 token 软预算与 `agentLimitCap` 一并设计 |
+| 1d：存档与 CLI | 创建 archive 包，提供存档读取和其他 CLI；CLI 展示用量和上下文大小 |
+| 1d 之后 | 上下文超过阈值时通知上级；返工时可选新会话附摘要或先压缩再返工 |
 
 下面列出切片 1 的完整目标，不表示这些内容均已实现。
 
@@ -62,7 +65,7 @@ pi-agora 和 pi-pane 的 MVP 按同样的三个切片推进，两仓的 roadmap 
 ### 切片 2：pane 插件
 
 - daemon：变更流 `/v1/changes`、按父节点分页的会话列表。
-- pane 插件：按需加载的树与同步、会话视图（快照、历史、实时流）、任务动作（`resolveForm`、幂等、结果映射）、`composer` 与 `abort`、持久表单（提问、决策、待确认、设备）、`userPresence` 确认与设备配对、安全状态横幅、通知、hold、自定义消息渲染器、离线读取。
+- pane 插件：用量和上下文大小的显示；按需加载的树与同步、会话视图（快照、历史、实时流）、任务动作（`resolveForm`、幂等、结果映射）、`composer` 与 `abort`、持久表单（提问、决策、待确认、设备）、`userPresence` 确认与设备配对、安全状态横幅、通知、hold、自定义消息渲染器、离线读取。
 - 以 pi-pane `docs/plugin-api.md` 的 pane 协议和本仓库 [integration.md](integration.md) 的映射为准，与 pi-pane 的 M3 联调验收。
 
 ### 切片 3：board 与会议
@@ -98,7 +101,9 @@ pi-pane 的估算见其 `docs/roadmap.md`（18–26 人日，P0 后重估）；�
 - 子代理完成的瞬间主会话关闭或切换会话；
 - 返工完成再次通知，重投的通知不重复叫醒；
 - 通知故障注入（P0 第 8 项的各个时间点），以及用户在主会话按停止清掉排队中的通知；
-- 主代理和子代理同时提问；
+- 主代理和子代理同时提问；同项目两个主会话时，孙代理提问只送到直接上级；
+- 子代理标记、空 skill 默认值与名单继承、名单外和项目 skill 拒绝、名单内只读文件授权；
+- 逐请求用量按任务、代和任务树汇总，429 额度暂停、到期通知、父任务续跑不递归恢复下级、可选自动续跑；
 - worktree 里的会话提问（不得因路径被拒）；
 - 工具卡住、忽略 abort、遗留 shell 后代进程；macOS 和 Linux 上 pi 被 SIGKILL 后的孤儿进程；
 - daemon 被强杀：macOS、Linux 上旧 pi 仍在运行时，重启后先按进程身份停止并确认退出，再允许 resume；Windows 上受管进程随 Job 终止；
@@ -141,13 +146,11 @@ pi-pane 的估算见其 `docs/roadmap.md`（18–26 人日，P0 后重估）；�
 - 不自动合并、推送、发版；不自动删除有改动的 worktree。
 - 不承诺有副作用操作的“恰好一次”：通知可去重，外部副作用不自动重放。
 - 不做沙箱：implement 档位的 bash 不保证不越界。
-- 子代理不能再派子代理（MVP）。
 - 不迁移 pi-web-ui 的私有运行状态。
 
 ## 以后可能做
 
 - 按 loopback 连接的对端进程 PID 判断请求是否来自受管会话的进程树，作为额外的审计信息和门槛（见 [security.md](security.md#以后可能做)）。
-- 子代理再派子代理。
 - 会议预算的硬上限：关闭模型服务 SDK 的内部重试并由 daemon 批准每次请求，或经由记账网关转发模型请求（见 [meetings.md](meetings.md#以后可能做)）。
 - P1 调研项：在 pi 里用扩展包住 bash 工具，命令启动时上报进程组以兜住早退后台进程（见 [pi-hostkit 设计文档的“剩余风险”](https://github.com/PosvdM/pi-hostkit/blob/main/docs/design.md#剩余风险)）。
 

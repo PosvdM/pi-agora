@@ -2,7 +2,7 @@
 
 pi-agora 是 [pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) 编码智能体的协作引擎。主代理用它把任务派给子代理、召开多模型会议，所有协作会话的完整对话都会永久保存。
 
-> **当前状态：切片 1b（任务核心）。** 提供 daemon、pi 扩展和 CLI，支持多层子代理、三个权限档位、worktree、返工、提问与逐级转交、恢复和可靠通知。用户设备确认、可选扩展 / MCP 白名单、存档读取、board、会议和 pi-pane 插件属于后续范围；下方“功能”描述完整设计目标。
+> **当前状态：切片 1b（任务核心）。** 提供 daemon、pi 扩展和 CLI，支持多层子代理、三个权限档位、worktree、返工、提问与逐级转交、恢复和可靠通知；提供 skill 白名单、逐请求用量和任务树汇总、额度暂停及到期恢复通知。用户设备确认、可选扩展 / MCP 白名单、存档读取、board、会议和 pi-pane 插件属于后续范围；下方“功能”描述完整设计目标。
 
 ## 使用
 
@@ -22,6 +22,10 @@ pi -e ./packages/extension/dist/index.js
 向主代理提出任务，并要求使用 `agora_task` 的 `spawn`，指定完整模型名（`provider/id`）、权限档位和任务书。动作包括 `spawn`、`list`、`status`、`result`、`steer`、`stop`、`cleanup` 和 `recover`。子代理也能派出下级，默认最多两层（子代理、孙代理），整棵任务树共用并发上限。下级的档位和子树限制不能放宽，只能管理自己直接派出的任务；主代理能查看、停止整棵树，但只能返工直接下级。
 
 `explore` 提供只读文件工具和协作工具，`review` 另有加固的 `agora_git`，`implement` 提供文件修改和 shell 工具。只读档位的文件访问限定在允许根内；所有档位的文件工具都拒绝凭证目录。shell 不承诺路径隔离，这属于工具层权限，不是操作系统沙箱。
+
+派活时使用范围明确的任务书，直接附必要接口和结论，并行前先定接口。子代理默认不加载 skill；可用 `skills: ["skill-name"]` 按名字指定用户全局 skill，名单不能超出上级的名单。项目 skill 不参与自动加载，名单内 skill 对文件工具只读放行。配置和边界见 [docs/security.md](docs/security.md#skill-白名单)。
+
+`agora_task status` 和 `result` 返回单任务与任务树的 token 用量及最近报告的上下文大小。模型服务返回可识别的额度用完错误时，任务进入 `quota_paused`，不算失败、不占推理名额；到服务返回的重置时间后通知直接上级决定续跑或改派。`AGORA_HOME/config.json` 可设 `quotaRecovery: "auto"` 到期自动续跑；恢复父任务不会自动恢复下级。详细规则见 [docs/tasks.md](docs/tasks.md#额度暂停)。
 
 扩展会自动启动后台 daemon。CLI 也可手动启动和查看：
 

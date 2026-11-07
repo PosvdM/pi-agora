@@ -93,6 +93,25 @@ daemon 拉起协作会话时生成一次性 launch ticket，经环境变量 `AGO
 - implement 可能按配置加载白名单扩展和 `builtin:mcp`。agora 扩展排在 `-e` 的第一位，在工厂函数里同步读取并删除该变量。P0 实测证明：首位扩展删除该变量后，后续扩展工厂、MCP 服务器进程和 `bash` 子进程均无法读取 ticket；即使 `builtin:mcp` 排在前面，MCP 进程也是在变量删除后才启动。若排在前面的其他扩展读到 ticket 并抢先兑换，pi 会以退出码 1 退出，被宿主捕获为启动故障而不予重试。此外，为了防止未列入白名单的 MCP 服务器产生后台副作用，agora 会为每个子代理单独生成只包含白名单服务器的 MCP 配置文件。
 - 读到 ticket 的代码最多抢先兑换它：ticket 只能兑换一次，被抢先后 agora 扩展兑换失败，就绪检查不通过，run 被结束（见 [architecture.md](architecture.md#受管扩展的就绪检查)）；抢到的 token 只有该协作会话自己的权限，且随进程退出作废。兑换之后还要完成受管扩展的就绪检查，见 [architecture.md](architecture.md#受管扩展的就绪检查)。
 
+## Skill 白名单
+
+`spawn.skills` 只接受名字，不接受路径。驱动从用户的 `~/.pi/agent/skills` 和用户 `~/.pi/agent/settings.json` 的 `skills` 路径解析 skill；`PI_CODING_AGENT_DIR` 可替换用户 agent 目录。daemon 的 `skillDirectories` 配置为显式目录时，仅在这些目录内查找。项目目录的 `.pi/skills` 和项目 settings 不参与解析。解析失败或名字有歧义时拒绝 spawn，不回退到项目 skill。
+
+未指定 `skills` 时使用 `defaultSkills` 对应档位的默认值，未配置时为空；显式名单覆盖默认值。下级名单只能取上级名单的子集，不能通过默认值扩大。配置示例：
+
+```json
+{
+  "defaultSkills": { "explore": [], "review": [], "implement": ["project-docs"] },
+  "quotaRecovery": "notify"
+}
+```
+
+子进程使用 `-ns` 禁用 skill 自动加载，仅用 `--skill <真实路径>` 加载选中的 skill。任务书包含子代理标记，但不禁用全局或项目 `AGENTS.md`。
+
+名单内 skill 的真实目录作为独立的只读根传给受管扩展：explore/review 可以用 `read`、`grep`、`find`、`ls` 读取该目录，名单外目录没有这项额外授权；所有档位的 `edit`、`write` 都不能修改名单内的 skill 目录。路径规范化、符号链接和受保护目录规则仍然适用，skill 名单不覆盖凭证目录保护。
+
+implement 档位可以用 shell 运行 skill 附带的脚本。shell 不做路径隔离，也不能靠 skill 只读根约束脚本的副作用；名单用于限制自动加载和文件工具授权，不构成操作系统沙箱。若名单外 skill 本身位于原本允许的工作目录，文件工具仍按已有的允许根规则处理；该 skill 不会自动加载。
+
 ## 用户确认
 
 用户级操作必须由已配对浏览器对 daemon 下发的一次性挑战签名，daemon 验签后才执行。pi-pane 服务端只转发，无法伪造签名；pi-pane 的 HTTP 接口没有任何 Agent 可用的凭证（pi-pane 的鉴权见其 `docs/architecture.md`）。

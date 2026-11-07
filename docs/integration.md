@@ -97,6 +97,14 @@ pi-hostkit        ◄── daemon、extension（pi-pane 服务端也依赖它�
 - **后台完成**：用户级操作在待确认被签名、执行之后，daemon 把操作记录更新为最终结果；之后用同一 key 查询得到的就是这个结果。待确认被拒绝或过期时，操作记录的最终结果为失败（`confirmation_cancelled`、`confirmation_expired`）。
 - **pane 插件侧**：把 `ActionInvocation.idempotencyKey` 原样作为该头的值，每次 `invoke` 都把请求转给 daemon，不在插件里缓存中间结果；按 daemon 返回的当前状态映射 `ActionResult`（见“动作”）。`needsInput` 之后的再次提交使用 pi-pane 生成的 `<原 key>/<n>`，是另一次操作。与 pane 协议的约定一致：同一 key 只执行一次，还在处理时返回 `pending`，结束后返回最终结果。
 
+### 任务额度与用量字段
+
+`POST /v1/tasks` 接受可选的 `skills: string[]`，省略时按权限档位配置默认值，未配置时为空；显式数组覆盖默认值，下级只能取上级名单的子集。错误为 `400 skill_not_found`（未找到、歧义或不可访问）和 `403 skill_upgrade`（越出上级名单）。名字格式遵守 pi skill 规范：至多 64 字符，小写字母、数字和单个连接号，不以连接号开头或结尾。
+
+`GET /v1/tasks/:id` 与 `/result` 返回 `usage`（任务累计）和 `treeUsage`（含全部后代），result 还返回 `generationUsage`；各 token 字段和上下文大小语义见 [tasks.md](tasks.md#用量与上下文)。result.usage 保留旧会话统计字段。额度暂停状态为 `quota_paused`，`quotaResumeAt` 是可空的 ISO 8601 UTC 时间。
+
+额度暂停通过现有 `POST /v1/tasks/:id/recover`、`{ "mode": "resume" }` 恢复，不增加代数；重置时间未到返回 `409 quota_not_reset`，旧运行未确认退出返回 `409 stop_incomplete`。通知 `task:quota_ready` 的 payload.tasks 带暂停任务的 taskId、generation、resumeAt 和 contextTokens；没有可识别时间时发送 `task:quota_unknown`。不增加专用恢复端点，父任务恢复不隐式恢复下级。CLI 和 pane 的专用用量展示阶段见 [roadmap.md](roadmap.md)。
+
 ### 端点
 
 | 分组 | 方法与路径 | 用途 | 主要调用方 |
@@ -294,7 +302,8 @@ agora:root:user-tasks            〔用户任务〕   用户通过 CLI 或 pi-pa
 | --- | --- |
 | 任务 `created`（排队等名额或进程尚未就绪） | `waiting` |
 | 任务 `running` | `running` |
-| 任务 `waiting_decision` | `waiting` |
+| 任务 `waiting_decision`、`waiting_children` | `waiting` |
+| 任务 `quota_paused` | `paused` |
 | 任务 `completed` | `done` |
 | 任务 `failed` | `failed` |
 | 任务 `stopped` | `stopped` |
@@ -313,6 +322,7 @@ agora:root:user-tasks            〔用户任务〕   用户通过 CLI 或 pi-pa
 | 运行中的任务 | `open`、`subscribe`、`send`、`abort`、`action:agora.task.steer`、`action:agora.task.stop` | `open` |
 | 已完成、失败的任务 | `open`、`send`、`action:agora.task.steer`（返工）、`action:agora.task.cleanup` | `open` |
 | 中断的任务 | `open`、`action:agora.task.recover` | `open` |
+| 额度暂停的任务 | `open`、`action:agora.task.recover`（resume）、`action:agora.task.stop` | `open` |
 | 参会者、书记 | `open`、`subscribe` | `open` |
 | 会议 | `action:agora.meeting.interject`、`action:agora.meeting.decide`、`action:agora.meeting.limits`、`action:agora.meeting.stop` | 无 |
 | board | 无（点击 resource 节点时 pi-pane 打开适用的 `agora.board` 面板；`open` 只用于 session 节点） | 无 |
