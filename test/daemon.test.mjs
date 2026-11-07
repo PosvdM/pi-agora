@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -449,7 +449,7 @@ test('driver.start 抛错但未返回handle时保留退出待查run和聚合诊�
   } finally { await next.close(); }
 });
 
-test('重启扫描失败的持久run阻止stop/shutdown虚假成功，并允许安全重试', async t => {
+for (const blockDiagnostic of [false, true]) test(`持久run安全重试清除旧清理错误，${blockDiagnostic ? '保留本次诊断写入错误' : '诊断成功时无残留错误'}`, async t => {
   const f = await setup(t), main = await f.client();
   const task = await f.spawn(main, {}, 'crash-operation');
   await until(() => f.driver.handles[0]?.commands.includes('prompt'));
@@ -484,12 +484,26 @@ test('重启扫描失败的持久run阻止stop/shutdown虚假成功，并允许�
       assert.equal(next.store.get('SELECT exited_at FROM process_runs WHERE id=?', runId).exited_at, null);
       assert.ok(failedDriver.recovered.length >= 3, 'stop/shutdown 都须重试持久化旧run');
     } finally { cli.close(); }
-  } finally { failedDriver.options.failRecovery = false; await next.close({ force: true }); }
+  } finally {
+    if (blockDiagnostic) {
+      const file = next.store.get('SELECT diagnostics_path FROM process_runs WHERE id=?', runId).diagnostics_path;
+      await mkdir(`${file}.tmp`); // 受控 EISDIR：仅阻止本次诊断写盘，不影响按身份清理。
+    }
+    failedDriver.options.failRecovery = false;
+    await next.close({ force: true });
+  }
   const recoveredDriver = new MockDriver();
   resumed = await startDaemon({ home: f.home, driver: recoveredDriver });
   try {
     assert.equal(recoveredDriver.recovered.length, 0, '关闭重试已确认清理的run不再扫描');
-    assert.ok(resumed.store.get('SELECT exited_at FROM process_runs WHERE id=?', runId).exited_at);
+    const confirmed = resumed.store.get('SELECT exited_at,cleanup_error FROM process_runs WHERE id=?', runId);
+    assert.ok(confirmed.exited_at);
+    if (blockDiagnostic) {
+      const error = JSON.parse(confirmed.cleanup_error);
+      assert.equal(error.message, '重启诊断写入失败，诊断保留在数据库中');
+      assert.equal(error.diagnostic.cleanupConfirmed, true);
+      assert.equal(error.diagnostic.error, undefined);
+    } else assert.equal(confirmed.cleanup_error, null);
     assert.equal(recoveredDriver.handles.length, 0);
   } finally { await resumed.close(); }
 });

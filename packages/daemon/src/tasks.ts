@@ -399,6 +399,8 @@ export class TaskManager {
             ...(reports.some(report => report.coverage === "snapshot_visible") ? ["停止仅覆盖快照见过的进程，空残留列表不能证明整棵进程树均已退出"] : [])],
         };
         const diagnosticPath = path.join(this.options.home, "sessions", session.id, `${run.id}.recovery.diagnostics.json`);
+        // 清理结论与诊断写入分开：先清除过时的清理错误，后续写盘失败单独记录。
+        if (clean) this.store.run("UPDATE process_runs SET cleanup_error=NULL WHERE id=?", run.id);
         try {
           await mkdir(path.dirname(diagnosticPath), { recursive: true });
           await writeFile(`${diagnosticPath}.tmp`, JSON.stringify(diagnostic, null, 2), { mode: 0o600 });
