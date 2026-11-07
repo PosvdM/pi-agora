@@ -17,7 +17,7 @@
     "test": "node --test --test-concurrency=1 \"test/**/*.test.mjs\""
   },
   "dependencies": {
-    "pi-hostkit": "github:PosvdM/pi-hostkit#ec911be193668e4c6b3b0616323c2b18aefd142c"
+    "pi-hostkit": "github:PosvdM/pi-hostkit#36f97ae683d5b0fb8ee495eecc04df7ab381f66a"
   },
   "devDependencies": {
     "@types/node": "^24.19.2",

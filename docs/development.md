@@ -9,7 +9,7 @@
 ## 环境与构建
 
 - Node.js 24 及以上、npm、pi 1.5.x。真实进程测试固定使用 pi 1.5.0。
-- pi-hostkit 固定为 git 提交 `ec911be193668e4c6b3b0616323c2b18aefd142c`，不引用相邻仓库的工作区。安装 git 依赖时会运行其 prepare 构建；原生模块需要 Python 3 和 C/C++ 工具链。Windows 使用 Visual Studio Build Tools 的 C++ 工作负载。
+- pi-hostkit 固定为 git 提交 `36f97ae683d5b0fb8ee495eecc04df7ab381f66a`，不引用相邻仓库的工作区。安装 git 依赖时会运行其 prepare 构建；原生模块需要 Python 3 和 C/C++ 工具链。Windows 使用 Visual Studio Build Tools 的 C++ 工作负载。
 - 存储使用 Node 内置 `node:sqlite`，不安装外部 SQLite 驱动。
 
 ```sh
