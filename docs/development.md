@@ -33,10 +33,10 @@ npm test
 | `packages/protocol/src/git.ts` | 固定 argv、配置与环境清理、只读 git 白名单 |
 | `packages/daemon/src/index.ts`、`main.ts` | 配置、单实例、启动恢复、排空与入口 |
 | `packages/daemon/src/server.ts`、`auth.ts` | HTTP、幂等记录、principal、租约、launch ticket |
-| `packages/daemon/src/store.ts` | schema v3、一致性备份、迁移、条件更新和 outbox |
+| `packages/daemon/src/store.ts` | schema v4、一致性备份、迁移、条件更新、outbox 和逐请求用量 |
 | `packages/daemon/src/tasks.ts` | 控制队列、树限制、调度、返工、恢复、回收和看门狗 |
 | `packages/daemon/src/requests.ts`、`worktrees.ts` | 提问及逐级转交、按仓库串行的 worktree 操作 |
-| `packages/daemon/src/driver.ts` | RPC、会话写锁、整树停止、UI 取消、心跳和诊断 |
+| `packages/daemon/src/driver.ts` | RPC、会话写锁、整树停止、UI 取消、心跳、诊断及 pi 的 skill、用量和额度适配 |
 | `packages/extension/src/index.ts`、`permissions.ts` | 主 / 子会话工具、最终就绪门槛、三档与路径检查 |
 | `packages/extension/src/notifications.ts` | 在途去重、完整磁盘记录核对和确认 |
 | `packages/cli/src/index.ts`、`main.ts` | CLI 参数和命令 |
@@ -61,6 +61,9 @@ daemon 启动时读取 `<AGORA_HOME>/config.json`。未配置时使用默认值�
 | `allowedRoots` | [] | 额外只读根，绝对路径数组；任务 cwd 始终在允许根中 |
 | `protectedPaths` | [] | 额外受保护路径，绝对路径数组；secret 始终受保护 |
 | `powershell` | false | 仅 Windows 的 implement 档位可选；其他平台不提供 |
+| `skillDirectories` | 用户 skill 目录及用户 settings 的 skills 路径 | 指定绝对路径数组后替换默认查找范围，详见 [security.md](security.md#skill-白名单) |
+| `defaultSkills` | {} | 按 explore / review / implement 配置默认 skill 名单；未配置档位为空，spawn 的显式名单覆盖默认值，下级只能取上级名单的子集 |
+| `quotaRecovery` | `"notify"` | 额度重置后通知直接上级；`"auto"` 仅续跑到期任务，不递归恢复下级 |
 
 spawn 的 `maxDepth` 表示以新任务为第一层的子树层数，`maxChildren` 表示该任务及其下级继承的同时下级数限制。指定值不能超过配置或父任务剩余限制；下级可以继续收紧。模型没有额外层级限制。
 
@@ -88,7 +91,7 @@ shutdown 默认排空，超时后保留 daemon；force 中断并清理运行。�
 - **可靠通知**：状态、结果和通知同事务；每批最多 200，扩展取到空批。完整磁盘行的 entryId、noticeId、dedupeKey 全部相符才 ack。继承的历史通知不能代替当前 inbox 的授权。被 clear_queue 清掉的在途通知在 settled 后可重投；每代完成有独立 key。
 - **请求重试**：安全 GET、可幂等续期及带原 Idempotency-Key 的业务写入最多三次，共用一个总期限、原 token、参数与 key；间隔 50 / 100ms。取消、关闭、HTTP 拒绝、协议不兼容、无效 JSON 和一次性认证兑换不重试。子会话短暂续期传输错误不立即 fatal。
 - **Windows 退出可见性**：有效 StopReport 后最多 2 秒纯身份查询，不补杀；持续 alive / unknown 仍保锁。driver 的失败 stop 可显式重试，只复查原报告、身份和 release，不重放清队列或底层停止；已有失败报告不能变成新成功报告。TaskManager 重试仍核对版本与租约。
-- **迁移**：schema v3 为任务树、限制、返工、提问和 worktree 增加字段与表。已有 v2 任务按第一层、默认两层回填。迁移前从同一 SQLite 连接做一致性 backup、只读 integrity_check，DDL 同事务，提交前 foreign_key_check；失败回滚原库。
+- **迁移**：schema v3 为任务树、限制、返工、提问和 worktree 增加字段与表；v4 保存 skill 名单与解析路径、额度恢复时间和逐请求用量。旧库依次升级到 v4，已有 v2 任务按第一层、默认两层回填。迁移前从同一 SQLite 连接做一致性 backup、只读 integrity_check，DDL 同事务，提交前 foreign_key_check；失败回滚原库。
 - **恢复**：旧 run 未确认退出不能拉起写者；resume 代数不变，reopen / replace 新建继承会话并增加代数，历史 result 指向所属代数的会话。连续 resume 失败两次后需重开、换人或放弃，不自动重放副作用。
 
 ## 测试与 CI
@@ -97,7 +100,8 @@ shutdown 默认排空，超时后保留 daemon；force 中断并清理运行。�
 
 | 测试文件 | 验收与边界 |
 | --- | --- |
-| `test/task-1b.test.mjs` | generation、幂等 steer / answer、送达追踪、中断返工、D14 七项规则、提问并发和逐级转交、worktree、回收、看门狗、配置及 v2→v3 迁移 |
+| `test/task-1b.test.mjs` | generation、幂等 steer / answer、送达追踪、中断返工、D14 七项规则、提问并发和逐级转交、worktree、回收、看门狗、配置及 v2→v4 迁移 |
+| `test/task-d15.test.mjs`、`driver-d15.test.mjs`、`d15-e2e.test.mjs` | 子代理标记、skill 白名单与只读授权、同项目双主会话的提问路由、任务 / 代 / 树用量、额度暂停与通知 / 自动恢复、v3→v4 备份和迁移回滚；真实 pi 的本地 429 与 skill 加载 |
 | `test/tree-e2e.test.mjs` | 真实子代理调用 agora_task 再派下级；单名额无死锁、父进程回收后重拉及通知落盘；恶意 MCP / 扩展不启动；Windows 原生 PowerShell 实际工具调用 |
 | `test/permissions-1b.test.mjs`、`git-1b.test.mjs` | 三档精确工具集合、受保护路径及祖先、新文件、真实 junction、Unicode / 大小写；恶意 git 配置探针和全部只读命令 |
 | `test/client-retry.test.mjs` | 保留 keep-alive 的真实 socket 故障、响应丢失后的原 key 重试、总期限、取消、拒绝和一次性 ticket 不重放 |

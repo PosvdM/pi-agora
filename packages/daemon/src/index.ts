@@ -12,6 +12,7 @@ import { createHttpServer, VERSION, PROTOCOL_RANGE } from "./server.js";
 import { RpcSubprocessDriver, type SessionDriver } from "./driver.js";
 
 export interface DaemonOptions extends Omit<TaskOptions, "home" | "url" | "instanceId"> {
+  skillDirectories?: string[];
   home: string; piPath?: string; extensionPath?: string; maxConcurrentRuns?: number;
   readyTimeoutMs?: number; env?: NodeJS.ProcessEnv; containment?: "auto" | "snapshot";
   /** 独立测试驱动不通过生产环境变量或 HTTP 配置注入。 */
@@ -53,7 +54,7 @@ async function configured(options: DaemonOptions): Promise<DaemonOptions> {
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return options; throw new Error("daemon 配置文件无法读取或不是合法 JSON"); }
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("daemon 配置必须为对象");
   const config = value as Record<string, unknown>;
-  const allowed = ["maxConcurrentRuns", "readyTimeoutMs", "maxTaskDepth", "maxChildren", "worktreeRoot", "idleReclaimMs", "toolStallMinutes", "protectedPaths", "allowedRoots", "powershell"];
+  const allowed = ["maxConcurrentRuns", "readyTimeoutMs", "maxTaskDepth", "maxChildren", "worktreeRoot", "idleReclaimMs", "toolStallMinutes", "protectedPaths", "allowedRoots", "powershell", "skillDirectories", "defaultSkills", "quotaRecovery"];
   if (Object.keys(config).some(key => !allowed.includes(key))) throw new Error("daemon 配置包含不支持的字段");
   for (const key of ["maxConcurrentRuns", "readyTimeoutMs", "maxTaskDepth", "maxChildren", "idleReclaimMs"]) {
     const item = config[key];
@@ -63,7 +64,14 @@ async function configured(options: DaemonOptions): Promise<DaemonOptions> {
   if (config.toolStallMinutes !== undefined && (typeof config.toolStallMinutes !== "number" || !Number.isFinite(config.toolStallMinutes) || config.toolStallMinutes <= 0 || config.toolStallMinutes > 35791)) throw new Error("toolStallMinutes 必须为正数");
   if (config.powershell !== undefined && typeof config.powershell !== "boolean") throw new Error("powershell 必须为布尔值");
   if (config.worktreeRoot !== undefined && (typeof config.worktreeRoot !== "string" || !path.isAbsolute(config.worktreeRoot))) throw new Error("worktreeRoot 必须为绝对路径");
-  for (const key of ["protectedPaths", "allowedRoots"]) if (config[key] !== undefined && (!Array.isArray(config[key]) || !(config[key] as unknown[]).every(item => typeof item === "string" && path.isAbsolute(item)))) throw new Error(`配置 ${key} 必须为绝对路径数组`);
+  if (config.quotaRecovery !== undefined && !["notify", "auto"].includes(String(config.quotaRecovery))) throw new Error("quotaRecovery 必须为 notify 或 auto");
+  if (config.defaultSkills !== undefined) {
+    if (!config.defaultSkills || typeof config.defaultSkills !== "object" || Array.isArray(config.defaultSkills)) throw new Error("defaultSkills 必须为按档位配置的对象");
+    for (const [profile, names] of Object.entries(config.defaultSkills)) {
+      if (!["explore", "review", "implement"].includes(profile) || !Array.isArray(names) || names.some(name => typeof name !== "string" || name.length > 64 || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name)) || new Set(names).size !== names.length) throw new Error("defaultSkills 的档位或名单无效");
+    }
+  }
+  for (const key of ["protectedPaths", "allowedRoots", "skillDirectories"]) if (config[key] !== undefined && (!Array.isArray(config[key]) || !(config[key] as unknown[]).every(item => typeof item === "string" && path.isAbsolute(item)))) throw new Error(`配置 ${key} 必须为绝对路径数组`);
   return { ...config, ...Object.fromEntries(Object.entries(options).filter(([, value]) => value !== undefined)) } as DaemonOptions;
 }
 export async function startDaemon(options: DaemonOptions): Promise<RunningDaemon> {
@@ -87,7 +95,7 @@ export async function startDaemon(options: DaemonOptions): Promise<RunningDaemon
     store.run("UPDATE operations SET state='failed',status=409,result=? WHERE state='in_progress'", JSON.stringify({ error: { code: "operation_interrupted", message: "操作被 daemon 重启中断，请核对任务状态" } }));
     const driver = options.driver ?? new RpcSubprocessDriver({ home, piPath: options.piPath,
       extensionPath: options.extensionPath ?? fileURLToPath(new URL("../../extension/dist/index.js", import.meta.url)),
-      env: childEnvironment(options.env), containment: options.containment, readyTimeoutMs: options.readyTimeoutMs });
+      env: childEnvironment(options.env), skillDirectories: options.skillDirectories, containment: options.containment, readyTimeoutMs: options.readyTimeoutMs });
     const taskOptions = { ...options, home, instanceId, url: "" };
     const tasks = new TaskManager(store, auth, driver, taskOptions);
     await tasks.recoverPreviousRuns();

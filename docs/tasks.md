@@ -1,6 +1,6 @@
 # 任务（子代理）
 
-> 切片 1b 提供完整任务动作、多层委派、三个权限档位、worktree、提问与逐级转交。用户确认、接管、board 和会议相关权限仍是后续设计目标；CLI 答复尚无设备签名。实现与测试见 [development.md](development.md)。
+> 切片 1b 提供完整任务动作、多层委派、三个权限档位、worktree、提问与逐级转交，以及 skill 白名单、用量记录和额度暂停。用户确认、接管、board 和会议相关权限仍是后续设计目标；CLI 答复尚无设备签名。实现与测试见 [development.md](development.md)。
 
 任务是召集人派给一个协作会话（`kind = task`）的一件工作。它覆盖现有“派子代理”的核心用法：按模型和权限档位派任务、worktree 隔离、完成后叫醒召集人、steer 返工、查看列表和结果、停止、子代理提问并由召集人答复或转给用户。
 
@@ -17,7 +17,7 @@ agora 扩展按连接 token 的权限注册工具。子代理功能只注册 `ag
 | `agora_board` | 绑定了 board 的会话 | 读写共享桌面，见 [board.md](board.md) |
 | `agora_meeting` | 主代理；参会者只有 `endorse` | 召开和管理会议，见 [meetings.md](meetings.md) |
 
-任务子代理可以继续派出下级。默认层数为 2（子代理、孙代理），每个任务同时存在的未结束下级数默认不限，整棵树共用并发名额。配置、主代理派活和下级派活可以逐层收紧，不能放宽；下级档位不能高于父任务。谁派的谁管理：子代理只能查看、返工、停止和答复自己直接派出的下级；主代理可查看、停止整棵树，但只返工直接下级。CLI 在 1b 可操作任意任务；完整用户确认在 1c。
+任务子代理可以继续派出下级。默认层数为 2（子代理、孙代理），每个任务同时存在的未结束下级数默认不限，整棵树共用并发名额。配置、主代理派活和下级派活可以逐层收紧，不能放宽；下级档位不能高于父任务，skill 名单只能取父任务名单的子集。谁派的谁管理：子代理只能查看、返工、停止和答复自己直接派出的下级；主代理可查看、停止整棵树，但只返工直接下级。CLI 在 1b 可操作任意任务；完整用户确认在 1c。
 
 父任务 settled 时仍有未结束下级，进入 `waiting_children`，不交付最终结果，也不占推理名额。下级完成后叫醒父任务，父进程已回收时重新拉起并投递通知；父任务自行核对并交出最终结果后才完成。停止父任务时逐层停止整棵子树，返回每层 StopReport。
 
@@ -32,6 +32,7 @@ type AgoraTaskParams =
       thinking?: ThinkingLevel;      // 默认 "high"
       profile: "explore" | "review" | "implement"; // 各档位的工具和限制见 architecture.md“权限档位”
       prompt: string;                // 完整任务书，子代理看不到召集人的对话
+      skills?: string[];            // 按名字选择用户 skill；未配置档位默认值时为空，[] 显式禁用
       title?: string;                // 侧栏显示用，默认取 prompt 首行
       cwd?: string;                  // 默认召集人的 cwd
       isolation?: "none" | "worktree"; // 默认 "none"
@@ -75,6 +76,26 @@ type AgoraTaskParams =
 
 agora 对任务只提供“取消（含队列）”这一种停止。协作会话的 pi 队列里只有 agora 自己发的消息，被清掉的消息都有记录，召集人可以重新发送。
 
+### 派活与 skill 名单
+
+任务书应只覆盖一件范围明确的工作，将必要的接口和结论直接摘入；并行前先确定接口，机械性工作使用 `medium`，完成的任务不追加新工作。daemon 发出的任务书固定以“你是子代理。”开头，包括重新拉起后的任务说明。全局和项目 `AGENTS.md` 仍由 pi 加载；只针对主会话的规则由其中的子代理约定跳过。
+
+`spawn.skills` 按名字选择用户 skill，覆盖 `AGORA_HOME/config.json` 的 `defaultSkills` 对应档位名单；未指定且未配置时为空，显式 `[]` 禁用该档位默认值。下级名单必须是上级名单的子集；配置的默认值也受此限制。不存在、歧义或不可访问的名字在 spawn 返回 `400 skill_not_found`，越出上级名单返回 `403 skill_upgrade`。解析范围和文件访问规则见 [security.md](security.md#skill-白名单)。
+
+### 用量与上下文
+
+`status` 和 `result` 的 `usage` 汇总当前任务全部代数，`treeUsage` 汇总该任务及全部后代；`result.generationUsage` 只汇总请求的代数。字段为 `requests`、`inputTokens`、`cacheReadTokens`、`cacheWriteTokens`、`outputTokens`、`reasoningTokens`、`contextTokens`。result 的 `usage` 同时保留原 `get_session_stats` 数据（如 `tokens`、`cost`），新字段以逐请求记录为准。
+
+每次模型请求结束记录一条用量，关联 taskId、generation、agoraSessionId、runId 和驱动提供的 requestId；重复事件不重复记账。输入、缓存读、缓存写、输出和推理 token 按请求相加。模型未单独返回推理 token 时记为 0，不把输出 token 推测为推理 token。`contextTokens` 取最近一次非零的 `input + cacheRead + cacheWrite`，代表服务最近报告的输入上下文大小；没有可用数据时为 0。任务树的上下文大小是各任务最近值之和，不是历史请求的输入总和，也不是模型上下文窗口上限。CLI 的专用展示在 1d，pane 展示在切片 2。
+
+### 额度暂停
+
+驱动识别模型额度用完后，任务在 settled 时进入 `quota_paused`，不记为失败。daemon 停止该进程、保留原会话和代数并释放推理名额；停止未确认时保留清理记录并拒绝恢复。`quotaResumeAt` 记录服务返回的重置时间。识别规则由 [architecture.md](architecture.md#用量与额度事件) 定义。
+
+默认 `quotaRecovery: "notify"`：到达重置时间后向直接上级发送持久化的 `task:quota_ready` 通知，附该上级最多 200 个暂停任务的上下文大小，其余任务可按状态分页查询，由上级调用 `recover`、`mode: "resume"` 续跑，或 stop 后重新派活。配置 `quotaRecovery: "auto"` 时，到期只续跑该任务，不递归续跑下级。重置时间缺失时不猜测时间，发送 `task:quota_unknown` 通知，等待上级核对后手动续跑。重置时间未到的手动恢复返回 `409 quota_not_reset`。额度暂停任务只接受 resume 或 abandon；需换模型时先停止再派活。
+
+`quota_paused` 与 `waiting_children` 不同：前者不能被下级完成、答复或普通 inbox 通知唤醒，后者可以。暂停进程直接停止，不依赖空闲回收定时器；暂停状态和重置时间跨 daemon 重启保留，到期通知按去重键只生成一次。停止父任务会递归停止额度暂停的下级并取消定时恢复；续跑父任务不会自动续跑任何下级。
+
 ## 状态机
 
 ```text
@@ -83,6 +104,8 @@ agora 对任务只提供“取消（含队列）”这一种停止。协作会�
 created ──► running ──► completed ───────────────────────────────┤
               │  ▲  └─► failed ──────────────────────────────────┤
               │  │                                               │
+              ├────► quota_paused ── recover resume / 自动续跑 ──► running
+              │             └── stop / abandon ──► stopped
               ▼  │ 答复送达                                      │
         waiting_decision / waiting_children                      │
               │                                                  │
@@ -96,9 +119,10 @@ created ──► running ──► completed ───────────�
 | `created` | 记录已写入；排队等推理名额，或进程尚未通过就绪检查 |
 | `running` | 任务书或返工消息已被 pi 接受（`prompt` 响应成功或已排队） |
 | `waiting_decision` | 会话 settled 时，该任务还有 `open` 或 `escalated` 状态的提问 |
-| `waiting_children` | 会话 settled、无未决提问，但仍有未结束下级；释放推理名额 |
-| `completed` | 会话 settled、`aborted: false`、没有未决提问和未结束下级 |
-| `failed` | 会话 settled 且最后一条助手消息是错误（如模型报错、重试耗尽），或 spawn 校验、就绪检查失败 |
+| `waiting_children` | 会话 settled 时，该任务还有未结束的下级且没有未决提问；释放名额并等待通知 |
+| `quota_paused` | 模型额度用完；不占推理名额，保留会话和代数，等待上级决定或配置的自动恢复 |
+| `completed` | 会话 settled、`aborted: false`、没有助手错误、未决提问或未结束的下级 |
+| `failed` | 会话 settled 且最后一条助手消息是错误（已识别的额度暂停除外），或 spawn 校验、就绪检查失败 |
 | `stopped` | 召集人或用户调用 stop，或放弃中断的任务 |
 | `interrupted` | 进程崩溃、心跳超时、daemon 强制关闭、恢复时就绪检查失败 |
 
@@ -144,6 +168,8 @@ pi 的 `queue_update` 事件只给出排队消息的文本（依据：`docs/json
 | 完成 / 失败 | `task:<taskId>:<generation>:<completed|failed>` |
 | 中断 | `task:<taskId>:<generation>:interrupted:<processRunId>` |
 | 工具无进展 | `task:<taskId>:stall:<toolCallId>:<n>` |
+| 额度重置时间已到 | `task:<taskId>:<generation>:quota:<quotaResumeAt>` |
+| 额度暂停但无重置时间 | `task:<taskId>:<generation>:quota_unknown:<runId>` |
 | 新提问 | `request:<requestId>:opened` |
 | 提问被答复（发给提问者） | `request:<requestId>:answered` |
 
@@ -261,7 +287,7 @@ type AgoraRequestParams =
 
 `ask` 的行为：
 
-1. 写入 `requests`，同事务写一条给召集人的 outbox 通知。
+1. 写入 `requests`，同事务写一条给直接上级的 outbox 通知。路由按鉴权 principal 和委派关系确定，同项目的其他主会话不接收该提问；转交后才逐级改变目标。
 2. 工具调用最多等待 `waitSeconds`（默认 240）：期间收到答复就把答复作为工具结果返回。
 3. 超时或被转给用户：工具返回“提问 rq_xxx 尚未答复（当前状态：open / escalated），答复到达后会以消息送达；在此之前停在安全状态”。提问保持原状态，转给用户后不再计时。
 4. 会话 settled 时该提问仍未答复，任务进入 `waiting_decision`，进程可按回收规则停止。

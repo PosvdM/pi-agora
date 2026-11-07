@@ -252,7 +252,7 @@ test('v2 到 v3 迁移有一致性备份并保留旧任务，新树与提问表�
   db.exec("CREATE TABLE schema_version(version INTEGER,migrated_at TEXT); INSERT INTO schema_version VALUES(2,'v2'); PRAGMA journal_mode=WAL;");
   db.prepare("INSERT INTO principals(id,type,created_at) VALUES('main','agent:main','time')").run(); db.close();
   const store = await openStore(home); assert.equal(store.principal('main').type, 'agent:main');
-  assert.equal(store.get('SELECT version FROM schema_version').version, 3); assert.deepEqual(store.all('PRAGMA foreign_key_check'), []);
+  assert.equal(store.get('SELECT version FROM schema_version').version, 4); assert.deepEqual(store.all('PRAGMA foreign_key_check'), []);
   for (const name of ['requests', 'steer_messages', 'worktrees']) assert.ok(store.get('SELECT name FROM sqlite_master WHERE name=?', name));
   store.close(); const backup = (await readdir(join(home, 'backups'))).find(f => f.endsWith('.db'));
   const old = new DatabaseSync(join(home, 'backups', backup), { readOnly: true });

@@ -46,9 +46,10 @@ pi-agora 和 pi-pane 的 MVP 按同样的三个切片推进，两仓的 roadmap 
 | 步骤 | 范围 |
 | --- | --- |
 | 1a：最小闭环 | 四包工程和三平台 CI；daemon 单实例、握手、主会话注册与恢复、租约、launch ticket、就绪检查、排空、版本和迁移；RPC driver、会话写锁、并发、诊断、旧进程清理、扩展 UI；explore 的 spawn / status / result / stop；outbox 可靠通知；CLI start / shutdown / status / ls / show |
-| 1b：任务补全 | 全部任务动作与状态机、generation、steer 追踪、worktree、三档与路径、agora_git、提问及逐级转交、pending / answer、空闲回收、看门狗；多层委派、子树限制与停止、等待下级；请求传输重试与 Windows 停止重试 |
-| 1c：安全 | 子 / 主 Agent 与用户级划分、预算封顶、完整资源访问控制、待确认、设备登记与验签、everPaired、离线命令、安全状态检查和审计；跟进可选扩展 / MCP 白名单及 saved 项目信任的配置隔离 |
-| 1d：存档与收尾 | 全量存档、只读解析器、archive adapter、会话视图、log / tail / verify-archive 和其他 CLI；创建 archive 包 |
+| 1b：任务补全 | 全部任务动作与状态机、generation、steer 追踪、worktree、三档与路径、agora_git、提问及逐级转交、pending / answer、空闲回收、看门狗；多层委派、子树限制与停止、等待下级；请求传输重试与 Windows 停止重试；D15 子代理标记、skill 白名单、逐请求用量及任务树汇总、额度暂停和恢复 |
+| 1c：安全 | 子 / 主 Agent 与用户级划分、预算封顶、任务树 token 软预算（与 `agentLimitCap` 一并设计）、完整资源访问控制、待确认、设备登记与验签、everPaired、离线命令、安全状态检查和审计；跟进可选扩展 / MCP 白名单及 saved 项目信任的配置隔离 |
+| 1d：存档与收尾 | 全量存档、只读解析器、archive adapter、会话视图、log / tail / verify-archive 和其他 CLI；创建 archive 包；CLI 展示用量和上下文大小 |
+| 1d 之后 | 上下文超过阈值时通知上级；返工时可选新会话附摘要或先压缩再返工 |
 
 下面列出切片 1 的完整目标，不表示这些内容均已实现。
 
@@ -64,7 +65,7 @@ pi-agora 和 pi-pane 的 MVP 按同样的三个切片推进，两仓的 roadmap 
 ### 切片 2：pane 插件
 
 - daemon：变更流 `/v1/changes`、按父节点分页的会话列表。
-- pane 插件：按需加载的树与同步、会话视图（快照、历史、实时流）、任务动作（`resolveForm`、幂等、结果映射）、`composer` 与 `abort`、持久表单（提问、决策、待确认、设备）、`userPresence` 确认与设备配对、安全状态横幅、通知、hold、自定义消息渲染器、离线读取。
+- pane 插件：用量和上下文大小的显示；按需加载的树与同步、会话视图（快照、历史、实时流）、任务动作（`resolveForm`、幂等、结果映射）、`composer` 与 `abort`、持久表单（提问、决策、待确认、设备）、`userPresence` 确认与设备配对、安全状态横幅、通知、hold、自定义消息渲染器、离线读取。
 - 以 pi-pane `docs/plugin-api.md` 的 pane 协议和本仓库 [integration.md](integration.md) 的映射为准，与 pi-pane 的 M3 联调验收。
 
 ### 切片 3：board 与会议
@@ -114,7 +115,10 @@ pi-pane 的估算见其 `docs/roadmap.md`（18–26 人日，P0 后重估）；�
 | 读取 host.key 后冒充用户答复 | 1c | 待确认与设备签名；1b CLI 通路尚不能区分用户与 Agent |
 | 挑战重放、过期、参数篡改 | 1c | 用户确认验签测试 |
 | 跨宿主写锁拒绝、强杀恢复与 gate 放行前强杀 | 1a | `driver.test.mjs`、`driver-faults.test.mjs`、`daemon-restart.test.mjs`；双向共享协议由 hostkit 的跨宿主测试覆盖 |
-| 运行中升级、备份与迁移失败 | 1a v1/v2，1b v3 | `store.test.mjs` 的一致性备份和回滚；`task-1b.test.mjs` 的 v2→v3 成功、备份及 DDL 失败回滚 |
+| 运行中升级、备份与迁移失败 | 1a v1/v2，1b v3/v4 | `store.test.mjs` 的一致性备份和回滚；`task-1b.test.mjs` 的 v2→v4 与 `task-d15.test.mjs` 的 v3→v4 成功、备份及 DDL 失败回滚 |
+| 同项目双主会话的孙代理提问路由 | 1b D15 | `task-d15.test.mjs`：仅直接上级接收提问 |
+| 子代理标记、skill 名单和只读授权 | 1b D15 | `driver-d15.test.mjs`、`task-d15.test.mjs`、`d15-e2e.test.mjs`：空默认值、子集继承、名单外及项目 skill 不自动加载、文件工具只读 |
+| 用量汇总、额度暂停与恢复 | 1b D15 | 上述 D15 测试覆盖请求去重、任务 / 代 / 树汇总、429 暂停、到期通知、可选自动恢复和父任务恢复不隐式恢复下级 |
 
 1b 的多层委派另须通过：父任务等待下级不提前完成；回收父进程后重拉并投递通知；子树各层 StopReport；层数、下级数、档位和限制拒绝；单名额多层调度不死锁；提问逐级上交与原提问者收到答案；禁止管理别人的任务，主代理不能跳级返工但能停止。自动化入口为 `task-1b.test.mjs` 与 `tree-e2e.test.mjs`。
 

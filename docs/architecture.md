@@ -70,6 +70,7 @@ pi-agora 是 pi 的协作引擎：一个每用户单实例的后台进程（daem
 // 草案，P0 后冻结
 interface SessionDriver {
   start(spec: LaunchSpec): Promise<DriverHandle>;
+  resolveSkills?(names: string[]): Promise<{ name: string; path: string }[]>;
 }
 
 interface DriverHandle {
@@ -87,6 +88,7 @@ interface LaunchSpec {
   model: string;                // 完整 provider/id
   thinking: ThinkingLevel;
   profile: "explore" | "review" | "implement";
+  skillPaths?: string[];        // 已解析的用户 skill 目录；由驱动转换为 Harness 启动参数
   sessionFile: string;          // daemon 预先分配的会话文件路径，首次启动和恢复都用 --session 传入
   env: Record<string, string>;  // AGORA_URL、AGORA_LAUNCH_TICKET；不含 AGORA_HOME，见 security.md
 }
@@ -107,14 +109,14 @@ node <pi>/dist/bundle/cli.js --mode rpc
   --model <provider/id> --thinking <level>
   --tools <按档位的白名单>
   -ne --no-mcp -e <agora 扩展路径>  # 1b 生产基线不加载其他扩展或 MCP
-  -ns -np
+  -ns -np [ --skill <名单内 skill 目录> ... ]
   --no-approve                              # 默认所有档位都加，见下文“项目信任”
 ```
 
 依据：`docs/cli.md`（Sessions、Tools、Resources、Prompts and process 各节）、`docs/rpc.md`。
 
-- `-ne` 关闭自动发现、配置和内置的扩展，包括内置 MCP 支持；显式 `-e` 仍加载（依据：`docs/cli.md` 的 `-ne` 说明）。所以协作会话默认没有 MCP，不需要 `--no-mcp`。协作会话只加载 agora 扩展，避免把用户的其他扩展带进子会话。
-- `-ns`、`-np` 关闭自动发现的 skill 和提示词模板，协作会话的行为只由任务书决定。
+- `-ne` 关闭自动发现、配置和内置的扩展，包括内置 MCP 支持；显式 `-e` 仍加载（依据：`docs/cli.md` 的 `-ne` 说明）。生产子会话同时加 `--no-mcp`，只显式加载 agora 扩展，避免启动用户配置或项目配置中的其他扩展和 MCP 服务器。可选扩展与 MCP 白名单属于后续范围。
+- `-ns`、`-np` 关闭自动发现的 skill 和提示词模板；选中的 skill 逐项通过 `--skill <路径>` 传入。名字解析由 driver 完成，不在项目目录查找；配置及只读授权见 [security.md](security.md#skill-白名单)。
 - **会话文件路径由 daemon 预先分配**：daemon 先取得该路径的会话写锁，再用 `--session <路径>` 拉起。文件不存在时 pi 新建会话并沿用这个路径（依据：`dist/main.js` 的 `resolveSessionPath`、`dist/core/session-manager.js` 的 `_setSessionFile`），所以不用 `--session-id`（它让 pi 自己生成文件名，daemon 无法在 pi 打开文件之前取锁，见 [pi-hostkit 设计文档的“取得锁的时机”](https://github.com/PosvdM/pi-hostkit/blob/main/docs/design.md#取得锁的时机)）。pi 的会话 id 由 pi 生成，启动后用 RPC `get_state` 读出 `sessionFile` 和 `sessionId` 核对并记入 SQLite（依据：`docs/rpc-commands.md` 的 `get_state`）。
 
 #### 项目信任
@@ -124,6 +126,14 @@ node <pi>/dist/bundle/cli.js --mode rpc
 - explore、review、会议席位和书记固定加 `--no-approve`，不加载需要项目信任的本地配置和资源（依据：`docs/cli.md` 的 `--no-approve`、`docs/security.md` 的 Understand project trust）。
 - implement 默认也加 `--no-approve`；配置 `implement.projectTrust: "saved"` 后不加该参数，改按用户已保存的信任决定（`~/.pi/agent/trust.json`）。RPC 模式不能弹出信任提示，没有保存决定时按 `defaultProjectTrust` 处理（依据：`docs/security.md` 的 Project trust without an interactive prompt）。不加 `--approve`。注意：即使目录里没有需要信任的项目资源，如果 `trust.json` 中记为 false，仍按不信任处理。
 - `AGENTS.md`、`CLAUDE.md` 等上下文文件不受项目信任控制，仍会加载（依据同上）。agora 不加 `-nc`，因为项目约定对子代理有用；任务书提醒子代理把仓库里的指令当作不可信输入。
+
+### 用量与额度事件
+
+pi 专有的 skill 参数、用量字段和错误解析集中在 `packages/daemon/src/driver.ts`；任务状态机和数据库只处理 Harness 中立的 `usage_record` 和 `quota_exhausted` 字段。驱动在助手 `message_end` 时读取 `usage.input`、`cacheRead`、`cacheWrite`、`output` 及可用的推理 token 字段，生成逐请求用量。任务层按 runId + requestId 去重写入 `usage_records`，不把累计 `get_session_stats` 反复相加。
+
+额度识别只匹配助手错误中的明确限额代码（`usage_limit_reached`、`quota_exceeded`、`insufficient_quota`）和 HTTP 429 信息；普通 `rate_limit_exceeded` 不按额度用完处理。驱动从错误返回的重置时间或重试等待时间生成 `resumeAt`；未识别的时间保留 null，不推测恢复时刻。无法识别的错误仍按原失败路径处理。pi RPC 提供的错误可能只有 `errorMessage` 文本，解析以其可见字段为限，不保证所有 provider 的私有错误格式都能识别。
+
+`quotaRecovery` 在 `AGORA_HOME/config.json` 配置，默认 `"notify"`，也可设为 `"auto"`。持久化状态、恢复和通知规则见 [tasks.md](tasks.md#额度暂停)。定时器在启动时从数据库恢复；停止子树与额度恢复复用任务串行控制队列。
 
 ### 受管扩展的就绪检查
 
@@ -235,7 +245,7 @@ node <pi>/dist/bundle/cli.js --mode rpc
 | 对话 | pi JSONL | 由 pi 自己写，daemon 不复制到数据库 |
 | 流片段、退出诊断 | `sessions/<id>/` 下的文件 | 见 [archive.md](archive.md) |
 
-数据库 schema v3 保留 v2 的多会话继承与每代所属会话关系，增加 parent_task_id、depth、depth_limit、child_limit、恢复计数和待发送消息，以及 steer_messages、requests、worktrees 表。已有任务按第一层、默认两层回填。迁移先备份，保留数据、显式索引和触发器，提交前执行 foreign_key_check；失败回滚。首代分配会话时即写入代数到会话的关联。
+数据库 schema v4 保留 v2 的多会话继承与每代所属会话关系、v3 的任务树与限制（parent_task_id、depth、depth_limit、child_limit）、恢复计数和待发送消息，以及 steer_messages、requests、worktrees 表。v4 在任务记录中保存 skill 名单、解析路径和额度恢复信息，`usage_records` 按请求保存任务、代、会话及运行关联和 token 用量。旧库按 v1→v2→v3→v4 顺序迁移，已有任务按第一层、默认两层回填。迁移前执行一致性备份，保留数据、显式索引和触发器，提交前执行 foreign_key_check；失败回滚。首代分配会话时即写入代数到会话的关联。
 
 不做通用事件溯源：业务状态用普通表，board 条目追加，状态变更和 outbox 在同一事务里完成。代价是不能重放任意历史时刻的业务状态；需要追溯的信息（board、对话、状态变更时间）都单独保存。
 
@@ -289,7 +299,7 @@ node <pi>/dist/bundle/cli.js --mode rpc
 
 agora 扩展注册 `tool_call` 钩子（依据：`docs/extensions.md` 的 `tool_call`），对文件类工具的路径参数用 pi-hostkit 的 `canonicalPath` 规范化（与 pi 解析路径的规则一致，再取真实路径，见 [pi-hostkit 设计文档的“路径规范化”](https://github.com/PosvdM/pi-hostkit/blob/main/docs/design.md#路径规范化)）后检查：
 
-- **允许根目录**：explore/review 的 `read`、`grep`、`find`、`ls` 的目标必须在允许根目录（会话 cwd 加配置的额外只读根）内。
+- **允许根目录**：explore/review 的 `read`、`grep`、`find`、`ls` 的目标必须在允许根目录（会话 cwd、配置的额外只读根和名单内 skill 的真实目录）内。
 - **受保护目录**：所有档位的文件类工具都拒绝受保护目录（`AGORA_HOME/secret` 和配置项 `protectedPaths`）及其下的路径。
 - **搜索类工具**：`grep`、`find`、`ls` 的搜索根（`path` 参数，省略时为 cwd）如果是某个受保护目录的祖先（或就是它），直接拒绝，并提示缩小搜索范围。这几个工具都没有排除参数：`grep` 只有一个可选的 `glob` 过滤，`find` 只有 `pattern`（glob）和 `path`，`ls` 只有 `path`（依据：`dist/core/tools/grep.js:11–18`、`dist/core/tools/find.js:17–23`、`dist/core/tools/ls.js:8–10`），无法可靠地追加排除规则，所以不采用“强制排除”。pi 1.5.0 调用 `rg`、`fd` 时带 `--hidden`、不带 `--follow`（依据：`dist/core/tools/grep.js:95`、`dist/core/tools/find.js:128`），不会顺着搜索根下的符号链接进入受保护目录；agora 不改变这些参数。
 - **写入新文件**：`write` 的目标不存在时，对最深的已存在祖先取真实路径再判断。

@@ -270,7 +270,7 @@ export default function agoraExtension(pi: PiExtensionApi): void {
   });
   pi.registerTool({
     name: 'agora_task', label: 'agora 任务', executionMode: 'sequential',
-    description: '派出子代理，列出和查询任务、取结果、返工、停止子树、清理 worktree 或处理中断。下级只能管理自己直接派出的任务，权限和子树限制不能放宽。',
+    description: '派出子代理，列出和查询任务、取结果、返工、停止子树、清理 worktree 或处理中断。下级只能管理自己直接派出的任务，权限和子树限制不能放宽。任务书要窄，把需要的接口和结论直接摘进任务书；并行前先定接口，机械性工作用 medium，已完成的任务不追加新活。skills 按名字选择，默认不给；下级只能选择上级名单的子集。',
     parameters: taskSchema,
     async execute(toolCallId, params, signal, _update, ctx) {
       const r = runtime;
