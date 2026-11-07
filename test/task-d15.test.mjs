@@ -179,6 +179,31 @@ test('D15 额度暂停不失败、不占名额，到期通知上级并附上下�
   await main.request('POST', `/v1/tasks/${parent.taskId}/stop`, {}); assert.equal(f.daemon.store.task(child.taskId).status, 'stopped');
 });
 
+test('R4 未知额度停止失败仍立即唤醒 waiting_children 父任务，未确认运行禁止恢复', async t => {
+  const f = await setup(t), main = await f.main(), parent = await f.spawn(main), p = await f.handle(parent);
+  const child = await f.spawn(p.client, { notify: 'silent' }), c = await f.handle(child);
+  await f.settle(p);
+  assert.equal(f.daemon.store.task(parent.taskId).status, 'waiting_children');
+  assert.equal(p.commands.filter(cmd => cmd.type === 'prompt').length, 1);
+  c.failStop = true;
+  try {
+    await pause(f, c, null);
+    await until(() => f.daemon.store.task(parent.taskId).status === 'running');
+    assert.equal(f.daemon.tasks.activeCount(), 1);
+    assert.equal(f.daemon.store.task(child.taskId).status, 'quota_paused');
+    assert.equal(c.stopped, true);
+    assert.equal(f.daemon.store.get('SELECT exited_at FROM process_runs WHERE id=?', c.spec.runId).exited_at, null);
+    const inbox = await p.client.request('GET', '/v1/inbox');
+    const notice = inbox.items.find(item => item.kind === 'task:quota_unknown' && item.payload.taskId === child.taskId);
+    assert.ok(notice);
+    assert.equal(notice.payload.triggerTurn, true);
+    assert.equal(notice.payload.generation, 1);
+    await assert.rejects(p.client.request('POST', `/v1/tasks/${child.taskId}/recover`, { mode: 'resume' }), err => err.code === 'stop_incomplete');
+    assert.equal(f.driver.handles.length, 2);
+    assert.equal(f.daemon.store.task(child.taskId).generation, 1);
+  } finally { c.failStop = false; }
+});
+
 test('D15 配置 auto 到期只续跑该任务，未知重置时间不编造定时器，普通错误仍失败', async t => {
   const f = await setup(t, {}, { quotaRecovery: 'auto' }), main = await f.main(), task = await f.spawn(main), h = await f.handle(task);
   await pause(f, h); const resumed = await until(() => f.driver.handles.find(item => item !== h && item.ready));

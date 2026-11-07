@@ -405,13 +405,13 @@ export class TaskManager {
     runtime.stopped = true;
     if (runtime.idleTimer) clearTimeout(runtime.idleTimer);
     if (runtime.stallTimer) clearInterval(runtime.stallTimer);
-    this.transition(task, "quota_paused", quota.reason, runtime.runId, undefined, quota);
+    const paused = this.transition(task, "quota_paused", quota.reason, runtime.runId, undefined, quota);
     try {
+      if (!quota.resumeAt) this.notifyConvener(paused, "wake");
       await runtime.handle!.stop();
       const exit = await runtime.handle!.exited;
       if (!exit.cleanupConfirmed) throw new Error("额度暂停运行尚未确认退出");
       await this.exited(runtime, exit);
-      if (!quota.resumeAt) this.notifyConvener(task, "wake");
       this.armQuotaTimer(this.store.task(task.id));
     } finally { this.auth.revokeRun(runtime.runId); this.releaseSlot(runtime); }
   }
