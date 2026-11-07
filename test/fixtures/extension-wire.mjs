@@ -2,6 +2,7 @@ import { createServer } from 'node:http';
 import { randomBytes } from 'node:crypto';
 import { mkdir, writeFile, rename } from 'node:fs/promises';
 import { join } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { hmacProof } from '../../packages/protocol/dist/client.js';
 
 export async function extensionWire(root) {
@@ -83,7 +84,14 @@ export async function extensionWire(root) {
   const discovery = async () => {
     const temporary = join(root, 'run', `daemon-${++publication}.tmp`);
     await writeFile(temporary, JSON.stringify({ port, instanceId, pid: process.pid, protocol: { min: 1, max: 1 } }));
-    await rename(temporary, join(root, 'run', 'daemon.json'));
+    for (let attempt = 0; ; attempt++) {
+      try { await rename(temporary, join(root, 'run', 'daemon.json')); break; }
+      catch (error) {
+        // Windows 的读取或扫描共享冲突可能暂时拒绝替换；只重试改名，不回退到原位写入。
+        if (process.platform !== 'win32' || !['EPERM', 'EACCES', 'EBUSY'].includes(error.code) || attempt >= 9) throw error;
+        await delay(25 * (attempt + 1));
+      }
+    }
   };
   await discovery();
   return { ...state, get invalidProof() { return state.invalidProof; }, set invalidProof(v) { state.invalidProof = v; },

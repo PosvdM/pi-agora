@@ -51,7 +51,7 @@ node packages/cli/dist/main.js show <ID> --home <本地目录>
 node packages/cli/dist/main.js shutdown --timeout 600 --home <本地目录>
 ```
 
-`daemon start` 和主会话扩展会自动启动 daemon。`status`、`ls`、`show`、`shutdown` 只连接已有实例，不为查询启动后台服务。发现信息存在但无法通过 host.key 核验时，客户端拒绝发送客户端证明；单实例锁阻止并行启动两个服务。CLI 输出 JSON，错误返回非零退出码。生产 daemon 和重连测试夹具均使用同目录临时文件加原子改名发布发现记录。客户端对外部非原子写入产生的 JSON 截断最多读取 10 次，间隔 50 毫秒；持续畸形或结构无效时拒绝认证，不发送凭证或另启 daemon。
+`daemon start` 和主会话扩展会自动启动 daemon。`status`、`ls`、`show`、`shutdown` 只连接已有实例，不为查询启动后台服务。发现信息存在但无法通过 host.key 核验时，客户端拒绝发送客户端证明；单实例锁阻止并行启动两个服务。CLI 输出 JSON，错误返回非零退出码。生产 daemon 和重连测试夹具均使用同目录临时文件加原子改名发布发现记录。夹具对 Windows 的短暂 EPERM / EACCES / EBUSY 改名冲突最多尝试 10 次，按每次增加 25 毫秒退避，不回退到非原子写；其他错误或超过次数仍失败，发布失败期间旧文件保持完整。客户端对外部非原子写入产生的 JSON 截断最多读取 10 次，间隔 50 毫秒；持续畸形或结构无效时拒绝认证，不发送凭证或另启 daemon。
 
 daemon 的独立入口还接受 `--pi-path <pi 包或入口>` 和 `--extension-path <扩展入口>`：
 
@@ -85,6 +85,7 @@ node packages/daemon/dist/main.js --home <本地目录> --pi-path <pi 包目录>
 | `test/extension-hooks.test.mjs`、`test/extension.test.mjs` | 扩展幂等初始化、认证恢复、只读权限、fail closed、路径及符号链接、通知确认和去重 |
 | `test/auth.test.mjs`、`test/store.test.mjs` | 双向握手、挑战与 ticket 单次消费、主会话恢复与租约、ephemeral、WAL、原子 outbox、条件迁移、一致性备份和迁移失败回滚 |
 | `test/daemon.test.mjs`、`test/daemon-restart.test.mjs` | HTTP 鉴权与版本、spawn 幂等、并发与就绪拒绝、排空、通知批量，以及真实 daemon 强杀后的旧进程清理与中断通知 |
+| `test/extension-wire.test.mjs` | 原子发布的 Windows 临时共享冲突与永久错误注入；失败期间旧发现记录不变，禁止非原子回退 |
 | `test/extension-client.test.mjs` | 客户端握手、防假 daemon、发现过期实例、token 续期、自动启动取消和输入校验 |
 | `test/protocol-cli.test.mjs` | 协议版本、客户端地址限制、参数校验与 CLI 帮助 |
 | `test/cli.test.mjs` | 独立 CLI 进程自动启动、单实例复用、status / ls / show 和排空关闭 |
