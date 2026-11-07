@@ -18,6 +18,7 @@ async function until(fn, ms = 4000) {
 class Driver {
   handles = [];
   async start(spec) {
+    if (this.bootDelayMs) await delay(this.bootDelayMs);
     const listeners = new Set(), exits = new Set(); let resolve;
     const launch = await fetch(spec.env.AGORA_URL + '/v1/auth/launch', { method: 'POST', headers: { 'Agora-Protocol': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket: spec.env.AGORA_LAUNCH_TICKET }) }).then(r => r.json());
     const client = createClient({ url: spec.env.AGORA_URL, token: launch.token });
@@ -55,7 +56,10 @@ class Driver {
 }
 async function setup(t, options = {}) {
   const home = await mkdtemp(join(tmpdir(), 'agora-1b-')), driver = new Driver(), clients = [];
-  const daemon = await startDaemon({ home, driver, readyTimeoutMs: 500, maxConcurrentRuns: 4, worktreeRoot: join(home, 'worktrees'), ...options });
+  const { mockBootDelayMs, ...daemonOptions } = options;
+  driver.bootDelayMs = mockBootDelayMs;
+  // CI 的磁盘与 HTTP 调度可能超过 500ms；正常启动用例不以短故障窗口作为预算。
+  const daemon = await startDaemon({ home, driver, readyTimeoutMs: 5000, maxConcurrentRuns: 4, worktreeRoot: join(home, 'worktrees'), ...daemonOptions });
   t.after(async () => { clients.forEach(c => c.close()); await daemon.close({ force: true }); await rm(home, { recursive: true, force: true }); });
   async function main(as = 'agent:main') {
     const c = await connectHost({ home, as, autoStart: false }); clients.push(c);
@@ -63,10 +67,29 @@ async function setup(t, options = {}) {
     return c;
   }
   async function spawn(c, extra = {}, key) { return c.request('POST', '/v1/tasks', { model: 'test/model', profile: 'explore', prompt: '核对任务', cwd: home, ...extra }, { idempotencyKey: key ?? randomUUID() }); }
-  async function handle(task) { return until(() => driver.handles.findLast(h => h.spec.agoraSessionId === task.agoraSessionId && h.ready && !h.stopCount)); }
+  async function handle(task) {
+    try {
+      return await until(() => {
+        const row = daemon.store.task(task.taskId);
+        if (['failed', 'interrupted', 'stopped'].includes(row.status)) throw new Error('模拟运行未通过就绪');
+        return driver.handles.findLast(h => h.spec.agoraSessionId === task.agoraSessionId && h.ready && !h.stopCount);
+      }, 10000);
+    } catch (cause) {
+      const generation = daemon.store.get('SELECT status,result_text FROM task_generations WHERE task_id=? AND generation=?', task.taskId, task.generation);
+      const boot = driver.handles.findLast(h => h.spec.agoraSessionId === task.agoraSessionId)?.bootError;
+      throw new Error(`模拟启动失败：${JSON.stringify({ task: daemon.store.task(task.taskId), generation, boot: boot ? { code: boot.code, message: boot.message } : undefined })}`, { cause });
+    }
+  }
   async function settled(task, result) { const h = await handle(task); if (result) h.result = result; h.emit({ type: 'agent_settled', aborted: false }); await daemon.tasks.flush(); return daemon.store.task(task.taskId); }
   return { home, driver, daemon, main, spawn, handle, settled };
 }
+
+test('模拟启动延迟超过旧 500ms 故障窗口时仍在正常就绪预算内完成', async t => {
+  const f = await setup(t, { mockBootDelayMs: 750 }), main = await f.main(), task = await f.spawn(main);
+  const h = await f.handle(task);
+  assert.equal(f.daemon.store.task(task.taskId).status, 'running');
+  assert.ok(h.commands.some(c => c.type === 'prompt'));
+});
 
 test('返工保留旧代结果，每代通知唯一；同 key steer 只执行一次且追踪 queued/delivered/dropped', async t => {
   const f = await setup(t), main = await f.main(), task = await f.spawn(main), h = await f.handle(task);
