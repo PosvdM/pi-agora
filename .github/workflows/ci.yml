@@ -19,7 +19,7 @@ jobs:
       - name: 安装 Git 2.34.1 和测试工具
         run: |
           apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git ca-certificates python3 openssh-client
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git ca-certificates python3 openssh-client build-essential
           git --version
           git --version | grep -E '^git version 2\.34\.1$'
       - uses: actions/checkout@v4
