@@ -13,7 +13,10 @@ jobs:
   git-minimum:
     name: Git 2.34.1 安全验收
     runs-on: ubuntu-latest
-    container: ubuntu:22.04
+    container:
+      image: ubuntu:22.04
+      # PID 1 需要回收 Git 正控探针的孤儿进程，避免退出进程保留为 zombie。
+      options: --init
     timeout-minutes: 20
     steps:
       - name: 安装 Git 2.34.1 和测试工具
