@@ -11,11 +11,13 @@ import * as hostkit from "pi-hostkit";
 const pi = await hostkit.locatePi(process.env.D15_PI_PATH ? { piPath: process.env.D15_PI_PATH } : {});
 assert.equal(pi.supported, true);
 const launches = [];
+const processes = new Map();
+const processKey = (identity) => JSON.stringify([identity.pid, identity.startTime, identity.runId, identity.instanceId]);
 let current;
 const bridge = {
   ...hostkit,
   locatePi: async () => pi,
-  isSameProcess: async () => current?.status ?? "gone",
+  isSameProcess: async (identity) => processes.get(processKey(identity))?.status ?? "gone",
   acquireSessionWriterLock: async () => ({
     recoveryReports: [],
     recoverPreviousWriter: async () => "clean",
@@ -53,6 +55,7 @@ const bridge = {
         listenerCount: () => listeners.size,
         confirmExit() { this.status = "gone"; exit({ code: 0, signal: null }); },
       };
+      processes.set(processKey(proc.identity), control);
       return proc;
     },
   }),
@@ -306,6 +309,87 @@ test("R3：真实驱动未确认停止后的 message_end 记入数据库原代�
   } finally {
     control?.confirmExit();
     childClient?.close(); main?.close();
+    await daemon?.close({ force: true });
+  }
+});
+
+test("N2：真实驱动未知额度停止未确认时，silent 子任务唤醒父任务且禁止恢复", async (t) => {
+  const { startDaemon } = await import("../packages/daemon/dist/index.js");
+  const { connectHost, createClient } = await import("../packages/protocol/dist/index.js");
+  const f = await fixture(t);
+  const runs = new Map(), launchCount = launches.length;
+  let main, daemon;
+  const until = async (fn) => {
+    const deadline = Date.now() + 5_000;
+    do { const result = fn(); if (result) return result; await delay(5); } while (Date.now() < deadline);
+    assert.fail("等待真实驱动 N2 状态超时");
+  };
+  const driver = {
+    resolveSkills: (names) => f.driver.resolveSkills(names),
+    recoverOldRun: (...args) => f.driver.recoverOldRun(...args),
+    async start(spec) {
+      const handle = await f.driver.start(spec);
+      const control = current;
+      const run = { spec, handle, control };
+      runs.set(spec.agoraSessionId, run);
+      control.respond = (command) => ({ type: "response", success: true,
+        data: command.type === "get_available_models" ? { models: [{ provider: "test", id: "model" }] }
+          : command.type === "get_state" ? { model: { provider: "test", id: "model" }, thinkingLevel: spec.thinking, sessionFile: spec.sessionFile }
+          : command.type === "get_last_assistant_text" ? { text: "等待下级" } : {} });
+      const launch = await fetch(spec.env.AGORA_URL + "/v1/auth/launch", { method: "POST",
+        headers: { "Agora-Protocol": "1", "Content-Type": "application/json" }, body: JSON.stringify({ ticket: spec.env.AGORA_LAUNCH_TICKET }) }).then(response => response.json());
+      run.client = createClient({ url: spec.env.AGORA_URL, token: launch.token });
+      void run.client.request("POST", `/v1/runs/${spec.runId}/ready`, { ...launch.policy, tools: spec.tools }).catch(() => {});
+      return handle;
+    },
+  };
+  const spawn = (client, extra = {}) => client.request("POST", "/v1/tasks", {
+    model: "test/model", thinking: "off", profile: "explore", prompt: "真实驱动额度验收", cwd: f.cwd, ...extra,
+  });
+  const running = (task) => until(() => {
+    const run = runs.get(task.agoraSessionId);
+    return run?.control.commands.some(command => command.type === "prompt") && run;
+  });
+  try {
+    daemon = await startDaemon({ home: f.options.home, driver, maxConcurrentRuns: 2 });
+    main = await connectHost({ home: f.options.home, as: "host:cli", autoStart: false });
+    const parent = await spawn(main), p = await running(parent);
+    const child = await spawn(p.client, { notify: "silent" }), c = await running(child);
+    p.control.push({ type: "agent_settled", aborted: false });
+    await daemon.tasks.flush();
+    assert.equal(daemon.store.task(parent.taskId).status, "waiting_children");
+    assert.equal(daemon.tasks.activeCount(), 1);
+    assert.equal(p.control.commands.filter(command => command.type === "prompt").length, 1);
+    c.control.holdAlive = true;
+    c.control.status = "alive";
+    c.control.push(assistant({ id: "unknown-quota", stopReason: "error", errorMessage: "429 usage_limit_reached" }));
+    c.control.push({ type: "agent_settled", aborted: false });
+    await daemon.tasks.flush();
+    await until(() => daemon.store.task(parent.taskId).status === "running");
+    assert.equal((await c.handle.exited).cleanupConfirmed, false);
+    assert.equal(c.handle.diagnostics().stopFailure.code, "EAGORA_STOP_INCOMPLETE");
+    assert.ok(c.control.commands.some(command => command.type === "clear_queue"));
+    assert.equal(daemon.tasks.activeCount(), 1);
+    assert.equal(daemon.store.task(child.taskId).status, "quota_paused");
+    assert.equal(daemon.store.task(child.taskId).quota_resume_at, null);
+    const persisted = daemon.store.get("SELECT state,exited_at FROM process_runs WHERE id=?", c.spec.runId);
+    assert.equal(persisted.state, "stopping");
+    assert.equal(persisted.exited_at, null);
+    const inbox = await p.client.request("GET", "/v1/inbox");
+    const notice = inbox.items.find(item => item.kind === "task:quota_unknown" && item.payload.taskId === child.taskId);
+    assert.ok(notice, "同一 daemon 中父任务必须能够领取未知额度通知");
+    assert.equal(notice.payload.triggerTurn, true);
+    assert.equal(notice.payload.generation, 1);
+    await assert.rejects(p.client.request("POST", `/v1/tasks/${child.taskId}/recover`, { mode: "resume" }), error => error.code === "stop_incomplete");
+    assert.equal(launches.length - launchCount, 2);
+    assert.equal(runs.size, 2);
+    assert.equal(daemon.store.task(child.taskId).generation, 1);
+    assert.equal(daemon.store.task(parent.taskId).generation, 1);
+    assert.equal(daemon.store.task(parent.taskId).status, "running");
+    assert.equal(daemon.tasks.activeCount(), 1);
+  } finally {
+    for (const run of runs.values()) { run.control.confirmExit(); run.client?.close(); }
+    main?.close();
     await daemon?.close({ force: true });
   }
 });
