@@ -1,4 +1,6 @@
 import { execFile, spawn } from 'node:child_process';
+import { lstat, realpath } from 'node:fs/promises';
+import path from 'node:path';
 
 export function gitEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env = { ...source };
@@ -26,6 +28,24 @@ async function gitRaw(cwd: string, args: string[], signal?: AbortSignal): Promis
       else resolve(stdout);
     });
   });
+}
+/** 从文件系统确定工作树边界；Git 的 show-toplevel 仅用于核验，不能作为授权根。 */
+async function verifyWorktree(cwd: string, signal?: AbortSignal): Promise<void> {
+  let root = await realpath(cwd);
+  while (true) {
+    try { await lstat(path.join(root, '.git')); break; }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      const parent = path.dirname(root);
+      if (parent === root) throw Object.assign(new Error('无法确定任务目录的 Git 工作树'), { code: 'EAGORA_GIT_WORKTREE_LAYOUT' });
+      root = parent;
+    }
+  }
+  const actual = await realpath((await gitRaw(cwd, ['rev-parse', '--show-toplevel'], signal)).trim());
+  const normalize = (value: string) => process.platform === 'win32' ? value.toLowerCase() : value;
+  if (normalize(actual) !== normalize(root)) {
+    throw Object.assign(new Error('Git 工作树与任务目录的仓库根不一致，请检查 core.worktree 配置'), { code: 'EAGORA_GIT_WORKTREE_MISMATCH' });
+  }
 }
 export async function gitRead(cwd: string, command: string, options: string[] = [], refs: string[] = [], paths: string[] = [], signal?: AbortSignal): Promise<string> {
   if (!['status', 'diff', 'log', 'show'].includes(command)) throw new Error('git 子命令不在允许列表中');
@@ -66,6 +86,7 @@ export async function gitRead(cwd: string, command: string, options: string[] = 
 async function filterOverrides(cwd: string, signal?: AbortSignal, configContexts: string[] = []): Promise<string[]> {
   const drivers = new Set<string>();
   for (const context of new Set([cwd, ...configContexts])) {
+    await verifyWorktree(context, signal);
     let config = '';
     try { config = await gitRaw(context, ['config', '--null', '--get-regexp', '^filter\\.'], signal); }
     catch {

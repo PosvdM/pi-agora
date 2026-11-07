@@ -350,13 +350,15 @@ daemon 启动时、以及在线检测到状态变化时，检查以下情况，�
 
 `packages/protocol/src/git.ts` 是 Git 的唯一进程入口。`gitRead` 只接受 `status`、`diff`、`log`、`show` 及固定的参数白名单；`gitExec` 供 daemon 内部使用，参数不能来自工具调用方。worktree 管理使用 `rev-parse`、`worktree add --no-checkout`、`reset --hard`、`ls-files --stage -z`、`worktree remove`；配置探测使用 `config --null`。流式索引检查与缓冲执行器共用安全前缀、环境和 filter 探测，逐条只保留 7 字节的 mode，不受查询输出的 1 MiB 限制。
 
+安全层先从任务 cwd 的真实路径向上查找最近的 `.git` 文件或目录，独立确定仓库根，再将加固 `rev-parse --show-toplevel` 的真实路径与其比较（Windows 不区分大小写）。结果不一致时返回 `EAGORA_GIT_WORKTREE_MISMATCH`，不执行配置探测、查询、索引检查或 worktree 操作；无法找到布局时返回 `EAGORA_GIT_WORKTREE_LAYOUT`。gitfile 和 `commondir` 的 linked worktree 可以使用；`core.worktree` 包括 `extensions.worktreeConfig` 下的 `config.worktree` 也必须指向同一仓库根。清理同时核验主仓库与目标 worktree，不将主仓库根强制传播给内部子 Git。
+
 每次启动 Git 都移除继承的所有大小写 `GIT_*` 变量，以及 `SSH_ASKPASS`、`EDITOR`、`VISUAL`，禁止系统和用户配置，使用非交互、无 pager、无可选锁的环境。仓库和条件 include 仍会读取；不能依赖环境清理来覆盖仓库配置。固定 `-c` 通过 Git 的命令作用域传播到内部子 Git；Windows 的 `core.unsetenvvars` 固定为空，禁止它删除这些安全变量。
 
 网络防线同时使用 `protocol.allow=never` 和空 `GIT_ALLOW_PROTOCOL`。前者只是默认值，**不能覆盖仓库显式的 `protocol.<name>.allow=always`**；后者是优先于配置的空白名单，连本地 `file` 传输也不允许。`GIT_NO_LAZY_FETCH=1` 是支持该变量版本的附加防线，不是 Git 2.34 的前提。缺失对象直接失败，不尝试补齐。真实回归单独移除 `GIT_NO_LAZY_FETCH`，验证空协议白名单仍能阻止 SSH/helper；Git 2.34.1 的 [transport.c](https://github.com/git/git/blob/v2.34.1/transport.c) 与 [promisor-remote.c](https://github.com/git/git/blob/v2.34.1/promisor-remote.c) 具有相同的协议检查和子 fetch 边界，因此不需要按版本拒绝整个 partial-clone 仓库。
 
 ### 入口清单
 
-以下 32 项按 [git-config](https://git-scm.com/docs/git-config)、[Git 环境变量](https://git-scm.com/docs/git#_environment_variables)、[git-log](https://git-scm.com/docs/git-log)、[gitdiffcore](https://git-scm.com/docs/gitdiffcore) 和实际调用范围分类。“不可达”表示这些选项或子命令没有暴露给 `agora_git`，不能据此扩展 `gitExec` 的调用范围。测试缩写对应下方文件；同一行的同类配置共享调用边界，不表示逐个运行过所有可选 GUI、邮件或签名工具。
+以下 33 项按 [git-config](https://git-scm.com/docs/git-config)、[Git 环境变量](https://git-scm.com/docs/git#_environment_variables)、[git-log](https://git-scm.com/docs/git-log)、[gitdiffcore](https://git-scm.com/docs/gitdiffcore) 和实际调用范围分类。“不可达”表示这些选项或子命令没有暴露给 `agora_git`，不能据此扩展 `gitExec` 的调用范围。测试缩写对应下方文件；同一行的同类配置共享调用边界，不表示逐个运行过所有可选 GUI、邮件或签名工具。
 
 | 编号 | 入口 | 在 agora 中的触发条件与关闭方式 | 证明 |
 | --- | --- | --- | --- |
@@ -392,6 +394,7 @@ daemon 启动时、以及在线检测到状态变化时，检查以下情况，�
 | 30 | `mailmap.blob`、`mailmap.file`、`.mailmap`、`log.mailmap` | 作者映射可以输出任意 blob/file 中的姓名。清空两个配置，固定 log.mailmap=false，log/show 再固定 --no-mailmap。 | S 的受保护映射 blob/file 正负控。 |
 | 31 | `log.follow`、rename/copy 检测、魔术 pathspec | follow 会越过重命名前的路径。固定 log.follow=false、diff.renames=false、status.renames=false，不接受 --follow/-M/-C；使用 --literal-pathspecs 和 -- 分隔。 | S 的重命名正负控；P 的 glob/cwd 正负控；A 的选项及 pathspec 拒绝。 |
 | 32 | `GIT_EXEC_PATH`、`GIT_CONFIG_*`、`GIT_DIR/WORK_TREE/INDEX_FILE/OBJECT_DIRECTORY/ALTERNATE_OBJECT_DIRECTORIES`、trace 环境及 Windows `core.unsetenvvars` | 继承变量可换 helper、配置、仓库或输出目标，全部 GIT_* 先清理再固定安全值。core.unsetenvvars 固定为空，避免内部子 Git 丢掉空协议白名单或命令配置。 | A 的环境/argv 断言；S 的 Windows 删除限制变量正控和固定配置负控。 |
+| 33 | 仓库 `core.worktree`、`extensions.worktreeConfig` 与 `config.worktree` | 配置可将通过路径权限检查的相对路径重定向到另一工作树。每个配置上下文先由文件系统确定最近仓库根，再核验 Git 的真实工作树根，不一致时拒绝。查询、配置探测、流式索引、创建、检出和清理共用核验，清理也核验目标。 | L 的普通 Git 受保护标记正控、真实 agora_git 拒绝负控、子目录与 linked worktree 正常查询，以及 config.worktree 的检出/清理拒绝和合法非 force 清理。 |
 
 测试文件与运行约束：
 
@@ -401,6 +404,9 @@ daemon 启动时、以及在线检测到状态变化时，检查以下情况，�
 - **S**：[git-security-review.test.mjs](../test/git-security-review.test.mjs)，覆盖 notes、replace、grafts、mailmap、rename 和 lazy fetch。
 - **E**：[git-execution-review.test.mjs](../test/git-execution-review.test.mjs)，覆盖传输、凭据、环境、不可达命令入口和 TTY pager。
 - **I**：[git-index-review.test.mjs](../test/git-index-review.test.mjs)，覆盖超过 1 MiB 的实际干净索引清理及 gitlink 拒绝。
+- **L**：[git-worktree-layout-review.test.mjs](../test/git-worktree-layout-review.test.mjs)，覆盖仓库布局重定向和合法工作树上下文。
+
+CI 的 `git-minimum` job 在 Ubuntu 22.04 容器中安装发行版 Git 2.34.1 与 Node 24，运行上述全部 Git 安全测试（含布局正负控）；三平台完整测试同时覆盖 runner 自带 Git。最低版本不支持的可选执行入口按功能说明跳过，布局核验和传输防线不跳过。
 
 正控使用普通 Git 和短命探针记录 PID，确认执行后检查进程退出；负控要求探针文件无新增记录。受保护对象正控必须看到标记内容，负控不得包含标记。测试输出记录 Git 版本；仅平台或功能不适用的用例带原因跳过，不能因正控未执行而跳过安全断言。辅助命令族的边界由代表性真实执行正控及同族命令拒绝共同证明，不依赖机器安装 GUI、邮件或签名软件。
 

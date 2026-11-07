@@ -55,12 +55,13 @@ async function fixture(t) {
   return { root, cwd, raw, probe, markers, clear };
 }
 
-test('1b git argv：固定安全前缀、filter 覆盖和 -- 分隔，不依赖 Git >2.34 的选项', async () => {
+test('1b git argv：固定安全前缀、filter 覆盖和 -- 分隔，不依赖 Git >2.34 的选项', async t => {
+  const f = await fixture(t);
   const calls = [];
   const signal = new AbortController().signal;
   mock.method(childProcess, 'execFile', (file, args, options, callback) => {
     calls.push({ file, args, options });
-    callback(null, args.includes('--get-regexp') ? 'filter.trap.clean\nunsafe\0filter.trap.required\ntrue\0' : args.includes('--verify') ? `${'a'.repeat(40)}\n` : 'output');
+    callback(null, args.includes('--show-toplevel') ? `${f.cwd}\n` : args.includes('--get-regexp') ? 'filter.trap.clean\nunsafe\0filter.trap.required\ntrue\0' : args.includes('--verify') ? `${'a'.repeat(40)}\n` : 'output');
   });
   syncBuiltinESMExports();
   try {
@@ -72,8 +73,9 @@ test('1b git argv：固定安全前缀、filter 覆盖和 -- 分隔，不依赖 
       ['show', ['--stat'], ['HEAD'], [], ['show', '--no-ext-diff', '--no-textconv', '--no-color', '--no-show-signature', '--no-notes', '--no-mailmap', '--stat', 'HEAD', '--', '.']],
     ]) {
       calls.length = 0;
-      assert.equal(await gitRead('/repo', command, options, refs, paths, signal), 'output');
-      assert.deepEqual(calls[0].args, [...prefix, 'config', '--null', '--get-regexp', '^filter\\.']);
+      assert.equal(await gitRead(f.cwd, command, options, refs, paths, signal), 'output');
+      assert.deepEqual(calls[0].args, [...prefix, 'rev-parse', '--show-toplevel']);
+      assert.deepEqual(calls[1].args, [...prefix, 'config', '--null', '--get-regexp', '^filter\\.']);
       const oid = 'a'.repeat(40);
       const resolved = expected.map(arg => arg === 'HEAD' ? oid : arg === 'HEAD~1..HEAD' ? `${oid}..${oid}` : arg);
       assert.deepEqual(calls.at(-1).args, [...prefix, ...filters, '--literal-pathspecs', ...resolved]);
@@ -83,64 +85,67 @@ test('1b git argv：固定安全前缀、filter 覆盖和 -- 分隔，不依赖 
       for (const call of calls) {
         assert.equal(call.file, 'git');
         assert.equal(call.options.signal, signal);
-        assert.equal(call.options.cwd, '/repo');
+        assert.equal(call.options.cwd, f.cwd);
         assert.equal(call.options.timeout, 30_000);
         assert.equal(call.options.shell, undefined);
         assert.equal(call.options.env.GIT_OPTIONAL_LOCKS, '0');
       }
     }
     calls.length = 0;
-    await gitExec('/repo', ['rev-parse', '--show-toplevel'], signal);
-    assert.deepEqual(calls[0].args, [...prefix, 'config', '--null', '--get-regexp', '^filter\\.']);
-    assert.deepEqual(calls[1].args, [...prefix, ...filters, 'rev-parse', '--show-toplevel']);
+    await gitExec(f.cwd, ['rev-parse', '--show-toplevel'], signal);
+    assert.deepEqual(calls[1].args, [...prefix, 'config', '--null', '--get-regexp', '^filter\\.']);
+    assert.deepEqual(calls[2].args, [...prefix, ...filters, 'rev-parse', '--show-toplevel']);
   } finally {
     mock.restoreAll();
     syncBuiltinESMExports();
   }
 });
 
-test('N2：gitExec 合并配置上下文的 filter，附加上下文故障时拒绝执行', async () => {
+test('N2：gitExec 合并配置上下文的 filter，附加上下文故障时拒绝执行', async t => {
+  const f = await fixture(t);
+  const target = await fixture(t);
   const calls = [], signal = new AbortController().signal;
   let fail = false;
   mock.method(childProcess, 'execFile', (file, args, options, callback) => {
     calls.push({ args, options });
-    if (fail && options.cwd === '/target') return callback(new Error('unreadable'), '');
-    callback(null, args.includes('config') ? `filter.${options.cwd === '/repo' ? 'parent' : 'target'}.process\nunsafe\0` : 'output');
+    if (fail && options.cwd === target.cwd) return callback(new Error('unreadable'), '');
+    callback(null, args.includes('--show-toplevel') ? `${options.cwd}\n` : args.includes('config') ? `filter.${options.cwd === f.cwd ? 'parent' : 'target'}.process\nunsafe\0` : 'output');
   });
   syncBuiltinESMExports();
   try {
-    assert.equal(await gitExec('/repo', ['worktree', 'remove', '/target'], signal, ['/target', '/repo', '/target']), 'output');
-    assert.deepEqual(calls.map(call => call.options.cwd), ['/repo', '/target', '/repo']);
+    assert.equal(await gitExec(f.cwd, ['worktree', 'remove', target.cwd], signal, [target.cwd, f.cwd, target.cwd]), 'output');
+    assert.deepEqual(calls.map(call => call.options.cwd), [f.cwd, f.cwd, target.cwd, target.cwd, f.cwd]);
     for (const driver of ['parent', 'target']) {
       for (const key of ['clean', 'smudge', 'process']) assert.ok(calls.at(-1).args.includes(`filter.${driver}.${key}=`));
       assert.ok(calls.at(-1).args.includes(`filter.${driver}.required=false`));
     }
     for (const call of calls) assert.equal(call.options.signal, signal);
     fail = true; calls.length = 0;
-    await assert.rejects(gitExec('/repo', ['worktree', 'remove', '/target'], signal, ['/target']));
+    await assert.rejects(gitExec(f.cwd, ['worktree', 'remove', target.cwd], signal, [target.cwd]));
     assert.equal(calls.some(call => call.args.includes('remove')), false);
   } finally {
     mock.restoreAll(); syncBuiltinESMExports();
   }
 });
 
-test('N1：只接受完整提交 OID，解析失败不执行读取命令', async () => {
+test('N1：只接受完整提交 OID，解析失败不执行读取命令', async t => {
+  const f = await fixture(t);
   const calls = [];
   let output = '';
   mock.method(childProcess, 'execFile', (file, args, options, callback) => {
     calls.push(args);
-    callback(null, args.includes('--get-regexp') ? '' : args.includes('--verify') ? output : 'read');
+    callback(null, args.includes('--show-toplevel') ? `${f.cwd}\n` : args.includes('--get-regexp') ? '' : args.includes('--verify') ? output : 'read');
   });
   syncBuiltinESMExports();
   try {
     for (const invalid of ['', 'a'.repeat(39), 'a'.repeat(41), 'a'.repeat(63), 'z'.repeat(40), `${'a'.repeat(40)}\n${'b'.repeat(40)}`]) {
       calls.length = 0; output = invalid;
-      await assert.rejects(gitRead('/repo', 'show', [], ['HEAD']), /提交对象无效/);
+      await assert.rejects(gitRead(f.cwd, 'show', [], ['HEAD']), /提交对象无效/);
       assert.equal(calls.some(args => args.includes('show')), false);
     }
     for (const length of [40, 64]) {
       calls.length = 0; output = `${'a'.repeat(length)}\n`;
-      assert.equal(await gitRead('/repo', 'show', [], ['HEAD']), 'read');
+      assert.equal(await gitRead(f.cwd, 'show', [], ['HEAD']), 'read');
       assert.ok(calls.at(-1).includes('a'.repeat(length)));
       assert.equal(calls.at(-1).includes('HEAD'), false);
     }

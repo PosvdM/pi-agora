@@ -5,8 +5,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { randomUUID } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import { startDaemon } from '../packages/daemon/dist/index.js';
-import { connectHost, createClient, gitExec } from '../packages/protocol/dist/index.js';
+import { connectHost, createClient, gitExec, gitEnvironment } from '../packages/protocol/dist/index.js';
 import { DatabaseSync } from 'node:sqlite';
 import { Store, openStore, schemaMigrations } from '../packages/daemon/dist/store.js';
 import { NoticeDelivery } from '../packages/extension/dist/notifications.js';
@@ -318,7 +319,8 @@ test('提问校验依赖与自定义答复；取消不算同意；等待答复�
 
 test('worktree 从父目录当前提交创建，不带未提交修改，worktree 提问只核对 principal；脏目录拒绝清理', async t => {
   const f = await setup(t), main = await f.main(), repo = join(f.home, 'repo'); await mkdir(repo);
-  await gitExec(repo, ['init']); await gitExec(repo, ['config', 'user.name', '测试']); await gitExec(repo, ['config', 'user.email', 'test@example.invalid']);
+  execFileSync('git', ['init'], { cwd: repo, env: gitEnvironment(), timeout: 10_000, stdio: 'pipe' });
+  await gitExec(repo, ['config', 'user.name', '测试']); await gitExec(repo, ['config', 'user.email', 'test@example.invalid']);
   await writeFile(join(repo, 'source.txt'), '已提交'); await gitExec(repo, ['add', '.']); await gitExec(repo, ['commit', '-m', '初始测试提交']);
   const base = (await gitExec(repo, ['rev-parse', 'HEAD'])).trim(); await writeFile(join(repo, 'source.txt'), '未提交');
   const task = await f.spawn(main, { cwd: repo, isolation: 'worktree', profile: 'implement' }), h = await f.handle(task);
