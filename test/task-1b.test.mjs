@@ -187,11 +187,14 @@ test('F4：静默完成在等待下级时启动父回合，非等待父任务只
   assert.equal(f.driver.handles.filter(h => h.spec.agoraSessionId === parent.agoraSessionId).length, 1, '父进程未回收');
   let inbox = await p.client.request('GET', '/v1/inbox');
   assert.equal((await injectNotices(p.client, inbox.items))[0].options.triggerTurn, true);
+  f.daemon.store.run('UPDATE outbox SET acked_at=? WHERE id=?', new Date().toISOString(), inbox.items[0].noticeId);
   // 模拟已经处于等待决定的父任务；静默事件只能投递，不能领取推理名额。
   await p.client.request('POST', '/v1/requests', { questions: [{ id: 'q', question: '等待主代理决定' }] });
   const child2 = await f.spawn(p.client, { notify: 'silent' });
   await f.settled(parent); assert.equal(f.daemon.store.task(parent.taskId).status, 'waiting_decision');
   await f.handle(child2); await f.settled(child2);
+  // 启动恢复扫描同样不能为静默 outbox 领取名额。
+  f.daemon.tasks.startQueue(); await f.daemon.tasks.flush();
   assert.equal(f.daemon.store.task(parent.taskId).status, 'waiting_decision');
   assert.equal(f.daemon.tasks.activeCount(), 0);
   inbox = await p.client.request('GET', '/v1/inbox');

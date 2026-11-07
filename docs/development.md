@@ -4,7 +4,7 @@
 
 切片 1b 提供任务核心。四个 workspace 为 protocol、daemon、extension、cli，不依赖 pi-pane。任务动作包括 spawn、list、status、result、steer、stop、cleanup 和 recover；权限档位为 explore、review、implement。子代理可以继续派出下级，daemon 强制核对 principal、直接召集关系、任务树、层数、下级数和档位。
 
-提问由 `agora_request` 创建、答复、逐级转交或取消；CLI 提供 pending 和 answer。父任务有未完成下级时进入 `waiting_children`，有未答复提问时进入 `waiting_decision`。两者 settled 后都释放推理名额，可空闲回收；通知到达时重新取得名额，必要时拉起原会话，再由扩展注入持久通知。
+提问由 `agora_request` 创建、答复、逐级转交或取消；CLI 提供 pending 和 answer。父任务有未完成下级时进入 `waiting_children`，有未答复提问时进入 `waiting_decision`。两者 settled 后都释放推理名额，可空闲回收。需要推理的通知重新排队取得名额，必要时拉起原会话，再由扩展注入持久通知；静默投递与等待下级时的强制唤醒规则见 [tasks.md](tasks.md#工具一览)。
 
 尚未提供：用户设备确认、预算与完整资源 ACL、配对及安全状态审计（1c），可选扩展 / MCP 白名单及 `implement.projectTrust: "saved"`（建议随 1c 跟进），存档读取与会话视图（1d），board、会议和 pane 插件。生产子会话固定 `-ne --no-mcp --no-approve`，只显式加载 agora；测试 driver 可以独立注入假 provider，不开放生产 HTTP 注入。
 
@@ -30,7 +30,7 @@ npm test
 | --- | --- |
 | `packages/protocol/src/index.ts` | 协议类型、工具 schema 和版本 |
 | `packages/protocol/src/client.ts` | 发现、双向握手、连接、请求总期限与有界重试 |
-| `packages/protocol/src/git.ts` | 固定 argv、配置与环境清理、只读 git 白名单 |
+| `packages/protocol/src/git.ts` | 共用 Git 安全调用层、配置与环境清理、字面路径和只读查询白名单 |
 | `packages/daemon/src/index.ts`、`main.ts` | 配置、单实例、启动恢复、排空与入口 |
 | `packages/daemon/src/server.ts`、`auth.ts` | HTTP、幂等记录、principal、租约、launch ticket |
 | `packages/daemon/src/store.ts` | schema v4、一致性备份、迁移、条件更新、outbox 和逐请求用量 |
@@ -87,7 +87,7 @@ shutdown 默认排空，超时后保留 daemon；force 中断并清理运行。�
 ## 关键约束
 
 - **两阶段就绪**：扩展报告工具 / 模型后先结束 session_start，daemon 再通过 RPC 核对可用模型、thinking 和会话路径。子会话工具授权另等 `GET /v1/runs/:id/authorized` 返回最终 ready；不能把 HTTP ready 的接受响应当作授权。
-- **控制与名额**：发送、返工、停止、恢复、回收和唤醒经任务控制队列执行，写入时核对 generation / revision。停止在队列内重查租约与权限，拒绝过期请求前不改变停止标志。等待下级或提问的 settled 父任务不占名额，重新唤醒仍排队。
+- **控制与名额**：发送、返工、停止、恢复、回收和唤醒经任务控制队列执行，写入时核对 generation / revision。停止在队列内重查租约与权限，拒绝过期请求前不改变停止标志。等待下级或提问的 settled 父任务不占名额，重新唤醒仍排队。启动恢复扫描只调度需要推理的 outbox，统一队列在旧运行核对和 HTTP 监听完成后才启动。
 - **可靠通知**：状态、结果和通知同事务；每批最多 200，扩展取到空批。完整磁盘行的 entryId、noticeId、dedupeKey 全部相符才 ack。继承的历史通知不能代替当前 inbox 的授权。被 clear_queue 清掉的在途通知在 settled 后可重投；每代完成有独立 key。
 - **请求重试**：安全 GET、可幂等续期及带原 Idempotency-Key 的业务写入最多三次，共用一个总期限、原 token、参数与 key；间隔 50 / 100ms。取消、关闭、HTTP 拒绝、协议不兼容、无效 JSON 和一次性认证兑换不重试。子会话短暂续期传输错误不立即 fatal。
 - **Windows 退出可见性**：有效 StopReport 后最多 2 秒纯身份查询，不补杀；持续 alive / unknown 仍保锁。driver 的失败 stop 可显式重试，只复查原报告、身份和 release，不重放清队列或底层停止；已有失败报告不能变成新成功报告。TaskManager 重试仍核对版本与租约。
@@ -100,10 +100,10 @@ shutdown 默认排空，超时后保留 daemon；force 中断并清理运行。�
 
 | 测试文件 | 验收与边界 |
 | --- | --- |
-| `test/task-1b.test.mjs` | generation、幂等 steer / answer、送达追踪、中断返工、D14 七项规则、提问并发和逐级转交、worktree、回收、看门狗、配置及 v2→v4 迁移 |
+| `test/task-1b.test.mjs` | generation、幂等 steer / answer、送达追踪、中断旧代结果与用量、D14 七项规则、失败与额度通知唤醒、静默投递、直接停止孙任务、恢复后的提问路由、父提交 worktree、回收、看门狗、配置及 v2→v4 迁移 |
 | `test/task-d15.test.mjs`、`driver-d15.test.mjs`、`d15-e2e.test.mjs` | 子代理标记、skill 白名单与只读授权、同项目双主会话的提问路由、任务 / 代 / 树用量、额度暂停与通知 / 自动恢复、v3→v4 备份和迁移回滚；真实 pi 的本地 429 与 skill 加载 |
-| `test/tree-e2e.test.mjs` | 真实子代理调用 agora_task 再派下级；单名额无死锁、父进程回收后重拉及通知落盘；恶意 MCP / 扩展不启动；Windows 原生 PowerShell 实际工具调用 |
-| `test/permissions-1b.test.mjs`、`git-1b.test.mjs` | 三档精确工具集合、受保护路径及祖先、新文件、真实 junction、Unicode / 大小写；恶意 git 配置探针和全部只读命令 |
+| `test/tree-e2e.test.mjs` | 真实子代理调用 agora_task 再派下级；单名额下静默下级通知真正启动父回合，覆盖父进程未回收及回收重拉、通知落盘；恶意 MCP / 扩展不启动；Windows 原生 PowerShell 实际工具调用 |
+| `test/permissions-1b.test.mjs`、`git-1b.test.mjs`、`git-paths-review.test.mjs` | 三档精确工具集合、受保护路径及祖先、新文件、真实 junction、Unicode / 大小写、Windows 8.3 短名（所在卷不分配短名时说明原因并跳过）；Git 字面路径与 cwd 边界、恶意配置和 worktree filter / hooks 正负控及进程退出 |
 | `test/client-retry.test.mjs` | 保留 keep-alive 的真实 socket 故障、响应丢失后的原 key 重试、总期限、取消、拒绝和一次性 ticket 不重放 |
 | `test/e2e.test.mjs`、`notice-fork.test.mjs` | 真实主 pi 派活、通知叫醒取结果；fork 不确认父通知、同摘要乱序完成仍可定位 |
 | `test/notify-faults.test.mjs` | P0 五个真实强杀故障时点、无提前确认、恢复后同 key 一条 |

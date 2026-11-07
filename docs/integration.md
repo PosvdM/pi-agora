@@ -92,7 +92,7 @@ pi-hostkit        ◄── daemon、extension（pi-pane 服务端也依赖它�
 
 提问返回 targetId（当前接收方）、route（逐级转交链）和 revision；答复始终送给 askerId。主代理也能 ask，直接面向 user。1b 的 host:cli 可直接答复任意提问，answeredVia.confirmedBy 为 none；不存在设备挑战或用户级签名，不发送 Agora-Act-As 请求头。完整用户级协议按下节目标在 1c 接入。
 
-子会话 inbox 只有在 run 持有推理名额且最终就绪时返回通知。等待下级的父任务先经 daemon 重新排队或拉起，再由扩展注入同一 outbox 通知，防止通知绕过全局名额。
+子会话 inbox 只向最终就绪、未停止的 run 返回通知。run 未持有推理名额时只返回静默通知；需要推理的通知必须等 run 获得名额后领取。父任务处于 waiting_children 时，下级终态通知不受 notify: silent 限制：daemon 为其排队或重新拉起，并在通知 payload 中设置 triggerTurn: true，扩展据此真正启动回合。静默投递不领取名额，启动恢复扫描也不因纯静默 outbox 唤醒任务。
 
 ### 幂等
 

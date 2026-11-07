@@ -69,6 +69,7 @@ export class TaskManager {
   private readonly waking = new Set<string>();
   private readonly quotaTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private halted = false;
+  private queueStarted = false;
   draining = false;
   private readonly maxConcurrentRuns: number;
   constructor(readonly store: Store, readonly auth: Auth, readonly driver: SessionDriver, readonly options: TaskOptions) {
@@ -172,7 +173,7 @@ export class TaskManager {
     return { ...taskSummary(this.store.task(taskId)), worktree: isolated?.worktree, warnings: isolated?.warnings ?? [] };
   }
   private pump(): void {
-    while (!this.halted && this.occupied < this.maxConcurrentRuns && this.pending.length) {
+    while (this.queueStarted && !this.halted && this.occupied < this.maxConcurrentRuns && this.pending.length) {
       const taskId = this.pending.shift()!;
       if (this.store.task(taskId).status !== "created" && !this.waking.has(taskId)) continue;
       this.occupied++;
@@ -704,7 +705,7 @@ export class TaskManager {
       const explanation = "【agora 中断恢复】旧运行已停止。请核对会话记录、工作目录与退出诊断，正在执行的工具可能已经产生副作用，不得自动重放。";
       if (mode === "resume") {
         this.store.run("UPDATE tasks SET pending_message=?,recovery_attempts=recovery_attempts+1 WHERE id=?", explanation, taskId);
-        this.store.transition(this.store.task(taskId), "running");
+        this.transition(this.store.task(taskId), "running");
       } else {
         const profile = mode === "replace" && body.profile !== undefined ? text(body.profile, "profile", 16) : task.profile;
         const model = mode === "replace" && body.model !== undefined ? text(body.model, "model", 512) : task.model;
@@ -793,7 +794,7 @@ export class TaskManager {
         }
         if (clean) this.store.run("UPDATE process_runs SET state='exited',exited_at=? WHERE id=?", now(), run.id);
         const task = this.store.task(session.task_id);
-        if (["created", "running"].includes(task.status)) this.store.transition(task, "interrupted", clean ? "daemon 重启，旧运行已停止；任务不会自动重放" : "旧进程尚未确认退出，禁止恢复", run.id);
+        if (["created", "running"].includes(task.status)) this.transition(task, "interrupted", clean ? "daemon 重启，旧运行已停止；任务不会自动重放" : "旧进程尚未确认退出，禁止恢复", run.id);
       }
     }
     if (!startup) return allReports;
@@ -819,10 +820,11 @@ export class TaskManager {
     }
     let cursor = "";
     while (true) {
-      const rows = this.store.all<{ id: string }>("SELECT p.id FROM principals p WHERE p.type='agent:child' AND p.id>? AND EXISTS(SELECT 1 FROM outbox o WHERE o.recipient_id=p.id AND o.acked_at IS NULL) ORDER BY p.id LIMIT 200", cursor);
+      const rows = this.store.all<{ id: string }>("SELECT p.id FROM principals p WHERE p.type='agent:child' AND p.id>? AND EXISTS(SELECT 1 FROM outbox o WHERE o.recipient_id=p.id AND o.acked_at IS NULL AND (json_extract(o.payload,'$.triggerTurn')=1 OR (COALESCE(json_extract(o.payload,'$.notify'),'wake')<>'silent' AND COALESCE(json_extract(o.payload,'$.silent'),0)<>1))) ORDER BY p.id LIMIT 200", cursor);
       if (!rows.length) break;
       for (const row of rows) { cursor = row.id; this.wake(row.id); }
     }
+    this.queueStarted = true;
     this.pump();
   }
   activeCount(): number { return this.occupied; }
@@ -845,7 +847,7 @@ export class TaskManager {
       if (runtime.idleTimer) clearTimeout(runtime.idleTimer);
       work.push(this.control(runtime.taskId, async () => {
         const task = this.store.task(runtime.taskId);
-        if (["created", "running"].includes(task.status)) this.store.transition(task, "interrupted", "daemon 强制关闭，任务不会自动重放", runtime.runId);
+        if (["created", "running"].includes(task.status)) this.transition(task, "interrupted", "daemon 强制关闭，任务不会自动重放", runtime.runId);
         if (runtime.handle) {
           await runtime.handle.stop();
           const exit = await runtime.handle.exited;
