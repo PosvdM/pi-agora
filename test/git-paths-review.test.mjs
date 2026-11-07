@@ -13,7 +13,9 @@ test('F1：真实 Git 的 glob 按字面处理，省略路径只读 cwd，安全
   const wire = await extensionWire(root);
   const repo = join(root, 'repo'), safe = join(repo, 'public'), secret = join(repo, 'secret');
   await mkdir(safe, { recursive: true }); await mkdir(secret);
-  const raw = args => execFileSync('git', args, { cwd: repo, env: gitEnvironment(), timeout: 10_000, encoding: 'utf8' });
+  const env = gitEnvironment();
+  for (const key of ['GIT_ALLOW_PROTOCOL', 'GIT_NO_LAZY_FETCH', 'GIT_NO_REPLACE_OBJECTS', 'GIT_GRAFT_FILE']) delete env[key];
+  const raw = args => execFileSync('git', args, { cwd: repo, env, timeout: 10_000, encoding: 'utf8' });
   raw(['init']); raw(['config', 'user.name', '测试']); raw(['config', 'user.email', 'test@example.invalid']);
   await writeFile(join(safe, 'file.txt'), 'SAFE-CONTENT\n');
   await writeFile(join(secret, 'key.txt'), 'PROTECTED-CONTENT\n');

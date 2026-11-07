@@ -2,13 +2,21 @@ import { execFile } from 'node:child_process';
 
 export function gitEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env = { ...source };
-  for (const key of Object.keys(env)) if (/^GIT_/i.test(key)) delete env[key];
+  for (const key of Object.keys(env)) if (/^(?:GIT_|SSH_ASKPASS$|EDITOR$|VISUAL$)/i.test(key)) delete env[key];
   return { ...env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null',
-    GIT_PAGER: 'cat', PAGER: 'cat', GIT_EXTERNAL_DIFF: '', GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0' };
+    GIT_PAGER: 'cat', PAGER: 'cat', GIT_EXTERNAL_DIFF: '', GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0',
+    GIT_ALLOW_PROTOCOL: '', GIT_NO_LAZY_FETCH: '1', GIT_NO_REPLACE_OBJECTS: '1',
+    GIT_GRAFT_FILE: process.platform === 'win32' ? 'NUL' : '/dev/null' };
 }
 const prefix = ['--no-pager', '--no-optional-locks', '-c', 'core.fsmonitor=', '-c', 'core.pager=cat',
   '-c', 'color.ui=never', '-c', 'log.showSignature=false', '-c', 'core.hooksPath=/dev/null',
-  '-c', 'submodule.recurse=false', '-c', 'diff.submodule=short', '-c', 'diff.ignoreSubmodules=all', '-c', 'status.submoduleSummary=false'];
+  '-c', 'submodule.recurse=false', '-c', 'diff.submodule=short', '-c', 'diff.ignoreSubmodules=all', '-c', 'status.submoduleSummary=false',
+  '-c', 'protocol.allow=never', '-c', 'core.sshCommand=false', '-c', 'core.gitProxy=false',
+  '-c', 'core.askPass=', '-c', 'credential.helper=', '-c', 'credential.interactive=false',
+  '-c', 'core.editor=false', '-c', 'sequence.editor=false', '-c', 'core.useReplaceRefs=false',
+  '-c', 'mailmap.blob=', '-c', 'mailmap.file=', '-c', 'log.mailmap=false', '-c', 'format.pretty=medium',
+  '-c', 'log.follow=false', '-c', 'diff.renames=false', '-c', 'status.renames=false',
+  '-c', 'gc.auto=0', '-c', 'maintenance.auto=false', '-c', 'core.unsetenvvars=', '-c', 'advice.graftFileDeprecated=false'];
 // 配置探测只读取配置，不运行工作区转换器；所有实际命令由 gitExec 加固。
 async function gitRaw(cwd: string, args: string[], signal?: AbortSignal): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -52,10 +60,10 @@ export async function gitRead(cwd: string, command: string, options: string[] = 
   }
   const args = command === 'status'
     ? ['status', '--porcelain=v1', '--ignore-submodules=all', '--untracked-files=normal']
-    : [command, '--no-ext-diff', '--no-textconv', '--no-color', ...(command === 'log' || command === 'show' ? ['--no-show-signature'] : []), ...(command === 'log' ? ['-n50'] : []), ...options, ...resolved];
+    : [command, '--no-ext-diff', '--no-textconv', '--no-color', ...(command === 'log' || command === 'show' ? ['--no-show-signature', '--no-notes', '--no-mailmap'] : []), ...(command === 'log' ? ['-n50'] : []), ...options, ...resolved];
   return gitExec(cwd, ['--literal-pathspecs', ...args, '--', ...(paths.length ? paths : ['.'])], signal);
 }
-export async function gitExec(cwd: string, args: string[], signal?: AbortSignal, configContexts: string[] = []): Promise<string> {
+async function filterOverrides(cwd: string, signal?: AbortSignal, configContexts: string[] = []): Promise<string[]> {
   const drivers = new Set<string>();
   for (const context of new Set([cwd, ...configContexts])) {
     let config = '';
@@ -71,5 +79,8 @@ export async function gitExec(cwd: string, args: string[], signal?: AbortSignal,
     }
   }
   const filters = [...drivers].flatMap(driver => ['clean', 'smudge', 'process'].flatMap(key => ['-c', `filter.${driver}.${key}=`]).concat(['-c', `filter.${driver}.required=false`]));
-  return gitRaw(cwd, [...filters, ...args], signal);
+  return filters;
+}
+export async function gitExec(cwd: string, args: string[], signal?: AbortSignal, configContexts: string[] = []): Promise<string> {
+  return gitRaw(cwd, [...await filterOverrides(cwd, signal, configContexts), ...args], signal);
 }

@@ -13,7 +13,9 @@ async function fixture(t) {
   const root = await mkdtemp(path.join(tmpdir(), 'agora-git-contexts-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const cwd = path.join(root, 'repo'); await mkdir(cwd);
-  const raw = (args, directory = cwd) => execFileSync('git', args, { cwd: directory, env: gitEnvironment(),
+  const env = gitEnvironment();
+  for (const key of ['GIT_ALLOW_PROTOCOL', 'GIT_NO_LAZY_FETCH', 'GIT_NO_REPLACE_OBJECTS', 'GIT_GRAFT_FILE']) delete env[key];
+  const raw = (args, directory = cwd) => execFileSync('git', args, { cwd: directory, env,
     encoding: 'utf8', timeout: 10_000, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
   raw(['init', '--initial-branch=main']);
   raw(['config', 'user.name', 'Git contexts']); raw(['config', 'user.email', 'contexts@example.invalid']);

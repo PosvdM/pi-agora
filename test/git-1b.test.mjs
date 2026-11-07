@@ -11,7 +11,13 @@ import { Worktrees } from '../packages/daemon/dist/worktrees.js';
 
 const prefix = ['--no-pager', '--no-optional-locks', '-c', 'core.fsmonitor=', '-c', 'core.pager=cat',
   '-c', 'color.ui=never', '-c', 'log.showSignature=false', '-c', 'core.hooksPath=/dev/null',
-  '-c', 'submodule.recurse=false', '-c', 'diff.submodule=short', '-c', 'diff.ignoreSubmodules=all', '-c', 'status.submoduleSummary=false'];
+  '-c', 'submodule.recurse=false', '-c', 'diff.submodule=short', '-c', 'diff.ignoreSubmodules=all', '-c', 'status.submoduleSummary=false',
+  '-c', 'protocol.allow=never', '-c', 'core.sshCommand=false', '-c', 'core.gitProxy=false',
+  '-c', 'core.askPass=', '-c', 'credential.helper=', '-c', 'credential.interactive=false',
+  '-c', 'core.editor=false', '-c', 'sequence.editor=false', '-c', 'core.useReplaceRefs=false',
+  '-c', 'mailmap.blob=', '-c', 'mailmap.file=', '-c', 'log.mailmap=false', '-c', 'format.pretty=medium',
+  '-c', 'log.follow=false', '-c', 'diff.renames=false', '-c', 'status.renames=false',
+  '-c', 'gc.auto=0', '-c', 'maintenance.auto=false', '-c', 'core.unsetenvvars=', '-c', 'advice.graftFileDeprecated=false'];
 const quote = value => `'${value.replaceAll('\\', '/').replaceAll("'", "'\\''")}'`;
 async function fixture(t) {
   const root = await mkdtemp(path.join(tmpdir(), 'agora-git-1b-'));
@@ -19,6 +25,7 @@ async function fixture(t) {
   const cwd = path.join(root, 'repo');
   await mkdir(cwd);
   const env = gitEnvironment();
+  for (const key of ['GIT_ALLOW_PROTOCOL', 'GIT_NO_LAZY_FETCH', 'GIT_NO_REPLACE_OBJECTS', 'GIT_GRAFT_FILE']) delete env[key];
   delete env.GIT_EXTERNAL_DIFF;
   delete env.GIT_PAGER;
   delete env.PAGER;
@@ -61,8 +68,8 @@ test('1b git argv：固定安全前缀、filter 覆盖和 -- 分隔，不依赖 
     for (const [command, options, refs, paths, expected] of [
       ['status', [], [], ['-leading.txt'], ['status', '--porcelain=v1', '--ignore-submodules=all', '--untracked-files=normal', '--', '-leading.txt']],
       ['diff', ['--cached', '-U3'], ['HEAD'], ['file.txt'], ['diff', '--no-ext-diff', '--no-textconv', '--no-color', '--cached', '-U3', 'HEAD', '--', 'file.txt']],
-      ['log', ['-p', '-n2'], ['HEAD~1..HEAD'], [], ['log', '--no-ext-diff', '--no-textconv', '--no-color', '--no-show-signature', '-n50', '-p', '-n2', 'HEAD~1..HEAD', '--', '.']],
-      ['show', ['--stat'], ['HEAD'], [], ['show', '--no-ext-diff', '--no-textconv', '--no-color', '--no-show-signature', '--stat', 'HEAD', '--', '.']],
+      ['log', ['-p', '-n2'], ['HEAD~1..HEAD'], [], ['log', '--no-ext-diff', '--no-textconv', '--no-color', '--no-show-signature', '--no-notes', '--no-mailmap', '-n50', '-p', '-n2', 'HEAD~1..HEAD', '--', '.']],
+      ['show', ['--stat'], ['HEAD'], [], ['show', '--no-ext-diff', '--no-textconv', '--no-color', '--no-show-signature', '--no-notes', '--no-mailmap', '--stat', 'HEAD', '--', '.']],
     ]) {
       calls.length = 0;
       assert.equal(await gitRead('/repo', command, options, refs, paths, signal), 'output');
@@ -179,17 +186,21 @@ test('1b git 参数：拒绝命令、白名单外选项、危险 refs 和魔术 
 test('1b git environment：移除所有大小写的 GIT_* 注入并固定非交互设置', () => {
   const source = { PATH: 'path', HOME: 'home', GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'core.fsmonitor',
     GIT_CONFIG_VALUE_0: 'probe', GIT_CONFIG_PARAMETERS: "'core.fsmonitor=probe'", GIT_DIR: '/hostile',
-    git_work_tree: '/hostile', Git_External_Diff: 'probe', GIT_SSH_COMMAND: 'probe', GIT_PAGER: 'probe', PAGER: 'probe' };
+    git_work_tree: '/hostile', Git_External_Diff: 'probe', GIT_SSH_COMMAND: 'probe', GIT_PAGER: 'probe', PAGER: 'probe',
+    SSH_ASKPASS: 'probe', EDITOR: 'probe', VISUAL: 'probe' };
   const env = gitEnvironment(source);
   assert.equal(source.GIT_PAGER, 'probe');
   assert.equal(env.PATH, 'path');
-  for (const key of ['GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0', 'GIT_CONFIG_PARAMETERS', 'GIT_DIR', 'git_work_tree', 'Git_External_Diff', 'GIT_SSH_COMMAND']) assert.equal(env[key], undefined);
+  for (const key of ['GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0', 'GIT_CONFIG_PARAMETERS', 'GIT_DIR', 'git_work_tree', 'Git_External_Diff', 'GIT_SSH_COMMAND', 'SSH_ASKPASS', 'EDITOR', 'VISUAL']) assert.equal(env[key], undefined);
   assert.equal(env.GIT_CONFIG_GLOBAL, process.platform === 'win32' ? 'NUL' : '/dev/null');
   assert.equal(env.GIT_CONFIG_NOSYSTEM, '1');
   assert.equal(env.GIT_PAGER, 'cat');
   assert.equal(env.PAGER, 'cat');
   assert.equal(env.GIT_EXTERNAL_DIFF, '');
   assert.equal(env.GIT_TERMINAL_PROMPT, '0');
+  assert.equal(env.GIT_ALLOW_PROTOCOL, '');
+  assert.equal(env.GIT_NO_LAZY_FETCH, '1');
+  assert.equal(env.GIT_NO_REPLACE_OBJECTS, '1');
 });
 
 test('1b 真实 Git：textconv/external/fsmonitor/pager/required filters/gpg 配置不执行', { timeout: 90_000 }, async t => {
