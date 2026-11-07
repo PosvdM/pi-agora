@@ -31,6 +31,7 @@ class Driver {
       emit(event) { for (const fn of listeners) fn(event); }, markReady() { this.ready = true; }, diagnostics() { return {}; }, respondUi() {},
       async send(cmd) {
         this.commands.push(cmd);
+        if (cmd.type === 'abort') { this.onAbort?.(); this.emit({ type: 'agent_settled', aborted: true }); }
         const data = cmd.type === 'get_available_models' ? { models: [{ provider: 'test', id: 'model' }] }
           : cmd.type === 'get_state' ? { model: { provider: 'test', id: 'model' }, thinkingLevel: spec.thinking, sessionFile: spec.sessionFile }
           : cmd.type === 'get_last_assistant_text' ? { text: '结果' } : {};
@@ -39,6 +40,7 @@ class Driver {
       async stop() {
         this.stopped = true;
         if (this.failStop) throw new Error('unconfirmed');
+        this.onStop?.();
         const report = { coverage: process.platform === 'win32' ? 'job_object' : 'snapshot_visible', steps: [], leftovers: [] };
         const exit = { identity: this.identity, code: 0, signal: null, cleanupConfirmed: true, stopReport: report };
         resolveExit(exit); for (const fn of exits) fn(exit); client.close(); return report;
@@ -129,6 +131,29 @@ test('D15 逐请求记账关联任务/代/会话，用量去重并按任务树�
   const old = await main.request('GET', `/v1/tasks/${parent.taskId}/result?generation=1`);
   assert.equal(old.generationUsage.inputTokens, 30); assert.equal(old.usage.inputTokens, 70);
   const current = await main.request('GET', `/v1/tasks/${parent.taskId}/result`); assert.equal(current.generationUsage.inputTokens, 40);
+});
+
+test('N4 stop 收尾仍记录原代用量，确认退出后拒收，重复请求只记一次', async t => {
+  const f = await setup(t), main = await f.main(), task = await f.spawn(main), h = await f.handle(task);
+  h.onStop = () => { h.emit(usage('abort-tail')); h.emit(usage('abort-tail')); };
+  await main.request('POST', `/v1/tasks/${task.taskId}/stop`, {});
+  h.emit(usage('after-exit'));
+  const rows = f.daemon.store.all('SELECT * FROM usage_records WHERE task_id=?', task.taskId);
+  assert.equal(rows.length, 1); assert.equal(rows[0].request_id, 'abort-tail'); assert.equal(rows[0].generation, 1);
+  assert.equal(rows[0].agora_session_id, task.agoraSessionId); assert.equal(rows[0].run_id, h.spec.runId);
+});
+
+test('N4 interrupt abort 收尾归旧代，复用运行的新代不重复、不误记', async t => {
+  const f = await setup(t), main = await f.main(), task = await f.spawn(main), h = await f.handle(task);
+  h.onAbort = () => { h.emit(usage('old-tail')); h.emit(usage('old-tail')); };
+  await main.request('POST', `/v1/tasks/${task.taskId}/steer`, { message: '新代', interrupt: true });
+  await until(() => h.commands.filter(c => c.type === 'prompt').length === 2);
+  h.emit(usage('old-tail')); h.emit(usage('new-turn', 2)); await f.settle(h);
+  const old = f.daemon.store.usage(task.taskId, false, 1), current = f.daemon.store.usage(task.taskId, false, 2);
+  assert.equal(old.requests, 1); assert.equal(old.inputTokens, 10); assert.equal(current.requests, 1); assert.equal(current.inputTokens, 20);
+  for (const row of f.daemon.store.all('SELECT * FROM usage_records WHERE task_id=?', task.taskId)) {
+    assert.equal(row.agora_session_id, task.agoraSessionId); assert.equal(row.run_id, h.spec.runId);
+  }
 });
 
 test('D15 额度暂停不失败、不占名额，到期通知上级并附上下文，续跑父任务不续跑下级', async t => {

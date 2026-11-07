@@ -19,6 +19,7 @@ function bounded(value: unknown, fallback: number | null, name: string, nullable
 }
 interface Runtime {
   taskId: string; runId: string; handle?: DriverHandle; policy: RunPolicy;
+  usageGeneration: number; usageSessionId: string; usageClosed: boolean;
   stopped: boolean; accepted: boolean; active: boolean; ready: boolean;
   terminal?: "stopped" | "interrupted" | "failed"; assistantError?: boolean;
   quota?: { resumeAt: string | null; reason: string };
@@ -185,6 +186,7 @@ export class TaskManager {
           runtime.active = true; runtime.accepted = true; runtime.assistantError = false;
           if (runtime.idleTimer) clearTimeout(runtime.idleTimer);
           const task = this.store.task(taskId);
+          runtime.usageGeneration = task.generation;
           if (task.status !== "running") this.transition(task, "running");
           if (task.pending_message) {
             this.store.run("UPDATE tasks SET pending_message=NULL WHERE id=?", taskId);
@@ -228,7 +230,7 @@ export class TaskManager {
     let resolveHandle!: (handle: DriverHandle) => void, rejectHandle!: (error: Error) => void;
     const handlePromise = new Promise<DriverHandle>((resolve, reject) => { resolveHandle = resolve; rejectHandle = reject; });
     void readyPromise.catch(() => {}); void handlePromise.catch(() => {});
-    const runtime: Runtime = { taskId, runId, policy, stopped: false, accepted: false, active: true, ready: false,
+    const runtime: Runtime = { taskId, runId, policy, usageGeneration: task.generation, usageSessionId: session.id, usageClosed: false, stopped: false, accepted: false, active: true, ready: false,
       readyPromise, resolveReady, rejectReady, handlePromise, resolveHandle, rejectHandle, lastEvent: Date.now(), tools: new Map() };
     this.runtimes.set(taskId, runtime);
     this.store.run("INSERT INTO process_runs(id,agora_session_id,daemon_instance_id,state,started_at) VALUES(?,?,?,'starting',?)", runId, session.id, this.options.instanceId, now());
@@ -268,6 +270,7 @@ export class TaskManager {
         }
       });
       handle.onExit(exit => {
+        runtime.usageClosed = true;
         runtime.rejectReady(new Error("运行在就绪前退出"));
         void this.control(taskId, () => this.exited(runtime, exit)).catch(() => {});
       });
@@ -385,13 +388,12 @@ export class TaskManager {
     runtime.idleTimer.unref();
   }
   private recordUsage(runtime: Runtime, event: Record<string, unknown>): void {
-    const task = this.store.task(runtime.taskId);
-    if (!runtime.accepted || runtime.stopped || typeof event.requestId !== "string" || !event.requestId || event.requestId.length > 512) return;
+    if (!runtime.accepted || runtime.usageClosed || typeof event.requestId !== "string" || !event.requestId || event.requestId.length > 512) return;
     const fields = ["inputTokens", "cacheReadTokens", "cacheWriteTokens", "outputTokens", "reasoningTokens", "contextTokens"] as const;
     const values = fields.map(field => event[field]);
     if (values.some(value => typeof value !== "number" || !Number.isSafeInteger(value) || value < 0)) return;
     this.store.run("INSERT OR IGNORE INTO usage_records(task_id,generation,agora_session_id,run_id,request_id,input_tokens,cache_read_tokens,cache_write_tokens,output_tokens,reasoning_tokens,context_tokens,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-      task.id, task.generation, task.agora_session_id, runtime.runId, event.requestId, ...(values as number[]), now());
+      runtime.taskId, runtime.usageGeneration, runtime.usageSessionId, runtime.runId, event.requestId, ...(values as number[]), now());
   }
   private clearQuotaTimer(taskId: string): void {
     const timer = this.quotaTimers.get(taskId);
