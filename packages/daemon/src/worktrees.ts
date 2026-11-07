@@ -26,7 +26,9 @@ export class Worktrees {
       const parent = path.join(this.root, `${path.basename(repo)}-${hash}`);
       await mkdir(parent, { recursive: true });
       const directory = path.join(parent, `agora-${taskId}`), branch = `agora/${taskId}`;
-      await gitExec(cwd, ['worktree', 'add', '-b', branch, directory, base]);
+      // 分支或 gitdir 条件配置必须在新 worktree 的上下文中探测后再检出。
+      await gitExec(cwd, ['worktree', 'add', '--no-checkout', '-b', branch, directory, base]);
+      await gitExec(directory, ['reset', '--hard', base]);
       return { worktree: { task_id: taskId, repo_root: repo, base_commit: base, branch, path: directory, owner_id: '', state: 'active' },
         warnings: dirty ? [`父工作目录有 ${dirty} 处未提交改动，不会带入 worktree`] : [] };
     });

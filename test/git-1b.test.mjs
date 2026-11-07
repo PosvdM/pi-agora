@@ -229,4 +229,26 @@ test('F2：worktree 检出禁用恶意 smudge/process 与 hooks，正控执行�
   const hooksRun = await f.markers(); assert.ok(hooksRun.some(marker => marker.kind === 'hook'));
   await dead(hooksRun); await f.clear();
   await manager.create(f.cwd, 'negative-hook'); assert.deepEqual(await f.markers(), []);
+  // 新分支和新 gitdir 的条件 include 在父工作目录中不可见。
+  for (const condition of ['onbranch', 'gitdir']) {
+    const conditional = path.join(f.root, `${condition}-programs.config`);
+    f.raw(['config', '--file', conditional, 'filter.trap.smudge', f.probe(`${condition}-smudge`)]);
+    f.raw(['config', '--file', conditional, 'core.fsmonitor', f.probe(`${condition}-fsmonitor`)]);
+    f.raw(['config', '--file', conditional, 'core.hooksPath', hooks.replaceAll('\\', '/')]);
+    const key = condition === 'onbranch' ? 'includeIf.onbranch:agora/**.path'
+      : `includeIf.gitdir:${f.cwd.replaceAll('\\', '/')}/.git/worktrees/**.path`;
+    f.raw(['config', key, conditional.replaceAll('\\', '/')]);
+    const positive = path.join(f.root, `agora-positive-${condition}`);
+    f.raw(['worktree', 'add', '-b', `agora/positive-${condition}`, positive, 'HEAD']);
+    f.raw(['-C', positive, 'status', '--porcelain=v1']);
+    const controls = await f.markers();
+    for (const kind of [`${condition}-smudge`, `${condition}-fsmonitor`, 'hook']) {
+      assert.ok(controls.some(marker => marker.kind === kind), `${condition} 条件配置正控必须执行 ${kind}`);
+    }
+    await dead(controls); await f.clear();
+    const result = await manager.create(f.cwd, `negative-${condition}`);
+    assert.equal(await readFile(path.join(result.worktree.path, 'file.txt'), 'utf8'), 'committed\n');
+    assert.deepEqual(await f.markers(), [], `${condition} 条件配置不能在检出期间执行程序`);
+    f.raw(['config', '--unset-all', key]);
+  }
 });
