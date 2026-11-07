@@ -317,7 +317,8 @@ P0 测试用例：搜索根是受保护目录的祖先、受保护目录嵌套�
   ```text
   git --no-pager --no-optional-locks
       -c core.fsmonitor= -c core.pager=cat -c color.ui=never -c log.showSignature=false -c core.hooksPath=/dev/null
-      [ -c filter.<driver>.clean= -c filter.<driver>.smudge= -c filter.<driver>.process= ]…   # 见下文 filter
+      -c submodule.recurse=false -c diff.submodule=short -c diff.ignoreSubmodules=all -c status.submoduleSummary=false
+      [ -c filter.<driver>.clean= -c filter.<driver>.smudge= -c filter.<driver>.process= -c filter.<driver>.required=false ]…
   ```
 
 - **各子命令的完整 argv**（`<前缀>` 为上面的固定前缀；`[白名单选项]` 见下；末尾总是追加 `--`，之后才是路径）：
@@ -333,7 +334,8 @@ P0 测试用例：搜索根是受保护目录的祖先、受保护目录嵌套�
 - **环境变量**：删除继承环境中的全部 `GIT_*`，再设置 `GIT_CONFIG_NOSYSTEM=1`、`GIT_CONFIG_GLOBAL` 为平台空设备、`GIT_PAGER=cat`、`PAGER=cat`、`GIT_EXTERNAL_DIFF=`（空）、`GIT_TERMINAL_PROMPT=0` 和 `GIT_OPTIONAL_LOCKS=0`。
 - **白名单选项**：模型只能传白名单内的选项（如 `--stat`、`--name-only`、`--name-status`、`-n<数字>`、`--oneline`、`--format=<固定几种>`、`-U<数字>`、`--cached`（仅 `diff`））、提交号和提交范围，以及 `--` 之后的路径。其余一律拒绝，尤其是 `-c`、`--output`、`--exec`、`--git-dir`、`--work-tree`、`-C`、`--ext-diff`、`--textconv`、`--show-signature`、`--config-env`、`--color` 和任何会写文件或改引用的选项。提交表达式先校验字符，不允许以 `-` 开头或包含 `:`、reflog 表达式。每个提交及 `A..B`、`A...B` 的两个端点都通过同一安全调用层执行 `rev-parse --verify --end-of-options <ref>^{commit}`，校验返回的完整 SHA-1 或 SHA-256 OID，后续查询只传 OID。范围省略的端点按 `HEAD` 解析。指向 commit 的 tag 可用，tree、blob 及指向它们的 tag 一律拒绝，防止 `show` 忽略路径限制直接输出对象。
 - **路径限定**：`--` 之后的路径用 `canonicalPath` 规范化，必须在任务工作目录内，同时受“受保护目录”规则约束。传给 Git 的是核对后的相对路径，并在全局选项中设置 `--literal-pathspecs`，禁止将 glob 解释成其他路径。省略路径时显式使用 `.`，将查询限制在任务 cwd 内。
-- **共用安全调用层**：daemon 和扩展的 Git 调用统一经过 `packages/protocol/src/git.ts` 的 `gitExec`，包括 worktree 的创建、检出与清理。先用 `worktree add --no-checkout` 建立新分支与目录，再在新 cwd 中重新探测配置并用 `reset --hard` 检出，覆盖只在新分支或 gitdir 生效的条件 include。固定前缀将 hooks 路径设为 `/dev/null`。每次实际命令前只读查询仓库的 filter 配置，对每个 driver 用 `-c` 将 `clean`、`smudge`、`process` 覆盖为空，并设置 `required=false`；配置探测本身不读取工作区或运行转换器。`status` / 工作区 `diff` 的 clean/process 和 worktree 检出的 smudge/process 均受此规则约束。真实 Git 测试包含恶意 filter 与 post-checkout hook 的正控、加固调用的零执行标记和正控进程退出检查；`includeIf.onbranch` 与 `includeIf.gitdir` 分别引入 smudge、fsmonitor、hook，均有真实正负控。
+- **共用安全调用层**：daemon 和扩展的 Git 调用统一经过 `packages/protocol/src/git.ts` 的 `gitExec`，包括 worktree 的创建、检出与清理。先用 `worktree add --no-checkout` 建立新分支与目录，再在新 cwd 中重新探测配置并用 `reset --hard` 检出，覆盖只在新分支或 gitdir 生效的条件 include。固定前缀将 hooks 路径设为 `/dev/null`。`gitExec(cwd, args, signal?, configContexts = [])` 在每次实际命令前只读查询 cwd 及全部附加上下文的 filter 配置，合并 driver 集合，再用 `-c` 将每个 driver 的 `clean`、`smudge`、`process` 覆盖为空，并设置 `required=false`。配置探测本身不读取工作区或运行转换器；任一上下文查询失败均拒绝实际命令。清理时传入目标 worktree 路径作为附加上下文，覆盖 `worktree remove` 在目标目录内部执行的非 force `status`。固定前缀的 fsmonitor 与 hooks 禁用同样传入子 Git。真实 Git 回归覆盖 `onbranch` / `gitdir` 引入的 clean/process 清理、smudge 检出、fsmonitor 和 hook，并检查正控进程退出、加固调用无执行标记及脏内容拒绝。
+- **子模块边界**：固定前缀禁止配置驱动的递归检出、子模块 diff 展开和 status 摘要；只读查询忽略子模块改动，不进入子仓库。自动清理先检查索引，含 `160000` gitlink 条目的 worktree 无论是否指定 `discard` 均拒绝，须手动验收和清理，避免内部 `status --ignore-submodules=none` 进入未探测 filter 配置的子仓库。
 
 P0 用一个带恶意配置的测试仓库验证：仓库配置了 textconv、`diff.external`、`core.fsmonitor`、`core.pager`、clean/smudge/process filter、`log.showSignature` + `gpg.program`，并让工作区文件的状态信息过期；对 `status`、`diff`（工作区、`--cached`、两个提交之间）、`log`（含 `-p`）、`show` 的每一种调用都检查，这些程序一次都不会执行（用写标记文件的脚本判断）。
 
@@ -347,7 +349,7 @@ P0 用一个带恶意配置的测试仓库验证：仓库配置了 textconv、`d
 - 串行化：同一仓库的 `git worktree add/remove` 由 daemon 内的按仓库互斥锁串行执行。
 - 无隔离时的冲突：同一目录同时只允许一个不隔离的 implement 任务，第二个直接拒绝并提示用 worktree。
 - 身份不看路径：worktree 里的会话和主目录里的会话一样，通信授权只看 principal 和委派关系，不比较 cwd。
-- 清理：任务完成后**保留** worktree，召集人验收后显式调用清理。清理前用 `git status --porcelain --untracked-files=all` 检查真实状态，有未提交改动或未跟踪文件时拒绝，除非调用方传 `discard: true`。清理前确认相关会话的进程树已退出（Windows 上被打开的文件不能删除）。
+- 清理：任务完成后**保留** worktree，召集人验收后显式调用清理。含 gitlink 的 worktree 拒绝自动清理，边界见上文。其他 worktree 用 `git status --porcelain=v1 --ignore-submodules=all --untracked-files=normal` 检查状态，有未提交改动或未跟踪文件时拒绝，除非调用方传 `discard: true`。非 discard 调用保留 `worktree remove` 自身的非 force 检查，并探测父仓库及目标 worktree 的条件 filter 配置；只在显式 discard 时传 `--force`。清理前确认相关会话的进程树已退出（Windows 上被打开的文件不能删除）。
 - 不自动提交、推送、合并。合并由召集人另派任务完成。
 
 ## 崩溃与恢复

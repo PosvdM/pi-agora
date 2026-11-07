@@ -341,6 +341,7 @@ daemon 启动时、以及在线检测到状态变化时，检查以下情况，�
 
 - **受保护目录**：所有档位的文件类工具（`read`、`grep`、`find`、`ls`、`edit`、`write`）的路径校验都拒绝 `AGORA_HOME/secret` 及其下的路径，以及配置项 `protectedPaths` 列出的目录。`bash` 和 `powershell` 只有工具级限制（是否提供），不检查命令内容，也不做路径隔离。规则见 [architecture.md](architecture.md#路径校验)。
 - **Git 对象与路径**：review 的 `agora_git` 将提交表达式及范围的每个端点解析为 commit，并校验完整 OID，查询只使用解析后的 OID。tree、blob 及指向它们的 tag 不能作为查询修订，避免 `show` 绕过路径限制直接返回对象内容。路径规范化、字面 pathspec 与 cwd 限定见 [architecture.md](architecture.md#agora_git-的加固)。
+- **Git 配置上下文**：共用安全层合并 cwd 及附加上下文中的 filter driver，统一禁用 clean、smudge、process、required，并用固定前缀禁用 fsmonitor 与 hooks。worktree 清理同时探测父仓库和目标目录的条件配置，保留非 force 检查；仅显式 `discard` 可以强制清理。配置驱动的子模块递归、diff 展开和 status 摘要被禁用，只读查询忽略子模块改动。含 gitlink 的 worktree 不支持自动清理，包括指定 `discard` 的调用，须手动验收和清理，防止内部子 Git 进入未探测的子仓库。
 - **不给路径提示**：daemon 拉起子进程时从环境变量里去掉 `AGORA_HOME`（以及 `PI_PANE_HOME`），只传 `AGORA_URL` 和 `AGORA_LAUNCH_TICKET`；任务书、工具结果和错误信息里不出现密钥目录的路径。
 - **网络边界**：daemon 只监听 `127.0.0.1`；浏览器不直接连 daemon，daemon 拒绝带 `Origin` 头的请求。
 

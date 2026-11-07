@@ -38,9 +38,14 @@ export class Worktrees {
     const row = this.get(taskId);
     if (!row || row.state === 'removed') return;
     await this.serial(row.repo_root, async () => {
+      // worktree remove 的内部 status 会进入子模块，尚未覆盖这些子仓库的条件配置。
+      const entries = await gitExec(row.path, ['ls-files', '--stage', '-z']);
+      if (entries.split('\0').some(entry => entry.startsWith('160000 '))) {
+        throw new AgoraError(409, 'worktree_submodules', '含子模块的 worktree 不支持自动清理，请手动验收和清理');
+      }
       const dirty = (await gitRead(row.path, 'status')).trim();
       if (dirty && !discard) throw new AgoraError(409, 'worktree_dirty', 'worktree 有未提交改动或未跟踪文件，请验收后显式指定 discard');
-      await gitExec(row.repo_root, ['worktree', 'remove', ...(discard ? ['--force'] : []), row.path]);
+      await gitExec(row.repo_root, ['worktree', 'remove', ...(discard ? ['--force'] : []), row.path], undefined, [row.path]);
       this.store.run("UPDATE worktrees SET state='removed' WHERE task_id=?", taskId);
     });
   }

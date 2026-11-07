@@ -10,7 +10,8 @@ import { gitRead, gitExec, gitEnvironment } from '../packages/protocol/dist/git.
 import { Worktrees } from '../packages/daemon/dist/worktrees.js';
 
 const prefix = ['--no-pager', '--no-optional-locks', '-c', 'core.fsmonitor=', '-c', 'core.pager=cat',
-  '-c', 'color.ui=never', '-c', 'log.showSignature=false', '-c', 'core.hooksPath=/dev/null'];
+  '-c', 'color.ui=never', '-c', 'log.showSignature=false', '-c', 'core.hooksPath=/dev/null',
+  '-c', 'submodule.recurse=false', '-c', 'diff.submodule=short', '-c', 'diff.ignoreSubmodules=all', '-c', 'status.submoduleSummary=false'];
 const quote = value => `'${value.replaceAll('\\', '/').replaceAll("'", "'\\''")}'`;
 async function fixture(t) {
   const root = await mkdtemp(path.join(tmpdir(), 'agora-git-1b-'));
@@ -88,6 +89,31 @@ test('1b git argv：固定安全前缀、filter 覆盖和 -- 分隔，不依赖 
   } finally {
     mock.restoreAll();
     syncBuiltinESMExports();
+  }
+});
+
+test('N2：gitExec 合并配置上下文的 filter，附加上下文故障时拒绝执行', async () => {
+  const calls = [], signal = new AbortController().signal;
+  let fail = false;
+  mock.method(childProcess, 'execFile', (file, args, options, callback) => {
+    calls.push({ args, options });
+    if (fail && options.cwd === '/target') return callback(new Error('unreadable'), '');
+    callback(null, args.includes('config') ? `filter.${options.cwd === '/repo' ? 'parent' : 'target'}.process\nunsafe\0` : 'output');
+  });
+  syncBuiltinESMExports();
+  try {
+    assert.equal(await gitExec('/repo', ['worktree', 'remove', '/target'], signal, ['/target', '/repo', '/target']), 'output');
+    assert.deepEqual(calls.map(call => call.options.cwd), ['/repo', '/target', '/repo']);
+    for (const driver of ['parent', 'target']) {
+      for (const key of ['clean', 'smudge', 'process']) assert.ok(calls.at(-1).args.includes(`filter.${driver}.${key}=`));
+      assert.ok(calls.at(-1).args.includes(`filter.${driver}.required=false`));
+    }
+    for (const call of calls) assert.equal(call.options.signal, signal);
+    fail = true; calls.length = 0;
+    await assert.rejects(gitExec('/repo', ['worktree', 'remove', '/target'], signal, ['/target']));
+    assert.equal(calls.some(call => call.args.includes('remove')), false);
+  } finally {
+    mock.restoreAll(); syncBuiltinESMExports();
   }
 });
 
