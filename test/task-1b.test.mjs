@@ -244,6 +244,19 @@ test('D14：停止整棵子树逐层核对 StopReport；子代理不能操作别
   assert.equal(p.stopCount, 1); assert.equal(c.stopCount, 1); assert.equal(g.stopCount, 1); assert.equal(s.stopCount, 0);
 });
 
+test('F8：主代理可直接 stop 孙任务，其他主代理与无关子代理被拒绝且无停止副作用', async t => {
+  const f = await setup(t, { maxTaskDepth: 3, maxConcurrentRuns: 8 }), main = await f.main(), other = await f.main();
+  const parent = await f.spawn(main), p = await f.handle(parent), child = await f.spawn(p.client), c = await f.handle(child);
+  const grand = await f.spawn(c.client), g = await f.handle(grand), unrelated = await f.spawn(other), u = await f.handle(unrelated);
+  for (const actor of [other, u.client]) {
+    await assert.rejects(actor.request('POST', `/v1/tasks/${grand.taskId}/stop`, {}), e => e.code === 'forbidden');
+    assert.equal(g.stopCount, 0); assert.equal(f.daemon.store.task(grand.taskId).status, 'running');
+  }
+  const stopped = await main.request('POST', `/v1/tasks/${grand.taskId}/stop`, {});
+  assert.equal(stopped.status, 'stopped'); assert.equal(stopped.stopReport.leftovers.length, 0);
+  assert.equal(g.stopCount, 1); assert.equal(p.stopCount, 0); assert.equal(c.stopCount, 0); assert.equal(u.stopCount, 0);
+});
+
 test('主代理与子代理同时提问不互相阻塞；孙代理提问逐级上交，主代理答复送回原孙代理，同 key answer 一次生效', async t => {
   const f = await setup(t), main = await f.main(), parent = await f.spawn(main), p = await f.handle(parent), child = await f.spawn(p.client), c = await f.handle(child);
   const questions = [{ id: 'q', question: '请选择', options: [{ label: '继续' }, { label: '停止' }], allowCustom: false }];
@@ -309,6 +322,13 @@ test('worktree 从父目录当前提交创建，不带未提交修改，worktree
   assert.equal(task.worktree.base_commit, base); assert.match(task.warnings[0], /未提交/);
   assert.equal(await readFile(join(task.worktree.path, 'source.txt'), 'utf8'), '已提交');
   const q = await h.client.request('POST', '/v1/requests', { questions: [{ id: 'q', question: 'worktree 里提问' }] }); assert.equal(q.taskId, task.taskId);
+  await writeFile(join(task.worktree.path, 'source.txt'), '父任务自己的提交');
+  await gitExec(task.worktree.path, ['add', 'source.txt']); await gitExec(task.worktree.path, ['commit', '-m', '父任务推进提交']);
+  const parentHead = (await gitExec(task.worktree.path, ['rev-parse', 'HEAD'])).trim(); assert.notEqual(parentHead, base);
+  await writeFile(join(task.worktree.path, 'source.txt'), '父任务未提交');
+  const nested = await f.spawn(h.client, { cwd: task.worktree.path, isolation: 'worktree', profile: 'implement' }); await f.handle(nested);
+  assert.equal(nested.worktree.base_commit, parentHead); assert.match(nested.warnings[0], /未提交/);
+  assert.equal(await readFile(join(nested.worktree.path, 'source.txt'), 'utf8'), '父任务自己的提交');
   await writeFile(join(task.worktree.path, 'dirty.txt'), '保留'); await main.request('POST', `/v1/tasks/${task.taskId}/stop`, {});
   await assert.rejects(main.request('POST', `/v1/tasks/${task.taskId}/cleanup`, {}), e => e.code === 'worktree_dirty');
   await main.request('POST', `/v1/tasks/${task.taskId}/cleanup`, { discard: true });

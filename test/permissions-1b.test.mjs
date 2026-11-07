@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, rm, symlink, lstat, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
+import { execFileSync } from 'node:child_process';
 import { checkToolPath, validatePolicy, verifyRuntime } from '../packages/extension/dist/permissions.js';
 
 const legacy = ['read', 'grep', 'find', 'ls'];
@@ -148,6 +149,30 @@ test('1b 原生路径：真实 junction/symlink、缺失文件祖先与链接逃
   t.diagnostic(JSON.stringify({ platform: process.platform, kind, cwd: f.ctx.cwd,
     protectedLink, realTarget: await realpath(protectedLink),
     pendingPath: path.join(pendingLink, 'new', 'deep.txt'), result: 'protected; search ancestors blocked; outside root denied except implement' }));
+});
+
+test('1b Windows 8.3 短名仍受真实路径权限约束', { skip: process.platform !== 'win32' && '仅 Windows 提供 8.3 短名' }, async t => {
+  const f = await fixture(t), protectedDir = path.join(f.allowed, 'LongProtectedDirectory'), publicDir = path.join(f.allowed, 'LongPublicDirectory');
+  await mkdir(protectedDir); await mkdir(publicDir);
+  await writeFile(path.join(protectedDir, 'file.txt'), '受保护'); await writeFile(path.join(publicDir, 'file.txt'), '安全');
+  const short = target => execFileSync('cmd.exe', ['/d', '/c', `for %I in ("${target}") do @echo %~sI`],
+    { encoding: 'utf8', timeout: 10_000, windowsHide: true }).trim();
+  let protectedShort, publicShort;
+  try { protectedShort = short(protectedDir); publicShort = short(publicDir); }
+  catch (error) { t.skip(`cmd.exe 无法获取短名：${error.code ?? error.message}`); return; }
+  if (!protectedShort.includes('~') || !publicShort.includes('~')) {
+    t.skip('临时目录所在卷未分配 8.3 短名；cmd %~sI 返回长路径，无法构造真实短名别名'); return;
+  }
+  assert.equal((await realpath(protectedShort)).toLowerCase(), (await realpath(protectedDir)).toLowerCase());
+  for (const profile of Object.keys(tools)) {
+    f.policies[profile].protectedPaths.push(protectedDir);
+    for (const name of legacy) {
+      assert.match(await f.check(profile, name, path.join(protectedShort, 'file.txt')), /受保护/);
+      assert.equal(await f.check(profile, name, path.join(publicShort, 'file.txt')), undefined);
+    }
+    if (profile === 'implement') assert.match(await f.check(profile, 'write', path.join(protectedShort, 'new', 'file.txt')), /受保护/);
+  }
+  t.diagnostic('已用 cmd %~sI 取得实际 8.3 别名，核对真实目录和三档保护规则');
 });
 
 test('1b 原生路径：Unicode 空格、read NFD 回退、Windows 大小写及 shell 风格路径', async t => {
