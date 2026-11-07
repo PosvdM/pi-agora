@@ -366,6 +366,9 @@ test('v2 到 v3 迁移有一致性备份并保留旧任务，新树与提问表�
 
 test('interrupt 先清队列再 abort，以新代 prompt 返工且旧 steer 标为 dropped；过期 CAS 不产生副作用', async t => {
   const f = await setup(t), main = await f.main(), task = await f.spawn(main), h = await f.handle(task);
+  h.result = '中断前的部分结果';
+  const usage = requestId => ({ type: 'usage_record', requestId, inputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0, outputTokens: 4, reasoningTokens: 1, contextTokens: 10 });
+  h.emit(usage('generation-one'));
   const queued = await main.request('POST', `/v1/tasks/${task.taskId}/steer`, { message: '将被中断' });
   const before = f.daemon.store.task(task.taskId), count = h.commands.length;
   await assert.rejects(main.request('POST', `/v1/tasks/${task.taskId}/steer`, { message: '过期返工', interrupt: true, expectedRevision: before.revision - 1 }), e => e.code === 'conflict');
@@ -374,6 +377,14 @@ test('interrupt 先清队列再 abort，以新代 prompt 返工且旧 steer 标�
   assert.equal(result.generation, 2); await until(() => h.commands.filter(c => c.type === 'prompt').length === 2);
   const names = h.commands.map(c => c.type); assert.ok(names.indexOf('clear_queue') < names.indexOf('abort'));
   assert.equal(f.daemon.store.get('SELECT state FROM steer_messages WHERE id=?', queued.steerId).state, 'dropped');
+  const old = f.daemon.store.get('SELECT * FROM task_generations WHERE task_id=? AND generation=1', task.taskId);
+  assert.equal(old.status, 'interrupted'); assert.ok(old.settled_at);
+  h.emit(usage('generation-two')); await f.settled(task, '新代结果');
+  const previous = await main.request('GET', `/v1/tasks/${task.taskId}/result?generation=1`);
+  const current = await main.request('GET', `/v1/tasks/${task.taskId}/result?generation=2`);
+  assert.equal(previous.status, 'interrupted'); assert.equal(previous.resultText, '中断前的部分结果');
+  assert.equal(previous.generationUsage.requests, 1); assert.equal(current.generationUsage.requests, 1);
+  assert.equal(current.status, 'completed'); assert.equal(current.resultText, '新代结果');
 });
 
 test('带期限的提问过期不表示同意；转给用户后不再计时；CLI pending/answer 实际走通', async t => {

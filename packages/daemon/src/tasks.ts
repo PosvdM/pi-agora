@@ -609,8 +609,9 @@ export class TaskManager {
       this.notifyConvener(task, "wake");
     }
   }
-  private nextGeneration(task: TaskRow, message: string): void {
+  private nextGeneration(task: TaskRow, message: string, interrupted?: { text?: string; usage?: unknown }): void {
     this.store.transaction(() => {
+      this.store.run("UPDATE task_generations SET status='interrupted',settled_at=?,result_text=COALESCE(?,result_text),usage=COALESCE(?,usage) WHERE task_id=? AND generation=? AND status NOT IN ('completed','failed','stopped','interrupted')", now(), interrupted?.text ?? null, interrupted?.usage === undefined ? null : JSON.stringify(interrupted.usage), task.id, task.generation);
       const changed = this.store.run("UPDATE tasks SET generation=generation+1,revision=revision+1,status='running',status_detail=NULL,pending_message=?,updated_at=? WHERE id=? AND generation=? AND revision=?", message, now(), task.id, task.generation, task.revision);
       if (!changed.changes) throw new AgoraError(409, "conflict", "任务状态已变化");
       this.store.run("INSERT INTO task_generations(task_id,generation,status,agora_session_id) VALUES(?,?,'running',?)", task.id, task.generation + 1, task.agora_session_id);
@@ -625,6 +626,7 @@ export class TaskManager {
       if (this.ancestorsStopping(task) || !["running", "completed", "failed", "waiting_decision", "waiting_children"].includes(task.status)) throw new AgoraError(409, "invalid_state", "此状态不能返工");
       const message = text(body.message, "message", 1_000_000), interrupt = optionalBoolean(body.interrupt, "interrupt") ?? false;
       let runtime = this.runtimes.get(taskId);
+      const interrupted: { text?: string; usage?: unknown } = {};
       const newGeneration = interrupt || ["completed", "failed"].includes(task.status);
       const steerId = id("st"), generation = task.generation + (newGeneration ? 1 : 0);
       const annotated = `【agora 返工 ${steerId}，第 ${generation} 代】\n${message}`;
@@ -639,6 +641,13 @@ export class TaskManager {
         try {
           await runtime.handle.send({ type: "abort" }, { timeoutMs: 2000 });
           await Promise.race([settled, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("中断超时")), 2000); })]);
+          // 中断已确认，尽量保存当前可读取的旧代结果；失败不阻断已获批准的返工。
+          try {
+            const last = data(await runtime.handle.send({ type: "get_last_assistant_text" }, { timeoutMs: 2000 }));
+            if (typeof last.text === "string") interrupted.text = last.text;
+          } catch { /* 旧代保留已有结果与逐请求用量。 */ }
+          try { interrupted.usage = data(await runtime.handle.send({ type: "get_session_stats" }, { timeoutMs: 2000 })); }
+          catch { /* 会话统计不可用时保留已有统计。 */ }
           runtime.stopped = false;
         } catch {
           await runtime.handle.stop();
@@ -651,7 +660,7 @@ export class TaskManager {
         this.store.run("UPDATE steer_messages SET state='dropped',updated_at=? WHERE task_id=? AND state IN ('accepted','queued')", now(), taskId);
       }
       task = this.store.task(taskId);
-      if (newGeneration) this.nextGeneration(task, annotated);
+      if (newGeneration) this.nextGeneration(task, annotated, interrupted);
       this.store.run("INSERT INTO steer_messages VALUES(?,?,?,?,?,?,?)", steerId, taskId, generation, annotated, "accepted", now(), now());
       if (!newGeneration && runtime?.handle && runtime.active && !runtime.stopped) {
         data(await runtime.handle.send({ type: "steer", message: annotated }));

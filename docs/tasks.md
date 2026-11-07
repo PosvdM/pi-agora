@@ -136,7 +136,7 @@ created ──► running ──► completed ───────────�
 
 - 对 `completed` 或 `failed` 的任务 steer：`generation + 1`，状态回到 `running`，用 RPC `prompt` 发送返工消息（会话空闲时）。
 - 对 `running` 的任务 steer：不增加代数，用 RPC `steer` 排队。pi 的 steer 在当前助手回合的工具调用全部执行完后、下一次模型调用前送达，**不会打断正在执行的工具**（依据：`docs/rpc-commands.md` 的 `steer`）。
-- `interrupt: true`：先 `clear_queue`，再 `abort`（带超时），等旧运行结束（`agent_settled`，超时则终止进程树后用 `--session` 重新拉起），再以新一代发送消息。用于工具卡住、普通 steer 迟迟送不到的情况。
+- `interrupt: true`：先 `clear_queue`，再 `abort`（带超时），等旧运行结束（`agent_settled`，超时则终止进程树后用 `--session` 重新拉起），再以新一代发送消息。旧代若未进入终态，在切代的同一事务中封存为 `interrupted` 并记录结算时间；中断确认后尽量读取部分回复与会话统计，读取失败时保留已有数据。逐请求用量保留在原代，不转入新代。用于工具卡住、普通 steer 迟迟送不到的情况。
 - 对 `waiting_decision` 或 `waiting_children` 的任务 steer：按同代追加指令处理，先取得名额再唤醒会话。
 
 ### 送达追踪
