@@ -223,6 +223,32 @@ test('D15 daemon 重启保留额度暂停与定时通知，旧通知不会重复
   } finally { client?.close(); await daemon?.close({ force: true }); await rm(home, { recursive: true, force: true }); }
 });
 
+for (const boundary of ['stopping', 'before-notify']) test(`N5 未知重置时间在 ${boundary} 退出后仍投递一次提示`, async () => {
+  const home = await mkdtemp(join(tmpdir(), 'agora-quota-crash-')), driver = new Driver(); let daemon, client;
+  try {
+    daemon = await startDaemon({ home, driver }); client = await connectHost({ home, as: 'host:cli', autoStart: false });
+    const task = await client.request('POST', '/v1/tasks', { model: 'test/model', profile: 'explore', prompt: '未知额度恢复', cwd: home });
+    const h = await until(() => driver.handles.find(h => h.ready && h.commands.some(c => c.type === 'prompt')));
+    const notify = daemon.tasks.notifyConvener;
+    if (boundary === 'stopping') h.failStop = true;
+    else daemon.tasks.notifyConvener = () => { throw new Error('模拟内存通知前退出'); };
+    h.emit({ type: 'quota_exhausted', resumeAt: null, reason: 'usage_limit_reached' }); h.emit({ type: 'agent_settled' }); await daemon.tasks.flush();
+    assert.equal(daemon.store.task(task.taskId).status, 'quota_paused');
+    assert.equal(daemon.store.get("SELECT COUNT(*) AS n FROM outbox WHERE kind='task:quota_unknown'").n, 1);
+    h.failStop = false; daemon.tasks.notifyConvener = notify;
+    client.close(); await daemon.close({ force: true }); daemon = await startDaemon({ home, driver });
+    client = await connectHost({ home, as: 'host:cli', autoStart: false });
+    const inbox = await client.request('GET', '/v1/inbox'), notices = inbox.items.filter(n => n.kind === 'task:quota_unknown');
+    assert.equal(notices.length, 1); assert.equal(notices[0].payload.taskId, task.taskId); assert.equal(notices[0].payload.triggerTurn, true);
+    await client.request('POST', '/v1/inbox/ack', { noticeId: notices[0].noticeId, entryId: 'quota-crash-notice', persisted: true });
+    client.close(); await daemon.close({ force: true }); daemon = await startDaemon({ home, driver });
+    client = await connectHost({ home, as: 'host:cli', autoStart: false });
+    assert.equal((await client.request('GET', '/v1/inbox')).items.filter(n => n.kind === 'task:quota_unknown').length, 0);
+    assert.equal(daemon.store.get("SELECT COUNT(*) AS n FROM outbox WHERE kind='task:quota_unknown'").n, 1);
+    assert.equal(driver.handles.length, 1);
+  } finally { client?.close(); await daemon?.close({ force: true }); await rm(home, { recursive: true, force: true }); }
+});
+
 test('D15 auto 续跑父任务不隐式恢复无重置时间的下级；停止暂停任务取消到期恢复', async t => {
   const f = await setup(t, {}, { quotaRecovery: 'auto' }), main = await f.main(), parent = await f.spawn(main), p = await f.handle(parent), child = await f.spawn(p.client), c = await f.handle(child);
   await pause(f, c, null); await pause(f, p);

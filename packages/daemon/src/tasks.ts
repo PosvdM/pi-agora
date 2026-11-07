@@ -411,13 +411,7 @@ export class TaskManager {
       const exit = await runtime.handle!.exited;
       if (!exit.cleanupConfirmed) throw new Error("额度暂停运行尚未确认退出");
       await this.exited(runtime, exit);
-      if (!quota.resumeAt) {
-        this.store.notice(task.convener_id, `task:${task.id}:${task.generation}:quota_unknown:${runtime.runId}`, "task:quota_unknown", {
-          taskId: task.id, generation: task.generation, title: task.title, status: "quota_paused", contextTokens: this.store.usage(task.id).contextTokens,
-          summary: "模型额度用完，但服务未提供可识别的重置时间。请核对额度后手动 recover resume 续跑，或停止后改派。",
-        });
-        this.notifyConvener(task, "wake");
-      }
+      if (!quota.resumeAt) this.notifyConvener(task, "wake");
       this.armQuotaTimer(this.store.task(task.id));
     } finally { this.auth.revokeRun(runtime.runId); this.releaseSlot(runtime); }
   }

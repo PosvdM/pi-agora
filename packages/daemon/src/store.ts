@@ -196,7 +196,17 @@ export class Store {
       const at = now();
       const changed = this.run("UPDATE tasks SET status=?,revision=revision+1,status_detail=NULL,updated_at=? WHERE id=? AND generation=? AND revision=?", status, at, task.id, task.generation, task.revision);
       if (!changed.changes) throw new AgoraError(409, "conflict", "任务状态已变化，请重新读取");
-      if (quota) this.run("UPDATE tasks SET quota_resume_at=?,quota_notified_at=NULL WHERE id=?", quota.resumeAt, task.id);
+      if (quota) {
+        this.run("UPDATE tasks SET quota_resume_at=?,quota_notified_at=NULL WHERE id=?", quota.resumeAt, task.id);
+        if (status === "quota_paused" && !quota.resumeAt) {
+          this.notice(task.convener_id, `task:${task.id}:${task.generation}:quota_unknown:${runId ?? "unknown"}`, "task:quota_unknown", {
+            taskId: task.id, generation: task.generation, title: task.title, status, notify: "wake", triggerTurn: true,
+            contextTokens: this.usage(task.id).contextTokens,
+            summary: "模型额度用完，但服务未提供可识别的重置时间。请核对额度后手动 recover resume 续跑，或停止后改派。",
+          });
+          this.run("UPDATE tasks SET quota_notified_at=? WHERE id=?", at, task.id);
+        }
+      }
       this.run("UPDATE agora_sessions SET status=?,revision=revision+1 WHERE id=?", status, task.agora_session_id);
       if (["completed", "failed", "stopped", "interrupted"].includes(status)) this.run("UPDATE agora_sessions SET ended_at=? WHERE id=?", at, task.agora_session_id);
       this.run("UPDATE task_generations SET status=?,result_text=COALESCE(?,result_text),settled_at=CASE WHEN ? IN ('completed','failed','stopped','interrupted') THEN ? ELSE settled_at END,started_at=CASE WHEN ?='running' THEN COALESCE(started_at,?) ELSE started_at END WHERE task_id=? AND generation=?", status, resultText ?? null, status, at, status, at, task.id, task.generation);
