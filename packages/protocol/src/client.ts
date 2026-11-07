@@ -64,6 +64,13 @@ function record(value: unknown): value is Record<string, unknown> {
 function nonempty(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
 }
+function isTransportError(error: unknown): boolean {
+  const codes = ['ECONNRESET', 'ECONNREFUSED', 'EPIPE', 'ETIMEDOUT', 'ENETUNREACH', 'EHOSTUNREACH', 'EAI_AGAIN',
+    'UND_ERR_SOCKET', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT'];
+  return record(error) && (codes.includes(String(error.code)) ||
+    (record(error.cause) && codes.includes(String(error.cause.code))));
+}
+
 async function jsonRequest<T>(url: string, method: string, path: string, body: unknown,
   token: string | undefined, options: RequestOptions, closed?: AbortSignal, protocolVersion: number | null = PROTOCOL_VERSION): Promise<T> {
   assertActive(options.signal);
@@ -72,33 +79,51 @@ async function jsonRequest<T>(url: string, method: string, path: string, body: u
   }
   const target = new URL(path, url);
   if (target.origin !== url || !target.pathname.startsWith('/v1/')) throw new Error('agora 请求路径无效');
-  const signals = [AbortSignal.timeout(options.timeoutMs ?? 35000), options.signal, closed].filter((s): s is AbortSignal => Boolean(s));
-  let response: Response;
-  try {
-    response = await fetch(target, {
-      method, redirect: 'error', signal: AbortSignal.any(signals),
-      headers: { ...(protocolVersion === null ? {} : { 'Agora-Protocol': String(protocolVersion) }), ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
-        ...(options.idempotencyKey ? { 'Idempotency-Key': options.idempotencyKey } : {}) },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
-  } catch {
-    if (options.signal?.aborted) throw new Error('agora 请求已取消');
-    throw new AgoraConnectionError();
+  const requestSignal = options.signal;
+  const idempotencyKey = options.idempotencyKey;
+  const signal = AbortSignal.any([AbortSignal.timeout(options.timeoutMs ?? 35000), requestSignal, closed]
+    .filter((s): s is AbortSignal => Boolean(s)));
+  const verb = method.toUpperCase();
+  const authPath = target.pathname.startsWith('/v1/auth/');
+  // 一次性凭证不能重放；业务写入必须由调用方提供原幂等键。
+  const retryable = (verb === 'POST' && ['/v1/auth/refresh', '/v1/lease/renew'].includes(target.pathname)) ||
+    (!authPath && (verb === 'GET' || Boolean(idempotencyKey)));
+  // 每次发送共用身份、参数和总期限，避免结果未知时变成另一笔业务。
+  const headers = { ...(protocolVersion === null ? {} : { 'Agora-Protocol': String(protocolVersion) }),
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+    ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}) };
+  const payload = body === undefined ? undefined : JSON.stringify(body);
+  for (let attempt = 0; ; attempt++) {
+    assertActive(requestSignal);
+    if (signal.aborted) throw new AgoraConnectionError();
+    let response: Response | undefined;
+    let text: string;
+    try {
+      response = await fetch(target, { method, redirect: 'error', signal, headers, body: payload });
+      text = await response.text();
+    } catch (error) {
+      assertActive(requestSignal);
+      const transportError = isTransportError(error);
+      // 至多发送三次；收到 HTTP 拒绝后，即使正文中断也不重试。
+      if (retryable && attempt < 2 && !signal.aborted && transportError && (!response || response.ok)) {
+        try { await delay(50 * (attempt + 1), undefined, { signal }); }
+        catch { assertActive(requestSignal); throw new AgoraConnectionError(); }
+        continue;
+      }
+      if (response && !transportError && !signal.aborted) throw new Error('agora 返回了无效响应');
+      throw new AgoraConnectionError();
+    }
+    let data: unknown;
+    try { data = JSON.parse(text); } catch { throw new Error('agora 返回了无效响应'); }
+    if (!response.ok) {
+      const value = record(data) ? data : {};
+      const raw = record(value.error) ? value.error.code : value.code ?? value.error;
+      const code = typeof raw === 'string' && /^[a-z_]{1,64}$/.test(raw) ? raw : 'request_failed';
+      throw new AgoraHttpError(response.status, code);
+    }
+    return data as T;
   }
-  let data: unknown;
-  try { data = await response.json(); } catch {
-    assertActive(options.signal);
-    if (signals.some(signal => signal.aborted)) throw new AgoraConnectionError();
-    throw new Error('agora 返回了无效响应');
-  }
-  if (!response.ok) {
-    const value = record(data) ? data : {};
-    const raw = record(value.error) ? value.error.code : value.code ?? value.error;
-    const code = typeof raw === 'string' && /^[a-z_]{1,64}$/.test(raw) ? raw : 'request_failed';
-    throw new AgoraHttpError(response.status, code);
-  }
-  return data as T;
 }
 
 async function connectionProtocol(url: string, options: RequestOptions, expectedInstanceId?: string): Promise<{ protocolVersion: number; instanceId: string }> {
