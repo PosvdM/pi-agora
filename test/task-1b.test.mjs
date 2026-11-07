@@ -266,6 +266,29 @@ test('主代理与子代理同时提问不互相阻塞；孙代理提问逐级�
   assert.equal((await cli.request('POST', `/v1/requests/${rootQ.id}/answer`, answer)).answeredVia.confirmedBy, 'none');
 });
 
+for (const mode of ['reopen', 'replace']) test(`F5：父任务 ${mode} 后现存下级 ask 与更深下级 escalate 路由当前 principal`, async t => {
+  const f = await setup(t, { maxTaskDepth: 3 }), main = await f.main(), parent = await f.spawn(main), p = await f.handle(parent);
+  const child = await f.spawn(p.client), c = await f.handle(child), grand = await f.spawn(c.client), g = await f.handle(grand);
+  const questions = [{ id: 'q', question: '由当前父代理决定' }];
+  const existing = await c.client.request('POST', '/v1/requests', { questions });
+  const oldPrincipal = f.daemon.store.session(parent.agoraSessionId).principal_id;
+  p.emit({ type: 'agent_settled', aborted: true }); await f.daemon.tasks.flush();
+  const reopened = await main.request('POST', `/v1/tasks/${parent.taskId}/recover`, { mode });
+  const p2 = await f.handle(reopened), current = f.daemon.store.session(reopened.agoraSessionId).principal_id;
+  assert.notEqual(current, oldPrincipal);
+  assert.equal(f.daemon.store.get('SELECT target_id FROM requests WHERE id=?', existing.id).target_id, current);
+  const asked = await c.client.request('POST', '/v1/requests', { questions }); assert.equal(asked.targetId, current);
+  const deep = await g.client.request('POST', '/v1/requests', { questions });
+  const forwarded = await c.client.request('POST', `/v1/requests/${deep.id}/escalate`, {});
+  assert.equal(forwarded.targetId, current);
+  const inbox = await p2.client.request('GET', '/v1/inbox');
+  for (const requestId of [asked.id, deep.id]) assert.ok(inbox.items.some(n => n.payload.requestId === requestId));
+  assert.equal(f.daemon.store.get('SELECT COUNT(*) AS n FROM outbox WHERE recipient_id=? AND json_extract(payload,\'$.requestId\') IN (?,?)', oldPrincipal, asked.id, deep.id).n, 0);
+  const result = await p2.client.request('POST', `/v1/requests/${deep.id}/answer`, { answers: [{ id: 'q', selected: [], custom: '按新决定执行' }] });
+  assert.equal(result.state, 'answered');
+  assert.ok((await g.client.request('GET', '/v1/inbox')).items.some(n => n.kind === 'request:answered' && n.payload.requestId === deep.id));
+});
+
 test('提问校验依赖与自定义答复；取消不算同意；等待答复可回收并由答案重新排队', async t => {
   const f = await setup(t, { idleReclaimMs: 20 }), main = await f.main(), parent = await f.spawn(main), p = await f.handle(parent);
   await assert.rejects(p.client.request('POST', '/v1/requests', { questions: [{ id: 'q', question: '错误依赖', dependsOn: { questionId: 'missing' } }] }), e => e.code === 'invalid_params');

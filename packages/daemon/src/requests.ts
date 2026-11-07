@@ -121,7 +121,7 @@ export class Requests {
     const asker = this.actor(conn);
     if (asker === 'user') throw new AgoraError(403, 'forbidden', '此端点仅供 Agent 提问');
     const questions = questionsOf(body.questions), context = body.context === undefined ? null : text(body.context, 'context', 32000);
-    const session = this.store.get<{ task_id: string; convener_id: string }>('SELECT task_id,convener_id FROM agora_sessions WHERE principal_id=?', asker);
+    const session = this.store.get<{ task_id: string; convener_id: string }>('SELECT t.id AS task_id,t.convener_id FROM agora_sessions s JOIN tasks t ON t.id=s.task_id WHERE s.principal_id=?', asker);
     const target = session?.convener_id ?? 'user', requestId = id('rq'), at = now();
     const expires = body.expiresAt === undefined ? null : text(body.expiresAt, 'expiresAt', 64);
     if (expires !== null && (!Number.isFinite(Date.parse(expires)) || Date.parse(expires) <= Date.now())) invalid('expiresAt 必须为将来的有效时间');
@@ -147,7 +147,7 @@ export class Requests {
     let target = row.target_id;
     if (action === 'escalate') {
       if (actor === 'user') throw new AgoraError(403, 'forbidden', '提问已转给用户');
-      target = this.store.get<{ convener_id: string }>('SELECT convener_id FROM agora_sessions WHERE principal_id=?', actor)?.convener_id ?? 'user';
+      target = this.store.get<{ convener_id: string }>('SELECT t.convener_id FROM agora_sessions s JOIN tasks t ON t.id=s.task_id WHERE s.principal_id=?', actor)?.convener_id ?? 'user';
     }
     const state = action === 'answer' ? 'answered' : action === 'cancel' ? 'cancelled' : 'escalated';
     this.store.transaction(() => {
