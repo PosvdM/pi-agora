@@ -207,3 +207,25 @@ test('D15 auto 续跑父任务不隐式恢复无重置时间的下级；停止�
   await main.request('POST', `/v1/tasks/${stopTask.taskId}/stop`, {});
   await delay(150); assert.equal(f.daemon.store.task(stopTask.taskId).status, 'stopped'); assert.equal(f.driver.handles.filter(h => h.spec.agoraSessionId === stopTask.agoraSessionId).length, 1);
 });
+
+test('N3 静默终态和强制唤醒同事务提交，调度前退出后重启仍唤醒等待父任务', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'agora-terminal-crash-')), driver = new Driver(); let daemon, main;
+  try {
+    daemon = await startDaemon({ home, driver }); main = await connectHost({ home, as: 'host:cli', autoStart: false });
+    const spawn = (client, body = {}) => client.request('POST', '/v1/tasks', { model: 'test/model', profile: 'explore', prompt: '恢复测试', cwd: home, ...body });
+    const parent = await spawn(main), p = await until(() => driver.handles.find(h => h.ready && h.commands.some(c => c.type === 'prompt')));
+    const child = await spawn(p.client, { notify: 'silent' }); await until(() => driver.handles.length === 2 && driver.handles[1].ready);
+    p.emit({ type: 'agent_settled' }); await daemon.tasks.flush();
+    assert.equal(daemon.store.task(parent.taskId).status, 'waiting_children');
+    main.close(); await daemon.close({ force: true }); daemon = undefined;
+    // 直接提交终态，故意不执行 TaskManager 的内存通知/调度，模拟持久化后的退出边界。
+    const store = await openStore(home);
+    store.run('DELETE FROM outbox WHERE json_extract(payload,\'$.taskId\')=?', child.taskId);
+    store.transition(store.task(child.taskId), 'completed', '完成');
+    const notice = store.get('SELECT payload FROM outbox WHERE kind=\'task:completed\'');
+    assert.equal(JSON.parse(notice.payload).triggerTurn, true); store.close();
+    daemon = await startDaemon({ home, driver });
+    await until(() => daemon.store.task(parent.taskId).status === 'running');
+    assert.equal(driver.handles.length, 3);
+  } finally { main?.close(); await daemon?.close({ force: true }); await rm(home, { recursive: true, force: true }); }
+});

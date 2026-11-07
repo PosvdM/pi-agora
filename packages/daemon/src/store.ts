@@ -202,9 +202,11 @@ export class Store {
       this.run("UPDATE task_generations SET status=?,result_text=COALESCE(?,result_text),settled_at=CASE WHEN ? IN ('completed','failed','stopped','interrupted') THEN ? ELSE settled_at END,started_at=CASE WHEN ?='running' THEN COALESCE(started_at,?) ELSE started_at END WHERE task_id=? AND generation=?", status, resultText ?? null, status, at, status, at, task.id, task.generation);
       if (usage !== undefined) this.run("UPDATE task_generations SET usage=? WHERE task_id=? AND generation=?", JSON.stringify(usage), task.id, task.generation);
       if (["completed", "failed", "interrupted", "stopped"].includes(status)) {
+        const parent = this.get<TaskRow>("SELECT t.* FROM tasks t JOIN agora_sessions s ON s.id=t.agora_session_id WHERE s.principal_id=?", task.convener_id);
+        const triggerTurn = task.notify !== "silent" || parent?.status === "waiting_children";
         this.notice(task.convener_id, `task:${task.id}:${task.generation}:${status}${status === "interrupted" ? `:${runId ?? "unknown"}` : ""}`, `task:${status}`, {
           taskId: task.id, agoraSessionId: task.agora_session_id, nodeId: `agora:session:${task.agora_session_id}`,
-          generation: task.generation, status, title: task.title, summary: (resultText ?? "").slice(0, 2000), notify: task.notify,
+          generation: task.generation, status, title: task.title, summary: (resultText ?? "").slice(0, 2000), notify: task.notify, triggerTurn,
         });
       }
       this.change("task", task.id);

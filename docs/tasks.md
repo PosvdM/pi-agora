@@ -161,7 +161,7 @@ pi 的 `queue_update` 事件只给出排队消息的文本（依据：`docs/json
 任务进入 `completed`、`failed`、`interrupted` 或 `stopped` 时，daemon 在**同一个 SQLite 事务**里：
 
 1. 更新任务和代数记录；
-2. 向 `outbox` 插入一条通知，`dedupe_key` 唯一。
+2. 向 `outbox` 插入一条通知，`dedupe_key` 唯一；按当前父任务状态同时保存 `triggerTurn`。父任务处于 `waiting_children` 时，即使下级选择静默通知，也必须启动父任务回合。
 
 | 事件 | `dedupe_key` |
 | --- | --- |
@@ -173,7 +173,7 @@ pi 的 `queue_update` 事件只给出排队消息的文本（依据：`docs/json
 | 新提问 | `request:<requestId>:opened` |
 | 提问被答复（发给提问者） | `request:<requestId>:answered` |
 
-事务保证：要么状态和通知都写入，要么都没写入。daemon 在两者之间崩溃不会丢通知。
+事务保证：状态、通知和强制唤醒决定共同提交或回滚。daemon 启动时扫描未确认的唤醒通知，按名额调度父任务；提交后、内存调度前退出不会丢失唤醒。
 
 ### 三种状态
 
