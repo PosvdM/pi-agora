@@ -42,7 +42,8 @@ type AgoraTaskParams =
   | { action: "result"; taskId: string; generation?: number }        // 默认最新一代
   | { action: "steer"; taskId: string; message: string; interrupt?: boolean }
   | { action: "stop"; taskId: string; reason?: string }
-  | { action: "cleanup"; taskId: string; discard?: boolean };
+  | { action: "cleanup"; taskId: string; discard?: boolean }
+  | { action: "recover"; taskId: string; mode: "resume" | "reopen" | "replace" | "abandon" };
 ```
 
 返回值（工具结果的 `details`，同时给模型一段简短文本）：
@@ -116,8 +117,8 @@ created ──► running ──► completed ───────────�
 | `waiting_decision` | 会话 settled 时，该任务还有 `open` 或 `escalated` 状态的提问 |
 | `waiting_children` | 会话 settled 时，该任务还有未结束的下级且没有未决提问；释放名额并等待通知 |
 | `quota_paused` | 模型额度用完；不占推理名额，保留会话和代数，等待上级决定或配置的自动恢复 |
-| `completed` | 会话 settled、`aborted: false`、没有未决提问 |
-| `failed` | 会话 settled 且最后一条助手消息是错误（如模型报错、重试耗尽），或 spawn 校验、就绪检查失败 |
+| `completed` | 会话 settled、`aborted: false`、没有助手错误、未决提问或未结束的下级 |
+| `failed` | 会话 settled 且最后一条助手消息是错误（已识别的额度暂停除外），或 spawn 校验、就绪检查失败 |
 | `stopped` | 召集人或用户调用 stop，或放弃中断的任务 |
 | `interrupted` | 进程崩溃、心跳超时、daemon 强制关闭、恢复时就绪检查失败 |
 
