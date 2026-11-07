@@ -48,6 +48,15 @@ test('F1：真实 Git 的 glob 按字面处理，省略路径只读 cwd，安全
   // 非提交对象会忽略路径限制，必须在安全调用层解析并拒绝。
   const blob = raw(['rev-parse', 'HEAD:secret/key.txt']).trim();
   const tree = raw(['rev-parse', 'HEAD:secret']).trim();
+  // 使用真实 protectedPaths 文件的 blob；允许路径的 patch 本身不含该内容。
+  raw(['notes', 'add', '-C', blob, 'HEAD']);
+  for (const command of ['log', 'show']) {
+    assert.match(raw([command, '-p', 'HEAD', '--', 'public/file.txt']), /PROTECTED-CONTENT/);
+    assert.doesNotMatch(raw([command, '--no-notes', '-p', 'HEAD', '--', 'public/file.txt']), /PROTECTED-CONTENT/);
+    const output = await run({ command, options: ['-p'], refs: ['HEAD'], paths: ['public/file.txt'] });
+    assert.match(output, /SAFE-CONTENT/); assert.doesNotMatch(output, /PROTECTED-CONTENT/);
+  }
+  raw(['update-ref', '-d', 'refs/notes/commits']);
   raw(['tag', 'blob-tag', blob]); raw(['tag', 'tree-tag', tree]);
   raw(['-c', 'tag.gpgsign=false', 'tag', '-a', '-m', 'blob', 'annotated-blob', blob]);
   raw(['-c', 'tag.gpgsign=false', 'tag', '-a', '-m', 'tree', 'annotated-tree', tree]);
