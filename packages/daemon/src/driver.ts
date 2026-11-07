@@ -597,6 +597,7 @@ class RpcDriverHandle implements DriverHandle {
   private finish(): Promise<DriverExit> {
     this.finishPromise ??= (async () => {
       const firstExit = !this.exitResult;
+      const cleanupCompleted = this.cleanupConfirmed && !this.exitResult?.cleanupConfirmed;
       const snapshot: DriverExit = { identity: this.identity, ...this.exitInfo, reason: this.reason, cleanupConfirmed: this.cleanupConfirmed,
         stopReport: this.report, error: [this.error, this.stopError].filter(Boolean).join("; ") || undefined };
       // exited 只能兑现一次；就地刷新同一对象，供控制队列中的后续 stop 读取。
@@ -611,12 +612,13 @@ class RpcDriverHandle implements DriverHandle {
         result.diagnosticsPath = target;
       } catch (error) { result.error = `${result.error ?? ""} 退出诊断写入失败：${String(error)}`.trim(); }
       this.exitResult = result;
-      if (firstExit) {
+      if (this.cleanupConfirmed) {
         for (const off of this.unsubscribe) off();
-        this.resolveExit(result);
-        emit(this.exitListeners, result);
-        this.exitListeners.clear(); this.listeners.clear();
+        this.listeners.clear();
       }
+      if (firstExit) this.resolveExit(result);
+      if (firstExit || cleanupCompleted) emit(this.exitListeners, result);
+      if (this.cleanupConfirmed) this.exitListeners.clear();
       return result;
     })();
     return this.finishPromise;

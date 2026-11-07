@@ -198,7 +198,7 @@ test("停止可见性：持续 unknown 超时保锁，显式重试后刷新同�
   assert.equal(failedExit.error, undefined);
   assert.equal(handle.diagnostics().error, undefined);
   assert.equal(state.lockHeld, false);
-  assert.equal(notifications, 1, "显式重试不重复广播进程退出");
+  assert.equal(notifications, 2, "清理确认后再次通知退出状态");
   const data = JSON.parse(await readFile(failedExit.diagnosticsPath, "utf8"));
   assert.equal(data.cleanupConfirmed, true);
   assert.equal(data.error, undefined);
@@ -292,7 +292,7 @@ test("停止重试：stopping 写入失败后沿用首次报告，不重放清�
   assert.equal(exit.stopReport, firstReport);
   assert.equal(exit.error, undefined);
   assert.equal(handle.diagnostics().error, undefined);
-  assert.equal(notifications, 1);
+  assert.equal(notifications, 2);
   const data = JSON.parse(await readFile(exit.diagnosticsPath, "utf8"));
   assert.equal(data.cleanupConfirmed, true);
   assert.deepEqual(data.stopReport, firstReport);

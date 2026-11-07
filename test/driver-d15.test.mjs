@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { stripTypeScriptTypes } from "node:module";
+import { setTimeout as delay } from "node:timers/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -14,7 +15,7 @@ let current;
 const bridge = {
   ...hostkit,
   locatePi: async () => pi,
-  isSameProcess: async () => "gone",
+  isSameProcess: async () => current?.status ?? "gone",
   acquireSessionWriterLock: async () => ({
     recoveryReports: [],
     recoverPreviousWriter: async () => "clean",
@@ -25,24 +26,33 @@ const bridge = {
       const listeners = new Set();
       let exit;
       const exited = new Promise((resolve) => { exit = resolve; });
+      let control;
       const proc = {
-        identity: { pid: 123, startTime: "fake", instanceId: options.instanceId },
+        identity: { pid: 123, startTime: "fake", runId: options.runId, instanceId: options.instanceId },
         exited,
         rpc: {
           onEvent: (listener) => { listeners.add(listener); return () => listeners.delete(listener); },
           onUiRequest: () => () => {},
           onError: () => () => {},
           closed: new Promise(() => {}),
-          send: async () => ({ type: "response", success: true }),
+          send: async (command) => {
+            control.commands.push(command);
+            return control.respond?.(command) ?? { type: "response", success: true };
+          },
           respondUi: () => {},
         },
         stderrTail: () => "",
         stop: async () => {
-          exit({ code: 0, signal: null });
+          if (!control.holdAlive) exit({ code: 0, signal: null });
           return { coverage: "snapshot_visible", steps: [], leftovers: [] };
         },
       };
-      current = { push: (event) => { for (const listener of listeners) listener(event); } };
+      current = control = {
+        status: "gone", holdAlive: false, commands: [],
+        push: (event) => { for (const listener of listeners) listener(event); },
+        listenerCount: () => listeners.size,
+        confirmExit() { this.status = "gone"; exit({ code: 0, signal: null }); },
+      };
       return proc;
     },
   }),
@@ -77,7 +87,8 @@ async function fixture(t) {
       const driver = new RpcSubprocessDriver(options);
       const handle = await driver.start({ agoraSessionId: "session", runId: "run", instanceId: "d15", cwd,
         model: "fake/offline", thinking: "off", profile: "explore", sessionFile: path.join(root, "session.jsonl"), env: {}, ...extra });
-      t.after(() => handle.stop());
+      const control = current;
+      t.after(() => { control.confirmExit(); return handle.stop(); });
       handle.markReady();
       return handle;
     },
@@ -204,6 +215,99 @@ test("D15：普通 429、非 429、非 error 和信息丢失的 Codex 友好提�
     assert.equal(quota(text), undefined);
   }
   assert.equal(quota("429 quota_exceeded", { stopReason: "aborted" }), undefined);
+});
+
+test("R3：真实驱动停止未确认时保留旧运行用量，确认后退订并再次通知退出", async (t) => {
+  const f = await fixture(t);
+  const handle = await f.start({ runId: "old-run" });
+  const process = current;
+  const observed = [], exits = [], lateExits = [];
+  handle.onEvent((event) => observed.push(event));
+  handle.onExit((exit) => exits.push(exit.cleanupConfirmed));
+  process.holdAlive = true;
+  process.status = "alive";
+  await assert.rejects(handle.stop(), { code: "EAGORA_STOP_INCOMPLETE" });
+  const first = await handle.exited;
+  assert.equal(first.cleanupConfirmed, false);
+  assert.equal(first.identity.runId, "old-run");
+  assert.deepEqual(exits, [false]);
+  assert.equal(process.listenerCount(), 1);
+  handle.onExit((exit) => lateExits.push(exit.cleanupConfirmed));
+  await Promise.resolve();
+  assert.deepEqual(lateExits, [false]);
+  for (const type of ["prompt", "steer", "follow_up", "get_state", "clear_queue"]) {
+    await assert.rejects(handle.send({ type, message: "禁止续跑" }), { code: "EAGORA_STOPPING" });
+  }
+  const tail = assistant({ id: "old-generation-request", usage: { input: 11, output: 7, cacheRead: 13, cacheWrite: 5, reasoning: 3 } });
+  process.push(tail);
+  process.push(structuredClone(tail));
+  assert.deepEqual(observed.filter((event) => event.type === "usage_record"), [{ type: "usage_record", requestId: "old-generation-request",
+    inputTokens: 11, outputTokens: 7, cacheReadTokens: 13, cacheWriteTokens: 5, reasoningTokens: 3, contextTokens: 29 }]);
+  process.confirmExit();
+  await handle.stop();
+  assert.equal(first.cleanupConfirmed, true);
+  assert.deepEqual(exits, [false, true]);
+  assert.deepEqual(lateExits, [false, true]);
+  assert.equal(process.listenerCount(), 0);
+  const count = observed.length;
+  process.push(assistant({ id: "after-cleanup", usage: { input: 100 } }));
+  assert.equal(observed.length, count);
+});
+
+test("R3：真实驱动未确认停止后的 message_end 记入数据库原代，确认清理后拒收", async (t) => {
+  const { startDaemon } = await import("../packages/daemon/dist/index.js");
+  const { connectHost, createClient } = await import("../packages/protocol/dist/index.js");
+  const f = await fixture(t);
+  let handle, control, childClient, main, daemon, run;
+  const driver = {
+    resolveSkills: (names) => f.driver.resolveSkills(names),
+    recoverOldRun: (...args) => f.driver.recoverOldRun(...args),
+    async start(spec) {
+      run = spec;
+      handle = await f.driver.start(spec);
+      control = current;
+      control.respond = (command) => ({ type: "response", success: true,
+        data: command.type === "get_available_models" ? { models: [{ provider: "test", id: "model" }] }
+          : command.type === "get_state" ? { model: { provider: "test", id: "model" }, thinkingLevel: spec.thinking, sessionFile: spec.sessionFile } : {} });
+      const launch = await fetch(spec.env.AGORA_URL + "/v1/auth/launch", { method: "POST",
+        headers: { "Agora-Protocol": "1", "Content-Type": "application/json" }, body: JSON.stringify({ ticket: spec.env.AGORA_LAUNCH_TICKET }) }).then(response => response.json());
+      childClient = createClient({ url: spec.env.AGORA_URL, token: launch.token });
+      void childClient.request("POST", `/v1/runs/${spec.runId}/ready`, { ...launch.policy, tools: spec.tools }).catch(() => {});
+      return handle;
+    },
+  };
+  try {
+    daemon = await startDaemon({ home: f.options.home, driver });
+    main = await connectHost({ home: f.options.home, as: "host:cli", autoStart: false });
+    const task = await main.request("POST", "/v1/tasks", { model: "test/model", thinking: "off", profile: "explore", prompt: "旧代用量", cwd: f.cwd });
+    const deadline = Date.now() + 5_000;
+    while (!control?.commands.some(command => command.type === "prompt") && Date.now() < deadline) await delay(5);
+    assert.ok(control?.commands.some(command => command.type === "prompt"), "真实驱动必须接收任务书");
+    control.holdAlive = true;
+    control.status = "alive";
+    await assert.rejects(main.request("POST", `/v1/tasks/${task.taskId}/stop`, {}), error => error.code === "stop_incomplete");
+    assert.equal((await handle.exited).cleanupConfirmed, false);
+    const tail = assistant({ id: "old-run-request", usage: { input: 17, cacheRead: 19, cacheWrite: 2, output: 5, reasoning: 3 } });
+    control.push(tail);
+    control.push(structuredClone(tail));
+    const rows = daemon.store.all("SELECT * FROM usage_records WHERE task_id=?", task.taskId);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].generation, 1);
+    assert.equal(rows[0].agora_session_id, task.agoraSessionId);
+    assert.equal(rows[0].run_id, run.runId);
+    assert.equal(rows[0].request_id, "old-run-request");
+    assert.deepEqual([rows[0].input_tokens, rows[0].cache_read_tokens, rows[0].cache_write_tokens,
+      rows[0].output_tokens, rows[0].reasoning_tokens, rows[0].context_tokens], [17, 19, 2, 5, 3, 38]);
+    control.confirmExit();
+    await main.request("POST", `/v1/tasks/${task.taskId}/stop`, {});
+    control.push(assistant({ id: "confirmed-late-request", usage: { input: 100 } }));
+    assert.equal(daemon.store.usage(task.taskId, false, 1).requests, 1);
+    assert.equal(control.listenerCount(), 0);
+  } finally {
+    control?.confirmExit();
+    childClient?.close(); main?.close();
+    await daemon?.close({ force: true });
+  }
 });
 
 test("D15：handle 先发送 normalized events，再发送原 message_end；重复消息只计量一次", async (t) => {
