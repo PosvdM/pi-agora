@@ -117,6 +117,10 @@ shutdown 默认排空，超时后保留 daemon；force 中断并清理运行。�
 
 CI 在 Windows、macOS、Linux auto / snapshot 四个组合执行 npm test。Linux auto 要求真实 cgroup 可用。Windows 完整测试后额外重复 shell 后代退出观测十次；保留 2 秒纯观察窗口和完整 StopReport / oracle 时间序列，仍不补杀。
 
+macOS 完整测试后额外执行 25 次“忽略 abort 的 provider”真实用例；`CI` 环境下 `AGORA_STOP_PROVIDER_REPEATS` 控制该用例的注册次数（1–100，默认 1）。每次都保留原停止期限、报告校验和独立身份断言，单次失败即使后续成功也使测试失败。
+
+停止失败以完整 JSON 输出 `code`、`message`、`verificationPhase`、`status`、`attempts`、`timeoutMs`、`identity` 和 `stopReport`。driver 的 `stopFailure` 及 `stopTrace` 记录报告校验和身份复查阶段、清队列、底层停止和进程退出的时间点；`verificationPhase` 区分报告拒绝、有效报告后的身份复查与停止/锁错误。设置 `AGORA_DRIVER_DIAGNOSTICS_DIR` 时，测试在清理临时现场前将 driver 诊断写入该目录；CI 始终上传为 `driver-diagnostics-<平台>-<模式>` artifact。
+
 ### Windows 本机实测
 
 1b 在 Node 24.14.1、pi 1.5.0、Git 2.53.0.windows.2 上运行。真实 directory junction 把允许根内的路径指向受保护目录，read / write / 搜索祖先均被拒绝；不存在文件按 junction 的真实目标祖先判定，测试无需管理员权限。原生 PowerShell 工具在 implement 中实际执行 Write-Output 和 Set-Content，输出含原生 PSEdition，并由独立 Node 读取生成文件验证。其他平台的 PowerShell 提供边界由工具集合断言覆盖。

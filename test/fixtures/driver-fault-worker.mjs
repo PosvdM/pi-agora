@@ -123,6 +123,13 @@ for (const step of ["snapshot", "snapshot cleanup", "verify"]) test(`故障：${
   const data = JSON.parse(await readFile(exit.diagnosticsPath, "utf8"));
   assert.equal(data.cleanupConfirmed, false);
   assert.deepEqual(data.stopReport, state.report);
+  assert.equal(data.stopFailure.verificationPhase, 'report');
+  assert.equal(data.stopFailure.code, 'EAGORA_STOP_INCOMPLETE');
+  assert.equal(data.stopFailure.status, null); assert.equal(data.stopFailure.attempts, 0); assert.equal(data.stopFailure.timeoutMs, 0);
+  assert.deepEqual(data.stopFailure.stopReport, state.report);
+  assert.ok(data.stopTrace.some(row => row.phase === 'clear_queue_start' && row.at));
+  assert.ok(data.stopTrace.some(row => row.phase === 'process_stop_returned'));
+  assert.equal(data.stopTrace.some(row => row.phase === 'identity_query_start'), false);
 });
 
 for (const first of ["alive", "unknown", new Error("暂时无法读取进程身份")]) test(`停止可见性：${first} 后 gone 仅在 Windows 预算内查询重试`, async () => {
@@ -168,6 +175,13 @@ test("停止可见性：持续 unknown 超时保锁，显式重试后刷新同�
   assert.equal(state.calls.includes("release"), false);
   const failedData = JSON.parse(await readFile(failedExit.diagnosticsPath, "utf8"));
   assert.equal(failedData.cleanupConfirmed, false);
+  assert.equal(failedData.stopFailure.verificationPhase, 'identity');
+  assert.equal(failedData.stopFailure.status, 'unknown');
+  assert.equal(failedData.stopFailure.timeoutMs, platform === 'win32' ? 2000 : 0);
+  assert.ok(failedData.stopFailure.attempts >= 1);
+  assert.deepEqual(failedData.stopFailure.identity, identity); assert.deepEqual(failedData.stopFailure.stopReport, state.report);
+  assert.ok(failedData.stopTrace.some(row => row.phase === 'report_validation_passed'));
+  assert.ok(failedData.stopTrace.some(row => row.phase === 'identity_query_result' && row.detail.status === 'unknown'));
   assert.match(failedData.error, /unknown/);
   if (platform === "win32") assert.match(failedData.error, /2000ms/);
 

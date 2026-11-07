@@ -50,6 +50,11 @@ export interface ActiveTool {
   argsSummary: string;
   startedAt: string;
 }
+export interface StopDiagnostic {
+  code: unknown; message: string; verificationPhase: unknown; status: unknown; attempts: unknown;
+  timeoutMs: unknown; identity: unknown; stopReport: unknown;
+}
+export interface StopTrace { phase: string; at: string; elapsedMs: number; detail?: unknown }
 export interface DriverDiagnostics {
   identity: ProcessIdentity;
   reason: string;
@@ -62,6 +67,8 @@ export interface DriverDiagnostics {
   possibleSideEffects: ActiveTool[];
   stderr: string;
   stopReport?: StopReport;
+  stopFailure?: StopDiagnostic;
+  stopTrace: StopTrace[];
   warnings: string[];
   error?: string;
 }
@@ -351,12 +358,14 @@ function stopReportProblem(report: StopReport): string | undefined {
   if (report.leftovers.length) return "停止报告仍有遗留进程";
   return undefined;
 }
-async function verifyStopped(identity: ProcessIdentity, report: StopReport): Promise<void> {
+async function verifyStopped(identity: ProcessIdentity, report: StopReport, trace?: (phase: string, detail?: unknown) => void): Promise<void> {
+  trace?.("report_validation_start");
   const problem = stopReportProblem(report);
   if (problem) {
     const code = problem === "停止报告缺少有效的覆盖范围" ? "EAGORA_STOP_COVERAGE" : "EAGORA_STOP_INCOMPLETE";
-    throw Object.assign(failure(code, `${problem}，保留会话写锁`), { identity, stopReport: report });
+    throw Object.assign(failure(code, `${problem}，保留会话写锁`), { identity, stopReport: report, verificationPhase: "report", status: null, attempts: 0, timeoutMs: 0 });
   }
+  trace?.("report_validation_passed");
   const timeoutMs = process.platform === "win32" ? 2_000 : 0;
   const deadline = performance.now() + timeoutMs;
   let status: Awaited<ReturnType<typeof isSameProcess>> | "unknown" = "unknown";
@@ -367,9 +376,11 @@ async function verifyStopped(identity: ProcessIdentity, report: StopReport): Pro
     attempts++;
     cause = undefined;
     try {
+      trace?.("identity_query_start", { attempts });
       status = await isSameProcess(identity);
+      trace?.("identity_query_result", { attempts, status });
       if (status === "gone") return;
-    } catch (error) { status = "unknown"; cause = error; }
+    } catch (error) { status = "unknown"; cause = error; trace?.("identity_query_error", { attempts, error: String(error) }); }
     const remaining = deadline - performance.now();
     if (remaining <= 0) break;
     await delay(Math.min(50, remaining));
@@ -377,7 +388,7 @@ async function verifyStopped(identity: ProcessIdentity, report: StopReport): Pro
   }
   const detail = cause ? `无法核对写者身份：${String(cause)}` : `写者身份状态：${status}`;
   throw Object.assign(failure("EAGORA_STOP_INCOMPLETE", `${detail}，${timeoutMs ? `${timeoutMs}ms 查询期限内` : ""}尚未确认退出，保留会话写锁`),
-    { cause, identity, stopReport: report, status, attempts, timeoutMs });
+    { cause, identity, stopReport: report, status, attempts, timeoutMs, verificationPhase: "identity" });
 }
 
 class RpcDriverHandle implements DriverHandle {
@@ -402,6 +413,12 @@ class RpcDriverHandle implements DriverHandle {
   private reason = "停止";
   private error?: string;
   private stopError?: string;
+  private stopFailure?: StopDiagnostic;
+  private readonly stopTrace: StopTrace[] = [];
+  private readonly stopClock = performance.now();
+  private traceStop = (phase: string, detail?: unknown): void => {
+    this.stopTrace.push({ phase, at: new Date().toISOString(), elapsedMs: Math.round(performance.now() - this.stopClock), detail });
+  };
   private report?: StopReport;
   private cleanupConfirmed = false;
   private lastCompleted?: RpcEvent;
@@ -422,6 +439,7 @@ class RpcDriverHandle implements DriverHandle {
     this.heartbeatTimer = setInterval(() => void this.heartbeat(), duration(options.heartbeatIntervalMs, 10_000));
     this.readyTimer.unref(); this.heartbeatTimer.unref();
     void proc.exited.then((exit) => {
+      this.traceStop("process_exited", exit);
       this.exitInfo = exit;
       if (!this.stopping) this.fatal(this.ready ? "进程意外退出" : "就绪前退出");
     });
@@ -514,7 +532,7 @@ class RpcDriverHandle implements DriverHandle {
     return { identity: this.identity, reason: this.reason, ...this.exitInfo, cleanupConfirmed: this.cleanupConfirmed,
       events: structuredClone(this.events), activeTools, lastCompletedAction: this.lastCompleted,
       possibleSideEffects: activeTools.filter((tool) => !["read", "grep", "find", "ls"].includes(tool.toolName)),
-      stderr: this.proc.stderrTail(), stopReport: this.report, error: [this.error, this.stopError].filter(Boolean).join("; ") || undefined,
+      stderr: this.proc.stderrTail(), stopReport: this.report, stopFailure: this.stopFailure, stopTrace: structuredClone(this.stopTrace), error: [this.error, this.stopError].filter(Boolean).join("; ") || undefined,
       warnings: this.report?.coverage === "snapshot_visible" ? ["停止仅覆盖快照见过的进程，空残留列表不能证明整棵进程树均已退出"] : [] };
   }
   stop(opts?: StopOptions): Promise<StopReport> {
@@ -539,10 +557,14 @@ class RpcDriverHandle implements DriverHandle {
     try { await this.lock.update({ state: "stopping" }); }
     catch (error) { updateError = error; }
     try {
+      this.traceStop("clear_queue_start");
       const response = await this.proc.rpc.send({ type: "clear_queue" }, { timeoutMs: 2_000 });
+      this.traceStop("clear_queue_returned", { success: response.success });
       this.receive({ type: "driver_queue_cleared", data: response.data });
-    } catch (error) { this.receive({ type: "driver_clear_queue_failed", error: String(error) }); }
+    } catch (error) { this.traceStop("clear_queue_failed", { error: String(error) }); this.receive({ type: "driver_clear_queue_failed", error: String(error) }); }
+    this.traceStop("process_stop_start", opts ?? this.options.stopOptions);
     this.report = await this.proc.stop(opts ?? this.options.stopOptions);
+    this.traceStop("process_stop_returned", this.report);
     if (updateError) throw updateError;
     return this.report;
   }
@@ -551,14 +573,22 @@ class RpcDriverHandle implements DriverHandle {
     try {
       // 保留首次停止报告；无报告的停止失败保持缓存，显式重试只复查身份和锁释放。
       const report = this.report ?? await (this.processStopPromise ??= this.stopProcess(opts));
-      await verifyStopped(this.identity, report);
+      await verifyStopped(this.identity, report, this.traceStop);
       this.exitInfo = await this.proc.exited;
       await this.lock.release();
       this.cleanupConfirmed = true;
       this.stopError = undefined;
+      this.stopFailure = undefined;
+      this.traceStop("cleanup_confirmed");
       return report;
     } catch (error) {
       this.stopError = String(error);
+      const value = error as Partial<StopDiagnostic> | undefined;
+      this.stopFailure = { code: value?.code ?? null, message: value?.message ?? String(error),
+        verificationPhase: value?.verificationPhase ?? "stop_or_lock", status: value?.status ?? null,
+        attempts: value?.attempts ?? null, timeoutMs: value?.timeoutMs ?? null,
+        identity: value?.identity ?? this.identity, stopReport: value?.stopReport ?? this.report ?? null };
+      this.traceStop("stop_failed", this.stopFailure);
       throw error;
     } finally {
       await this.finish();
