@@ -1,5 +1,8 @@
-import { mkdir, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { createHash } from "node:crypto";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   acquireSessionWriterLock, comparisonKey, currentProcessIdentity, isSameProcess,
@@ -19,6 +22,7 @@ export interface LaunchSpec {
   thinking: string;
   profile: "explore" | "review" | "implement";
   tools?: string[];
+  skillPaths?: string[];
   sessionFile: string;
   env: Record<string, string>;
 }
@@ -27,6 +31,8 @@ export interface DriverOptions {
   piPath?: string;
   extensionPath?: string;
   env?: Record<string, string>;
+  /** 指定后仅从这些目录解析技能；相对路径以用户 agentDir 为基准。 */
+  skillDirectories?: string[];
   /** 仅供驱动层隔离测试注入；daemon 的配置和 HTTP 不接受此项。 */
   extraExtensions?: string[];
   containment?: Containment;
@@ -81,6 +87,7 @@ export interface DriverHandle {
   stop(opts?: StopOptions): Promise<StopReport>;
 }
 export interface SessionDriver {
+  resolveSkills?(names: string[]): Promise<{ name: string; path: string }[]>;
   start(spec: LaunchSpec): Promise<DriverHandle>;
   recoverOldRun(identity: ProcessIdentity, sessionFile?: string): Promise<StopReport>;
 }
@@ -115,6 +122,88 @@ function emit<T>(listeners: Set<(value: T) => void>, value: T): void {
   }
 }
 function sessionKey(file: string): string { return comparisonKey(realPathOrPending(file)); }
+function validSkillName(name: string): boolean {
+  return typeof name === "string" && name.length <= 64 && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(name);
+}
+function userPath(value: string, base: string): string {
+  const expanded = value === "~" ? homedir() : /^~[/\\]/.test(value) ? path.join(homedir(), value.slice(2)) : value;
+  return path.resolve(base, expanded);
+}
+function record(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+function tokenCount(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
+}
+function resetTime(value: unknown, relative: boolean, nowMs: number): string | null {
+  let ms: number;
+  if (typeof value === "number" || (typeof value === "string" && /^\d+(?:\.\d+)?$/.test(value))) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric) || numeric < 0) return null;
+    ms = relative && numeric < 1_000_000_000 ? nowMs + numeric * 1000 : numeric < 100_000_000_000 ? numeric * 1000 : numeric;
+  } else if (typeof value === "string" && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:\d\d)$/i.test(value)) {
+    ms = Date.parse(value);
+  } else return null;
+  return Number.isFinite(ms) && Math.abs(ms) <= 8.64e15 ? new Date(ms).toISOString() : null;
+}
+function quotaEvent(message: Record<string, unknown>, nowMs: number): RpcEvent | undefined {
+  if (message.stopReason !== "error") return undefined;
+  const objects: Record<string, unknown>[] = [];
+  const texts: string[] = [];
+  const visit = (value: unknown, depth = 0): void => {
+    if (depth > 8) return;
+    if (typeof value === "string") {
+      texts.push(value);
+      const start = value.indexOf("{");
+      const end = value.lastIndexOf("}");
+      if (start >= 0 && end > start) {
+        try { visit(JSON.parse(value.slice(start, end + 1)), depth + 1); } catch { /* 非 JSON 错误继续按文字识别。 */ }
+      }
+    } else if (value !== null && typeof value === "object") {
+      const object = record(value);
+      objects.push(object);
+      for (const nested of Object.values(value)) visit(nested, depth + 1);
+    }
+  };
+  visit(message.errorMessage);
+  visit(message.error);
+  const text = texts.join("\n");
+  const reason = text.match(/\b(usage_limit_reached|quota_exceeded|insufficient_quota)\b/i)?.[1].toLowerCase();
+  const has429 = [message, ...objects].some((object) =>
+    [object.status, object.statusCode, object.httpStatusCode, object.status_code].some((status) => status === 429 || status === "429")) ||
+    /(?:^\s*(?:Error:\s*)?429\b|\bHTTP(?:\/\d(?:\.\d)?)?\s+429\b|\bstatus(?:[ _-]?code)?\s*[:=]?\s*429\b|\(429\))/im.test(text);
+  if (!reason || !has429) return undefined;
+  let resumeAt: string | null = null;
+  for (const object of objects) {
+    for (const key of ["resets_at", "reset_at", "resetAt", "retry_after"]) {
+      resumeAt = resetTime(object[key], key === "retry_after", nowMs);
+      if (resumeAt !== null) break;
+    }
+    if (resumeAt !== null) break;
+  }
+  if (resumeAt === null) {
+    const reset = text.match(/\b(resets?[ _-]?(?:at)?|retry[ _-]?after)\s*(?:[:=]|\bis\b|\bon\b)?\s*["']?(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|[+-]\d\d:\d\d)|\d{10,13})\b/i);
+    if (reset) resumeAt = resetTime(reset[2], false, nowMs);
+  }
+  return { type: "quota_exhausted", resumeAt, reason };
+}
+
+/** 返回派生事件；调用方须按运行去重，并先于原 message_end 派发。 */
+export function normalizePiEvent(event: RpcEvent, requestId: string, nowMs: number): RpcEvent[] {
+  const message = record(event.message);
+  if (event.type !== "message_end" || message.role !== "assistant") return [];
+  const usage = record(message.usage);
+  const inputTokens = tokenCount(usage.input);
+  const cacheReadTokens = tokenCount(usage.cacheRead);
+  const cacheWriteTokens = tokenCount(usage.cacheWrite);
+  const events: RpcEvent[] = [{ type: "usage_record",
+    requestId: typeof message.id === "string" && message.id ? message.id : requestId,
+    inputTokens, cacheReadTokens, cacheWriteTokens, outputTokens: tokenCount(usage.output),
+    reasoningTokens: tokenCount(usage.reasoning), contextTokens: inputTokens + cacheReadTokens + cacheWriteTokens }];
+  const quota = quotaEvent(message, nowMs);
+  if (quota) events.push(quota);
+  return events;
+}
 
 /** 会话锁在写者放行前取得，直到停止报告及进程身份均通过检查后才释放。 */
 export class RpcSubprocessDriver implements SessionDriver {
@@ -127,6 +216,51 @@ export class RpcSubprocessDriver implements SessionDriver {
     duration(options.heartbeatTimeoutMs, 30_000);
     duration(options.childUiTimeoutMs, DEFAULT_CHILD_UI_TIMEOUT_MS);
     checkStopOptions(options.stopOptions);
+  }
+  async resolveSkills(names: string[]): Promise<{ name: string; path: string }[]> {
+    for (const name of names) if (!validSkillName(name)) throw failure("EINVAL", `技能名称无效：${name}`);
+    if (!names.length) return [];
+    const configuredAgentDir = this.options.env?.PI_CODING_AGENT_DIR ?? process.env.PI_CODING_AGENT_DIR;
+    const agentDir = userPath(configuredAgentDir || path.join(homedir(), ".pi", "agent"), homedir());
+    let directories = this.options.skillDirectories;
+    if (directories === undefined) {
+      let settings: Record<string, unknown> = {};
+      try { settings = record(JSON.parse((await readFile(path.join(agentDir, "settings.json"), "utf8")).replace(/^\uFEFF/, ""))); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+      if (settings.skills !== undefined && (!Array.isArray(settings.skills) || settings.skills.some((value) => typeof value !== "string"))) {
+        throw failure("EINVAL", "用户 settings.json 的 skills 必须为路径数组");
+      }
+      directories = [path.join(agentDir, "skills"), ...(settings.skills as string[] | undefined ?? [])];
+    }
+    const pi = await locatePi(this.options.piPath ? { piPath: this.options.piPath } : {});
+    if (!pi.supported) throw failure("EAGORA_PI_VERSION", `不支持的 pi 版本：${pi.version}`);
+    const { loadSkillsFromDir } = await import(pathToFileURL(path.join(pi.packageDir, "dist", "core", "skills.js")).href) as {
+      loadSkillsFromDir(options: { dir: string; source: string }): { skills: { name: string; filePath: string }[] };
+    };
+    const matches = new Map<string, Map<string, string>>();
+    for (const directory of directories) {
+      if (typeof directory !== "string" || !directory.trim()) throw failure("EINVAL", "技能路径必须为非空字符串");
+      let target = userPath(directory, agentDir);
+      try {
+        if ((await stat(target)).isFile()) {
+          if (path.basename(target) !== "SKILL.md") throw failure("EINVAL", `技能文件必须为 SKILL.md：${target}`);
+          target = path.dirname(target);
+        }
+      } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
+      for (const skill of loadSkillsFromDir({ dir: target, source: "user" }).skills) {
+        if (path.basename(skill.filePath) !== "SKILL.md" || !validSkillName(skill.name) || !names.includes(skill.name)) continue;
+        const canonical = await realpath(path.dirname(skill.filePath));
+        const candidates = matches.get(skill.name) ?? new Map<string, string>();
+        candidates.set(comparisonKey(canonical), canonical);
+        matches.set(skill.name, candidates);
+      }
+    }
+    return names.map((name) => {
+      const candidates = matches.get(name);
+      if (!candidates?.size) throw failure("EAGORA_SKILL_NOT_FOUND", `找不到用户技能：${name}`);
+      if (candidates.size > 1) throw failure("EAGORA_SKILL_AMBIGUOUS", `用户技能名称有歧义：${name}`);
+      return { name, path: candidates.values().next().value! };
+    });
   }
   async recoverOldRun(identity: ProcessIdentity, sessionFile?: string): Promise<StopReport> {
     const key = sessionFile && sessionKey(sessionFile);
@@ -191,6 +325,7 @@ export class RpcSubprocessDriver implements SessionDriver {
       "--tools", spec.tools?.join(",") ?? "read,grep,find,ls,agora_*", "-ne", "--no-mcp", "-ns", "-np", "--no-approve",
       "-e", this.options.extensionPath];
     for (const extension of this.options.extraExtensions ?? []) argv.push("-e", extension);
+    for (const skillPath of spec.skillPaths ?? []) argv.push("--skill", skillPath);
     const env = { ...this.options.env, ...spec.env };
     for (const name of Object.keys(env)) if (name.toUpperCase() === "AGORA_HOME") delete env[name];
     let proc: ManagedProcess;
@@ -253,6 +388,8 @@ class RpcDriverHandle implements DriverHandle {
   private readonly exitListeners = new Set<(exit: DriverExit) => void>();
   private readonly events: RpcEvent[] = [];
   private readonly tools = new Map<string, ActiveTool>();
+  private readonly completedMessages = new Set<string>();
+  private messageSequence = 0;
   private readonly pendingUi = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly unsubscribe: (() => void)[] = [];
   private ready = false;
@@ -328,6 +465,18 @@ class RpcDriverHandle implements DriverHandle {
     } else if (event.type === "tool_execution_end") {
       this.tools.delete(String(event.toolCallId)); this.lastCompleted = boundedEvent(event);
     } else if (event.type === "message_end") this.lastCompleted = boundedEvent(event);
+    if (event.type === "message_end" && record(event.message).role === "assistant") {
+      const message = record(event.message);
+      const id = typeof message.id === "string" && message.id ? `id:${message.id}` : `body:${createHash("sha256").update(JSON.stringify(message)).digest("hex")}`;
+      if (!this.completedMessages.has(id)) {
+        this.completedMessages.add(id);
+        for (const normalized of normalizePiEvent(event, `message-${++this.messageSequence}`, Date.now())) {
+          this.events.push(boundedEvent(normalized));
+          if (this.events.length > 50) this.events.shift();
+          emit(this.listeners, normalized);
+        }
+      }
+    }
     emit(this.listeners, event);
     if (event.type === "extension_error") this.fatal("扩展故障", new Error(summary(event)));
     if (event.type === "session_shutdown" && ["new", "resume", "fork"].includes(String(event.reason))) this.fatal("会话发生未授权替换");
