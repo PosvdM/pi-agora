@@ -141,7 +141,8 @@ export default function agoraExtension(pi: PiExtensionApi): void {
     const client = r.client;
     const delivery = r.delivery;
     if (!current(r) || !client || !delivery) return 0;
-    await delivery.confirm();
+    // 单条确认的暂时故障不能阻断收取后续通知；鉴权与连接故障由 inbox 请求触发恢复。
+    await delivery.confirm().catch(() => {});
     if (!current(r) || client !== r.client) return 0;
     const response = await client.request<{ items: Notice[] }>('GET', `/v1/inbox?wait=${wait}`, undefined, { signal: r.controller.signal });
     if (!current(r) || client !== r.client) return 0;

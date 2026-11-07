@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, appendFile, rm, symlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { AgoraHttpError } from '../packages/protocol/dist/index.js';
 import { NoticeDelivery, persistedNotices } from '../packages/extension/dist/notifications.js';
 import { checkToolPath, validatePolicy, verifyRuntime } from '../packages/extension/dist/permissions.js';
 
@@ -149,6 +150,22 @@ test('注入失败释放在途标记且通知内容明确标注与截断', async
   assert.match(f.sends[0].message.content, /^【agora 子代理事件】/);
   assert.ok(f.sends[0].message.content.length < 2200);
   assert.equal(f.sends[0].options.triggerTurn, true);
+});
+
+test('历史外来通知不确认，单条永久404不阻断后续通知', async t => {
+  const f = await fixture(t, { ephemeral: true });
+  f.entries.push({ id: 'parent-entry', type: 'custom_message', customType: 'agora:notice', details: { noticeId: 'parent', dedupeKey: 'parent' } });
+  await f.delivery.confirm();
+  assert.equal(f.acks.length, 0);
+  const request = f.client.request;
+  f.client.request = async (method, path, body) => {
+    if (body.noticeId === 'nt_deleted') throw new AgoraHttpError(404, 'not_found');
+    return request(method, path, body);
+  };
+  await f.delivery.accept([{ ...f.notice, noticeId: 'nt_deleted', dedupeKey: 'deleted' }, f.notice]);
+  assert.equal(f.acks.length, 1);
+  assert.equal(f.acks[0].noticeId, f.notice.noticeId);
+  assert.equal(f.sends.length, 2);
 });
 
 test('允许根、secret及其搜索祖先和symlink的路径检查', async t => {

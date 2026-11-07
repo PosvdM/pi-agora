@@ -1,5 +1,5 @@
 import { open } from 'node:fs/promises';
-import type { AgoraClient } from '@pi-agora/protocol';
+import { AgoraHttpError, type AgoraClient } from '@pi-agora/protocol';
 import type { PiExtensionApi, SessionContext, SessionEntry } from './types.js';
 
 export interface Notice {
@@ -64,6 +64,8 @@ export async function persistedNotices(file: string, wanted: SessionEntry[]): Pr
 export class NoticeDelivery {
   private readonly injected = new Set<string>();
   private readonly acknowledged = new Set<string>();
+  // 只确认当前连接从鉴权 inbox 收到的通知；fork 继承的历史条目不构成授权。
+  private readonly pending = new Map<string, string>();
   private chain: Promise<unknown> = Promise.resolve();
   private closed = false;
   constructor(private readonly pi: PiExtensionApi, private readonly ctx: SessionContext,
@@ -77,16 +79,26 @@ export class NoticeDelivery {
   }
   private async confirmEntries(): Promise<void> {
     const entries = this.ctx.sessionManager.getEntries().filter(noticeEntry)
-      .filter(entry => !this.acknowledged.has(entry.details!.dedupeKey as string));
+      .filter(entry => this.pending.get(entry.details!.noticeId as string) === entry.details!.dedupeKey &&
+        !this.acknowledged.has(entry.details!.dedupeKey as string));
     const file = this.ctx.sessionManager.getSessionFile();
     const persisted = file ? await persistedNotices(file, entries) : new Set<string>();
     for (const entry of entries) {
       if (this.closed) return;
       if (this.acknowledged.has(entry.details!.dedupeKey as string)) continue;
       if (!this.ephemeral && !persisted.has(entry.id)) continue;
-      await this.client.request('POST', '/v1/inbox/ack', {
-        noticeId: entry.details!.noticeId, entryId: entry.id, persisted: !this.ephemeral,
-      });
+      try {
+        await this.client.request('POST', '/v1/inbox/ack', {
+          noticeId: entry.details!.noticeId, entryId: entry.id, persisted: !this.ephemeral,
+        });
+      } catch (error) {
+        if (error instanceof AgoraHttpError && [404, 410].includes(error.status)) {
+          this.pending.delete(entry.details!.noticeId as string);
+          continue;
+        }
+        throw error;
+      }
+      this.pending.delete(entry.details!.noticeId as string);
       this.acknowledged.add(entry.details!.dedupeKey as string);
       this.injected.delete(entry.details!.dedupeKey as string);
     }
@@ -101,21 +113,27 @@ export class NoticeDelivery {
   }
   accept(items: Notice[]): Promise<void> {
     return this.serialize(async () => {
-      await this.confirmEntries();
       for (const notice of items) {
         if (this.closed) return;
         if (!notice || typeof notice.noticeId !== 'string' || typeof notice.dedupeKey !== 'string' || !notice.payload) {
           throw new Error('agora 通知格式无效');
         }
         const key = notice.dedupeKey;
-        if (this.acknowledged.has(key) || this.injected.has(key) ||
+        if (this.acknowledged.has(key)) continue;
+        this.pending.set(notice.noticeId, key);
+        if (this.injected.has(key) ||
             this.ctx.sessionManager.getEntries().some(e => noticeEntry(e) && e.details!.dedupeKey === key)) continue;
         const p = notice.payload;
-        const summary = String(p.content ?? p.summary ?? `任务 ${p.taskId ?? ''} 的状态已变化`).slice(0, 2000);
+        const summary = String(p.content ?? p.summary ?? '').slice(0, 2000);
+        const taskId = typeof p.taskId === 'string' ? p.taskId : undefined;
+        const generation = Number.isSafeInteger(p.generation) && Number(p.generation) > 0 ? p.generation : undefined;
+        const title = String(p.title ?? '未命名任务').slice(0, 200);
+        const status = String(p.status ?? notice.kind.split(':').at(-1) ?? '未知').slice(0, 64);
+        const resultCall = taskId && generation ? `agora_task ${JSON.stringify({ action: 'result', taskId, generation })}` : '此通知未附任务定位信息。';
         this.injected.add(key);
         try {
           this.pi.sendMessage({ customType: 'agora:notice', display: true,
-            content: `【agora 子代理事件】${summary}\n使用 agora_task result 获取完整结果。`,
+            content: `【agora 子代理事件】任务：${taskId ?? '未提供'}；generation：${generation ?? '未提供'}；标题：${title}；状态：${status}\n取结果：${resultCall}\n摘要：${summary}`,
             details: { noticeId: notice.noticeId, dedupeKey: key, taskId: p.taskId, generation: p.generation, nodeId: p.nodeId } },
           { triggerTurn: p.notify !== 'silent' && p.silent !== true, deliverAs: 'followUp' });
         } catch (error) { this.injected.delete(key); throw error; }
