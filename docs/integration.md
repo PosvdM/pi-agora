@@ -90,6 +90,8 @@ pi-hostkit        ◄── daemon、extension（pi-pane 服务端也依赖它�
 
 1b 的任务接口支持 list、status、result、steer、stop、cleanup、recover；recover 的 mode 为 resume / reopen / replace / abandon。任务返回 parentTaskId、depth、maxDepth 和 maxChildren，waiting_children 映射为 waiting。默认深度为两层，maxDepth 从新任务自身起计，拒绝使用 depth_exceeded、depth_limit_exceeded、children_exceeded、child_limit_exceeded、profile_upgrade 等错误码。
 
+cleanup 在有未提交改动且未指定 `discard` 时返回 `409 worktree_dirty`。含 gitlink（子模块）的 worktree 返回 `409 worktree_submodules`，包括指定 `discard` 的请求；需调用方手动验收和清理，不能以 `discard` 绕过 Git 子仓库配置的安全边界。
+
 提问返回 targetId（当前接收方）、route（逐级转交链）和 revision；答复始终送给 askerId。主代理也能 ask，直接面向 user。1b 的 host:cli 可直接答复任意提问，answeredVia.confirmedBy 为 none；不存在设备挑战或用户级签名，不发送 Agora-Act-As 请求头。完整用户级协议按下节目标在 1c 接入。
 
 子会话 inbox 只向最终就绪、未停止的 run 返回通知。run 未持有推理名额时只返回静默通知；需要推理的通知必须等 run 获得名额后领取。父任务处于 waiting_children 时，下级终态通知不受 notify: silent 限制：daemon 为其排队或重新拉起，并在通知 payload 中设置 triggerTurn: true，扩展据此真正启动回合。静默投递不领取名额，启动恢复扫描也不因纯静默 outbox 唤醒任务。
