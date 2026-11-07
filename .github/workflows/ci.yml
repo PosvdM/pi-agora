@@ -10,6 +10,28 @@ permissions:
   contents: read
 
 jobs:
+  git-minimum:
+    name: Git 2.34.1 安全验收
+    runs-on: ubuntu-latest
+    container: ubuntu:22.04
+    timeout-minutes: 20
+    steps:
+      - name: 安装 Git 2.34.1 和测试工具
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git ca-certificates python3 openssh-client
+          git --version
+          git --version | grep -E '^git version 2\.34\.1$'
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Git 安全测试（含工作树布局正负控）
+        run: node --test --test-concurrency=1 test/git-1b.test.mjs test/git-contexts-review.test.mjs test/git-execution-review.test.mjs test/git-index-review.test.mjs test/git-paths-review.test.mjs test/git-security-review.test.mjs test/git-worktree-layout-review.test.mjs
+
   test:
     name: test (${{ matrix.os }}, ${{ matrix.containment }})
     strategy:
