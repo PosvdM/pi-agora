@@ -16,6 +16,8 @@ export async function extensionWire(root) {
   await mkdir(join(root, 'run'), { recursive: true });
   await writeFile(join(root, 'secret', 'host.key'), key);
   const server = createServer(async (req, res) => {
+    // 隔离夹具不复用TCP连接，避免关闭后随机端口再分配撞上客户端旧连接池。
+    res.setHeader('Connection', 'close');
     try {
       let text = '';
       for await (const chunk of req) text += chunk;

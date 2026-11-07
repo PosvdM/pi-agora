@@ -20,6 +20,8 @@ export async function extensionWire(root) {
   await writeFile(join(root, 'secret', 'host.key'), key);
   await writeFile(join(root, 'secret', 'principals', 'principal-one.key'), recovery);
   const server = createServer(async (req, res) => {
+    // 假HTTP服务之间不继承连接池状态，重启/退避屏障仍由业务条件控制。
+    res.setHeader('Connection', 'close');
     try {
       let text = '';
       for await (const chunk of req) text += chunk;
