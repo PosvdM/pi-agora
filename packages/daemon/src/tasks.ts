@@ -335,10 +335,14 @@ export class TaskManager {
       const recoveryReports = await this.recoverPreviousRuns(taskId, false);
       report ??= recoveryReports.at(-1);
       if (this.unconfirmedRun(taskId)) throw new AgoraError(409, "stop_incomplete", "旧运行尚未确认退出，不能将任务标为停止");
-      if (["completed", "failed", "stopped"].includes(task.status)) return { ...taskSummary(task), stopReport: report ?? null };
-      this.store.run("UPDATE agora_sessions SET control_state=NULL WHERE id=?", task.agora_session_id);
+      // 只有所有运行均确认退出后才清控制标志；失败路径保留停止中现场。
+      this.store.transaction(() => {
+        this.store.run("UPDATE tasks SET status_detail=NULL WHERE id=?", taskId);
+        this.store.run("UPDATE agora_sessions SET control_state=NULL WHERE task_id=? AND control_state='stopping'", taskId);
+      });
       this.auth.revokeRun(runtime?.runId ?? "");
       if (runtime) this.releaseSlot(runtime);
+      if (["completed", "failed", "stopped"].includes(task.status)) return { ...taskSummary(this.store.task(taskId)), stopReport: report ?? null };
       return { ...taskSummary(this.store.transition(this.store.task(taskId), "stopped")), stopReport: report ?? null };
     });
   }

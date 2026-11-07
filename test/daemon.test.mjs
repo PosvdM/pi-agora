@@ -132,18 +132,35 @@ for (const expiredLease of [false, true]) test(`settle屏障后的stop在队列�
   assert.equal(f.daemon.store.session(task.agoraSessionId).control_state, null);
 });
 
-test('stop清理终态的空闲进程，但不把完成结果改成取消', async t => {
+for (const [status, withHandle] of [['completed', true], ['failed', true], ['completed', false], ['failed', false], ['stopped', false]]) test(`stop成功清除${status}/${withHandle ? '有' : '无'}handle控制标志，重复调用不改业务结果`, async t => {
   const f = await setup(t), main = await f.client();
   const task = await f.spawn(main);
   await until(() => f.driver.handles[0]?.commands.includes('prompt'));
-  f.driver.handles[0].emit({ type: 'agent_settled', aborted: false });
-  await until(() => f.daemon.store.task(task.taskId).status === 'completed');
+  const handle = f.driver.handles[0];
+  if (status === 'stopped') await main.request('POST', `/v1/tasks/${task.taskId}/stop`, {});
+  else {
+    if (status === 'failed') handle.emit({ type: 'message_end', message: { role: 'assistant', stopReason: 'error' } });
+    handle.emit({ type: 'agent_settled', aborted: false });
+    await until(() => f.daemon.store.task(task.taskId).status === status);
+    if (!withHandle) { await handle.stop(); await f.daemon.tasks.flush(); }
+  }
+  assert.equal(f.daemon.tasks.runtimes.has(task.taskId), withHandle);
   const before = f.daemon.store.task(task.taskId);
-  const result = await main.request('POST', `/v1/tasks/${task.taskId}/stop`, { expectedRevision: before.revision });
-  assert.equal(result.status, 'completed');
-  assert.equal(f.driver.handles[0].stopped, true);
-  assert.equal(f.daemon.store.task(task.taskId).revision, before.revision);
-  assert.equal((await main.request('GET', `/v1/tasks/${task.taskId}/result`)).resultText, '只读测试结果');
+  const originalResult = f.daemon.store.get('SELECT * FROM task_generations WHERE task_id=?', task.taskId);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    // 模拟此前遗留的内部标志；清理不得借此改写业务revision或结果。
+    f.daemon.store.run("UPDATE tasks SET status_detail='停止中' WHERE id=?", task.taskId);
+    f.daemon.store.run("UPDATE agora_sessions SET control_state='stopping' WHERE id=?", task.agoraSessionId);
+    const result = await main.request('POST', `/v1/tasks/${task.taskId}/stop`, { expectedRevision: before.revision });
+    assert.equal(result.status, status);
+    assert.equal(result.statusDetail, null, '返回值必须重新读取已清除的状态详情');
+    assert.equal(f.daemon.store.task(task.taskId).status_detail, null);
+    assert.equal(f.daemon.store.session(task.agoraSessionId).control_state, null);
+    assert.equal(f.daemon.store.task(task.taskId).revision, before.revision);
+    assert.equal(f.daemon.store.task(task.taskId).updated_at, before.updated_at);
+    assert.deepEqual(f.daemon.store.get('SELECT * FROM task_generations WHERE task_id=?', task.taskId), originalResult);
+  }
+  assert.equal(handle.stopped, true);
 });
 
 test('任务当前会话切换后，历史result仍定位所属代数的会话', async t => {
@@ -390,6 +407,8 @@ test('child fatal 立即撤销token并停止run；cleanupConfirmed=false保留�
   handle.stop = async () => { throw new Error('受控清理失败，不能发出成功退出事件'); };
   await assert.rejects(main.request('POST', `/v1/tasks/${task.taskId}/stop`, {}), error => error.code === 'stop_incomplete');
   assert.equal(f.daemon.tasks.runtimes.size, 1, '失败的清理结果不能被stop覆盖');
+  assert.equal(f.daemon.store.task(task.taskId).status_detail, '停止中');
+  assert.equal(f.daemon.store.session(task.agoraSessionId).control_state, 'stopping');
   handle.exit(true);
   await f.daemon.tasks.flush();
   assert.equal(f.daemon.tasks.runtimes.size, 0, '独立确认退出后才释放handle引用');
