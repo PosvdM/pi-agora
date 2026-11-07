@@ -156,7 +156,7 @@ test('1b Windows 8.3 短名仍受真实路径权限约束', { skip: process.plat
   await mkdir(protectedDir); await mkdir(publicDir);
   await writeFile(path.join(protectedDir, 'file.txt'), '受保护'); await writeFile(path.join(publicDir, 'file.txt'), '安全');
   const short = target => execFileSync('cmd.exe', ['/d', '/c', `for %I in ("${target}") do @echo %~sI`],
-    { encoding: 'utf8', timeout: 10_000, windowsHide: true }).trim();
+    { encoding: 'utf8', timeout: 10_000, windowsHide: true, windowsVerbatimArguments: true }).trim();
   let protectedShort, publicShort;
   try { protectedShort = short(protectedDir); publicShort = short(publicDir); }
   catch (error) { t.skip(`cmd.exe 无法获取短名：${error.code ?? error.message}`); return; }

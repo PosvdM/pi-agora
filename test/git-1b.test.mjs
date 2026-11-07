@@ -2,7 +2,7 @@ import test, { mock } from 'node:test';
 import assert from 'node:assert/strict';
 import childProcess, { execFileSync } from 'node:child_process';
 import { syncBuiltinESMExports } from 'node:module';
-import { mkdtemp, mkdir, writeFile, readFile, rm, chmod } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, chmod, realpath } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
@@ -236,7 +236,7 @@ test('F2：worktree 检出禁用恶意 smudge/process 与 hooks，正控执行�
     f.raw(['config', '--file', conditional, 'core.fsmonitor', f.probe(`${condition}-fsmonitor`)]);
     f.raw(['config', '--file', conditional, 'core.hooksPath', hooks.replaceAll('\\', '/')]);
     const key = condition === 'onbranch' ? 'includeIf.onbranch:agora/**.path'
-      : `includeIf.gitdir:${f.cwd.replaceAll('\\', '/')}/.git/worktrees/**.path`;
+      : `includeIf.gitdir:${(await realpath(path.join(f.cwd, '.git'))).replaceAll('\\', '/')}/worktrees/**.path`;
     f.raw(['config', key, conditional.replaceAll('\\', '/')]);
     const positive = path.join(f.root, `agora-positive-${condition}`);
     f.raw(['worktree', 'add', '-b', `agora/positive-${condition}`, positive, 'HEAD']);
