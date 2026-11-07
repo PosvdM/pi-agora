@@ -184,13 +184,13 @@ export class TaskManager {
           runtime.active = true; runtime.accepted = true; runtime.assistantError = false;
           if (runtime.idleTimer) clearTimeout(runtime.idleTimer);
           const task = this.store.task(taskId);
-          if (task.status !== "running") this.store.transition(task, "running");
+          if (task.status !== "running") this.transition(task, "running");
           if (task.pending_message) {
             this.store.run("UPDATE tasks SET pending_message=NULL WHERE id=?", taskId);
             try { data(await runtime.handle.send({ type: "prompt", message: `你是子代理。\n\n${task.pending_message}` })); }
             catch {
               runtime.stopped = true;
-              this.store.transition(this.store.task(taskId), "interrupted", "返工送达结果未知，请核对会话后恢复，不能自动重放", runtime.runId);
+              this.transition(this.store.task(taskId), "interrupted", "返工送达结果未知，请核对会话后恢复，不能自动重放", runtime.runId);
               this.releaseSlot(runtime);
               await runtime.handle.stop(); this.auth.revokeRun(runtime.runId);
             }
@@ -198,6 +198,18 @@ export class TaskManager {
         } else await this.launch(taskId);
       }).catch(() => {});
     }
+  }
+  private transition(...args: Parameters<Store["transition"]>): TaskRow {
+    const result = this.store.transition(...args);
+    if (TERMINAL.includes(result.status)) this.notifyConvener(result);
+    return result;
+  }
+  private notifyConvener(task: TaskRow, notify = task.notify): void {
+    const parent = this.store.get<TaskRow>("SELECT t.* FROM tasks t JOIN agora_sessions s ON s.id=t.agora_session_id WHERE s.principal_id=?", task.convener_id);
+    // 等待下级的父任务必须进入真实回合；其余静默消息只投递。
+    if (notify === "silent" && parent?.status !== "waiting_children") return;
+    this.store.run("UPDATE outbox SET payload=json_set(payload,'$.triggerTurn',json('true')) WHERE recipient_id=? AND acked_at IS NULL AND json_extract(payload,'$.taskId')=? AND json_extract(payload,'$.generation')=?", task.convener_id, task.id, task.generation);
+    this.wake(task.convener_id);
   }
   private releaseSlot(runtime: Runtime): void {
     if (!runtime.active) return;
@@ -248,7 +260,7 @@ export class TaskManager {
               runtime.stopped = true;
               runtime.terminal = "interrupted";
               const latest = this.store.task(taskId);
-              if (latest.status === "running") this.store.transition(latest, "interrupted", "结果读取失败，任务不会自动重放", runId);
+              if (latest.status === "running") this.transition(latest, "interrupted", "结果读取失败，任务不会自动重放", runId);
               try { await handle.stop(); } finally { this.auth.revokeRun(runId); this.releaseSlot(runtime); }
             }
           }).catch(() => {});
@@ -272,7 +284,7 @@ export class TaskManager {
       handle.markReady();
       this.store.run("UPDATE process_runs SET state='ready' WHERE id=?", runId);
       runtime.accepted = true;
-      if (this.store.task(taskId).status !== "running") this.store.transition(this.store.task(taskId), "running");
+      if (this.store.task(taskId).status !== "running") this.transition(this.store.task(taskId), "running");
       runtime.stallTimer = setInterval(() => this.watchdog(runtime), Math.min(60_000, Math.max(10, (this.options.toolStallMinutes ?? 10) * 60_000)));
       runtime.stallTimer.unref();
       phase = "prompt_rejected";
@@ -304,7 +316,7 @@ export class TaskManager {
       }
       if (stopped) this.store.run("UPDATE process_runs SET state='exited',exited_at=COALESCE(exited_at,?) WHERE id=?", now(), runId);
       const latest = this.store.task(taskId);
-      if (["created", "running", "waiting_decision", "waiting_children"].includes(latest.status)) this.store.transition(latest, runtime.terminal ?? (task.status === "created" ? "failed" : "interrupted"), message, runId);
+      if (["created", "running", "waiting_decision", "waiting_children"].includes(latest.status)) this.transition(latest, runtime.terminal ?? (task.status === "created" ? "failed" : "interrupted"), message, runId);
       this.releaseSlot(runtime);
     } finally { if (runtime.timer) clearTimeout(runtime.timer); }
   }
@@ -341,7 +353,7 @@ export class TaskManager {
       try { await runtime.handle?.stop(); }
       finally {
         const task = this.store.task(runtime.taskId);
-        if (["created", "running"].includes(task.status)) this.store.transition(task, runtime.accepted ? "interrupted" : "failed", "权限检查失败，运行已停止", runId);
+        if (["created", "running", "waiting_children", "waiting_decision"].includes(task.status)) this.transition(task, runtime.accepted ? "interrupted" : "failed", "权限检查失败，运行已停止", runId);
         this.releaseSlot(runtime);
       }
     }).catch(() => {});
@@ -359,10 +371,10 @@ export class TaskManager {
     const requests = this.store.get("SELECT id FROM requests WHERE task_id=? AND state IN ('open','escalated') LIMIT 1", task.id);
     const status = event.aborted ? "interrupted" : lastError ? "failed" : requests ? "waiting_decision" : children ? "waiting_children" : "completed";
     const result = typeof last.text === "string" ? last.text : "";
-    this.store.transition(task, status, result, runtime.runId, usage);
+    this.transition(task, status, result, runtime.runId, usage);
     if (!["interrupted", "failed"].includes(status)) this.store.run("UPDATE tasks SET recovery_attempts=0 WHERE id=?", task.id);
     this.releaseSlot(runtime);
-    if (TERMINAL.includes(status)) this.wake(task.convener_id);
+
     runtime.idleTimer = setTimeout(() => {
       void this.control(task.id, async () => {
         if (runtime.active || runtime.tools.size || runtime.stopped) return;
@@ -390,7 +402,7 @@ export class TaskManager {
     runtime.stopped = true;
     if (runtime.idleTimer) clearTimeout(runtime.idleTimer);
     if (runtime.stallTimer) clearInterval(runtime.stallTimer);
-    this.store.transition(task, "quota_paused", quota.reason, runtime.runId, undefined, quota);
+    this.transition(task, "quota_paused", quota.reason, runtime.runId, undefined, quota);
     try {
       await runtime.handle!.stop();
       const exit = await runtime.handle!.exited;
@@ -401,7 +413,7 @@ export class TaskManager {
           taskId: task.id, generation: task.generation, title: task.title, status: "quota_paused", contextTokens: this.store.usage(task.id).contextTokens,
           summary: "模型额度用完，但服务未提供可识别的重置时间。请核对额度后手动 recover resume 续跑，或停止后改派。",
         });
-        this.wake(task.convener_id);
+        this.notifyConvener(task, "wake");
       }
       this.armQuotaTimer(this.store.task(task.id));
     } finally { this.auth.revokeRun(runtime.runId); this.releaseSlot(runtime); }
@@ -429,7 +441,7 @@ export class TaskManager {
           });
           this.store.run("UPDATE tasks SET quota_notified_at=? WHERE id=?", now(), latest.id);
         });
-        this.wake(latest.convener_id);
+        this.notifyConvener(latest, "wake");
       }).catch(() => {});
     }, Math.min(2_147_483_647, Math.max(1, remaining)));
     timer.unref(); this.quotaTimers.set(task.id, timer);
@@ -441,7 +453,7 @@ export class TaskManager {
     if (this.unconfirmedRun(taskId)) throw new AgoraError(409, "stop_incomplete", "额度暂停运行尚未确认退出");
     this.clearQuotaTimer(taskId);
     this.store.run("UPDATE tasks SET pending_message=? WHERE id=?", "【agora 额度恢复】请从当前会话继续；核对工具是否已产生副作用，不要重放已经完成的操作。下级保持原状态。", taskId);
-    this.store.transition(task, "running", undefined, undefined, undefined, { resumeAt: null });
+    this.transition(task, "running", undefined, undefined, undefined, { resumeAt: null });
     this.schedule(taskId);
   }
   private async exited(runtime: Runtime, exit: DriverExit): Promise<void> {
@@ -451,7 +463,7 @@ export class TaskManager {
     const clean = exit.cleanupConfirmed === true;
     this.store.run("UPDATE process_runs SET state=?,exited_at=?,exit_code=?,signal=?,diagnostics_path=?,cleanup_error=? WHERE id=?", clean ? "exited" : "stopping", clean ? now() : null, exit.code, exit.signal, exit.diagnosticsPath ?? null, clean ? null : "运行尚未确认退出", runtime.runId);
     const task = this.store.task(runtime.taskId);
-    if (!runtime.stopped && ["created", "running"].includes(task.status)) this.store.transition(task, runtime.accepted ? "interrupted" : "failed", "协作进程退出，请检查诊断", runtime.runId);
+    if (!runtime.stopped && ["created", "running", "waiting_children", "waiting_decision"].includes(task.status)) this.transition(task, runtime.accepted ? "interrupted" : "failed", "协作进程退出，请检查诊断", runtime.runId);
     this.releaseSlot(runtime);
     if (clean && this.runtimes.get(runtime.taskId) === runtime) this.runtimes.delete(runtime.taskId);
   }
@@ -536,7 +548,7 @@ export class TaskManager {
       this.auth.revokeRun(runtime?.runId ?? "");
       if (runtime) this.releaseSlot(runtime);
       if (["completed", "failed", "stopped"].includes(task.status)) return { ...taskSummary(this.store.task(taskId)), stopReport: report ?? null, subtreeReports, droppedSteers };
-      const result = this.store.transition(this.store.task(taskId), "stopped"); this.wake(task.convener_id);
+      const result = this.transition(this.store.task(taskId), "stopped");
       return { ...taskSummary(result), stopReport: report ?? null, subtreeReports, droppedSteers };
     });
   }
@@ -555,7 +567,10 @@ export class TaskManager {
   inboxAllowed(conn: Connection): boolean {
     if (conn.type !== "agent:child") return true;
     const runtime = [...this.runtimes.values()].find(r => r.runId === conn.runId);
-    return !!runtime?.active && runtime.ready && !runtime.stopped && !this.ancestorsStopping(this.store.task(runtime.taskId));
+    return !!runtime?.accepted && runtime.ready && !runtime.stopped && !this.ancestorsStopping(this.store.task(runtime.taskId));
+  }
+  inboxSilentOnly(conn: Connection): boolean {
+    return conn.type === "agent:child" && ![...this.runtimes.values()].some(runtime => runtime.runId === conn.runId && runtime.active);
   }
   authorized(conn: Connection, runId: string) {
     const runtime = this.childRun(conn, runId);
@@ -591,7 +606,7 @@ export class TaskManager {
       tool.count = cycle;
       const task = this.store.task(runtime.taskId);
       this.store.notice(task.convener_id, `task:${task.id}:stall:${toolId}:${cycle}`, "task:stall", { taskId: task.id, generation: task.generation, title: task.title, status: "running", summary: `工具 ${tool.name} 已运行 ${Date.now() - tool.at} 毫秒，期间没有事件。可继续等待、停止或中断返工。` });
-      this.wake(task.convener_id);
+      this.notifyConvener(task, "wake");
     }
   }
   private nextGeneration(task: TaskRow, message: string): void {

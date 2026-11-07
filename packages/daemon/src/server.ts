@@ -149,12 +149,12 @@ async function route(context: ServerContext, method: string, url: URL, conn: Con
     const recipient = auth.inboxRecipient(conn);
     const wait = positive(url.searchParams.get("wait"), 0, 25, true);
     const deadline = Date.now() + wait * 1000;
-    let rows = store.takeInbox(recipient);
+    let rows = store.takeInbox(recipient, undefined, tasks.inboxSilentOnly(conn));
     while (!rows.length && Date.now() < deadline && !context.closing.aborted && !response.destroyed) {
       await delay(Math.min(200, Math.max(1, deadline - Date.now())), undefined, { signal: context.closing }).catch(() => {});
       if (!context.closing.aborted && !response.destroyed) {
         auth.inboxRecipient(conn);
-        rows = tasks.inboxAllowed(conn) ? store.takeInbox(recipient) : [];
+        rows = tasks.inboxAllowed(conn) ? store.takeInbox(recipient, undefined, tasks.inboxSilentOnly(conn)) : [];
       }
     }
     return ok({ items: rows.map(row => ({ noticeId: row.id, dedupeKey: row.dedupe_key, kind: row.kind, payload: JSON.parse(row.payload), createdAt: row.created_at })) });

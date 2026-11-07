@@ -9,6 +9,7 @@ import { startDaemon } from '../packages/daemon/dist/index.js';
 import { connectHost, createClient, gitExec } from '../packages/protocol/dist/index.js';
 import { DatabaseSync } from 'node:sqlite';
 import { Store, openStore, schemaMigrations } from '../packages/daemon/dist/store.js';
+import { NoticeDelivery } from '../packages/extension/dist/notifications.js';
 
 async function until(fn, ms = 4000) {
   const deadline = Date.now() + ms;
@@ -19,6 +20,8 @@ class Driver {
   handles = [];
   async start(spec) {
     if (this.bootDelayMs) await delay(this.bootDelayMs);
+    if (this.startBarrier) await this.startBarrier;
+    if (this.failStart) { this.failStart = false; throw new Error('受控启动失败'); }
     const listeners = new Set(), exits = new Set(); let resolve;
     const launch = await fetch(spec.env.AGORA_URL + '/v1/auth/launch', { method: 'POST', headers: { 'Agora-Protocol': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket: spec.env.AGORA_LAUNCH_TICKET }) }).then(r => r.json());
     const client = createClient({ url: spec.env.AGORA_URL, token: launch.token });
@@ -31,6 +34,7 @@ class Driver {
       markReady() { this.ready = true; }, diagnostics() { return {}; }, respondUi() {},
       async send(cmd) {
         this.commands.push(cmd);
+        if (this.failCommands?.includes(cmd.type)) throw new Error('受控 RPC 失败');
         if (this.barrier?.type === cmd.type) await this.barrier.promise;
         if (cmd.type === 'abort') queueMicrotask(() => this.emit({ type: 'agent_settled', aborted: true }));
         if (cmd.type === 'clear_queue') return { success: true, data: { steering: this.commands.filter(c => c.type === 'steer').map(c => c.message) } };
@@ -38,6 +42,15 @@ class Driver {
           : cmd.type === 'get_state' ? { model: { provider: 'test', id: 'model' }, thinkingLevel: spec.thinking, sessionFile: spec.sessionFile }
           : cmd.type === 'get_last_assistant_text' ? { text: this.result } : {};
         return { success: true, data };
+      },
+      async fatal() {
+        const response = await fetch(spec.env.AGORA_URL + `/v1/runs/${spec.runId}/fatal`, { method: 'POST',
+          headers: { 'Agora-Protocol': '1', Authorization: `Bearer ${launch.token}`, 'Content-Type': 'application/json' }, body: '{}' });
+        assert.equal(response.ok, true);
+      },
+      crash() {
+        const exit = { identity: this.identity, code: 1, signal: null, cleanupConfirmed: true };
+        resolve(exit); for (const fn of exits) fn(exit); client.close();
       },
       async stop() {
         this.stopCount++;
@@ -131,6 +144,75 @@ test('D14：父任务 settled 等待下级不完成且不占名额；回收父�
   p2.result = '核对下级后的最终结果'; p2.emit({ type: 'agent_settled', aborted: false }); await f.daemon.tasks.flush();
   assert.equal(f.daemon.store.task(parent.taskId).status, 'completed');
   assert.equal((await main.request('GET', `/v1/tasks/${parent.taskId}/result`)).resultText, p2.result);
+});
+
+async function injectNotices(client, items) {
+  const calls = [];
+  const delivery = new NoticeDelivery({ sendMessage: (message, options) => calls.push({ message, options }) },
+    { sessionManager: { getEntries: () => [], getSessionFile: () => undefined } }, client, true);
+  try { await delivery.accept(items); } finally { delivery.close(); }
+  return calls;
+}
+for (const fault of ['start', 'model', 'fatal', 'exit', 'result']) test(`F3：单名额下级 ${fault} 故障会唤醒等待父任务`, async t => {
+  const f = await setup(t, { maxConcurrentRuns: 1 }), main = await f.main(), parent = await f.spawn(main), p = await f.handle(parent);
+  const child = await f.spawn(p.client, { notify: 'silent', ...(fault === 'model' ? { model: 'test/unavailable' } : {}) });
+  let release;
+  if (['start', 'model'].includes(fault)) f.driver.startBarrier = new Promise(resolve => { release = resolve; });
+  if (fault === 'start') f.driver.failStart = true;
+  p.emit({ type: 'agent_settled', aborted: false });
+  try { await until(() => f.daemon.store.task(parent.taskId).status === 'waiting_children'); }
+  finally { release?.(); }
+  await f.daemon.tasks.flush();
+  if (!['start', 'model'].includes(fault)) {
+    const c = await f.handle(child);
+    if (fault === 'fatal') await c.fatal();
+    if (fault === 'exit') c.crash();
+    if (fault === 'result') { c.failCommands = ['get_last_assistant_text']; c.emit({ type: 'agent_settled', aborted: false }); }
+  }
+  await until(() => ['failed', 'interrupted'].includes(f.daemon.store.task(child.taskId).status));
+  await until(() => f.daemon.store.task(parent.taskId).status === 'running');
+  const inbox = await p.client.request('GET', '/v1/inbox');
+  assert.equal(inbox.items.length, 1); assert.equal(inbox.items[0].payload.taskId, child.taskId);
+  const calls = await injectNotices(p.client, inbox.items);
+  assert.equal(calls[0].options.triggerTurn, true, '等待下级时必须实际启动回合');
+  await f.settled(parent, '故障已经处理'); assert.equal(f.daemon.store.task(parent.taskId).status, 'completed');
+  assert.equal(f.daemon.tasks.activeCount(), 0);
+});
+
+test('F4：静默完成在等待下级时启动父回合，非等待父任务只收消息且不占单名额', async t => {
+  const f = await setup(t, { maxConcurrentRuns: 1 }), main = await f.main(), parent = await f.spawn(main), p = await f.handle(parent);
+  const child = await f.spawn(p.client, { notify: 'silent' });
+  await f.settled(parent); await f.handle(child); await f.settled(child);
+  await until(() => f.daemon.store.task(parent.taskId).status === 'running');
+  assert.equal(f.driver.handles.filter(h => h.spec.agoraSessionId === parent.agoraSessionId).length, 1, '父进程未回收');
+  let inbox = await p.client.request('GET', '/v1/inbox');
+  assert.equal((await injectNotices(p.client, inbox.items))[0].options.triggerTurn, true);
+  // 模拟已经处于等待决定的父任务；静默事件只能投递，不能领取推理名额。
+  await p.client.request('POST', '/v1/requests', { questions: [{ id: 'q', question: '等待主代理决定' }] });
+  const child2 = await f.spawn(p.client, { notify: 'silent' });
+  await f.settled(parent); assert.equal(f.daemon.store.task(parent.taskId).status, 'waiting_decision');
+  await f.handle(child2); await f.settled(child2);
+  assert.equal(f.daemon.store.task(parent.taskId).status, 'waiting_decision');
+  assert.equal(f.daemon.tasks.activeCount(), 0);
+  inbox = await p.client.request('GET', '/v1/inbox');
+  assert.equal(inbox.items.length, 1); assert.equal(inbox.items[0].payload.taskId, child2.taskId);
+  assert.equal((await injectNotices(p.client, inbox.items))[0].options.triggerTurn, false);
+  const next = await f.spawn(main); await f.handle(next);
+  assert.equal(f.daemon.tasks.activeCount(), 1, '后续任务能取得唯一名额');
+});
+
+for (const knownReset of [false, true]) test(`F3/D15：额度暂停${knownReset ? '到时' : '未知时间'}通知通过统一入口唤醒等待父任务`, async t => {
+  const f = await setup(t, { maxConcurrentRuns: 1 }), main = await f.main(), parent = await f.spawn(main), p = await f.handle(parent);
+  const child = await f.spawn(p.client, { notify: 'silent' }); await f.settled(parent);
+  const c = await f.handle(child);
+  c.emit({ type: 'quota_exhausted', resumeAt: knownReset ? new Date(Date.now() + 100).toISOString() : null, reason: '测试额度暂停' });
+  c.emit({ type: 'agent_settled', aborted: false }); await f.daemon.tasks.flush();
+  await until(() => f.daemon.store.task(parent.taskId).status === 'running');
+  assert.equal(f.daemon.store.task(child.taskId).status, 'quota_paused');
+  const inbox = await p.client.request('GET', '/v1/inbox');
+  assert.equal(inbox.items[0].kind, knownReset ? 'task:quota_ready' : 'task:quota_unknown');
+  assert.equal((await injectNotices(p.client, inbox.items))[0].options.triggerTurn, true);
+  assert.equal(f.daemon.tasks.activeCount(), 1);
 });
 
 test('D14：深度、下级数、档位及子树上限不能放宽，所有拒绝有明确错误码', async t => {

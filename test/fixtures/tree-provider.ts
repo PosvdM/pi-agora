@@ -13,7 +13,7 @@ export default function (pi) {
       const results = context.messages.filter(m => m.role === 'toolResult' && m.toolName === 'agora_task');
       const notice = context.messages.some(m => m.role === 'user' && text(m).includes('agora 子代理事件'));
       const content = leaf ? [{ type: 'text', text: '真实下级检查完成' }]
-        : !results.length ? [{ type: 'toolCall', id: 'tree-spawn', name: 'agora_task', arguments: { action: 'spawn', model: 'agora-tree/scripted', profile: 'explore', prompt: 'TREE_LEAF', title: '真实孙代理' } }]
+        : !results.length ? [{ type: 'toolCall', id: 'tree-spawn', name: 'agora_task', arguments: { action: 'spawn', model: 'agora-tree/scripted', profile: 'explore', prompt: 'TREE_LEAF', title: '真实孙代理', notify: 'silent' } }]
         : [{ type: 'text', text: notice ? '父任务核对下级后的最终结果' : '父任务等待下级，尚未交付最终结果' }];
       setTimeout(() => {
         const message = { role: 'assistant', api: model.api, provider: model.provider, model: model.id, timestamp: Date.now(), content,

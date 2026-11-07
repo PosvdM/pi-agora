@@ -9,20 +9,20 @@ import { piFixture, containment, providerPath, until } from './fixtures/driver-h
 
 const extensionPath = fileURLToPath(new URL('../packages/extension/dist/index.js', import.meta.url));
 const treeProvider = fileURLToPath(new URL('./fixtures/tree-provider.ts', import.meta.url));
-test('真实 pi 多层派活：单名额不死锁，空闲父进程回收后下级通知重新拉起并落盘，父代理最终回复才完成', { timeout: 90_000 }, async () => {
+for (const idleReclaimMs of [100, 60_000]) test(`真实 pi 静默下级完成：单名额父回合实际启动并最终完成（idleReclaimMs=${idleReclaimMs}）`, { timeout: 90_000 }, async () => {
   const f = await piFixture(), home = path.join(f.root, 'agora'); let daemon, client;
   try {
     const driver = new RpcSubprocessDriver({ home, piPath: f.install.packageDir, extensionPath, env: f.env, extraExtensions: [treeProvider], containment });
-    daemon = await startDaemon({ home, driver, maxConcurrentRuns: 1, idleReclaimMs: 100 });
+    daemon = await startDaemon({ home, driver, maxConcurrentRuns: 1, idleReclaimMs });
     client = await connectHost({ home, as: 'host:cli', autoStart: false });
     const parent = await client.request('POST', '/v1/tasks', { model: 'agora-tree/scripted', profile: 'explore', cwd: f.cwd, prompt: 'TREE_PARENT' }, { idempotencyKey: 'tree-parent' });
     await until(() => daemon.store.task(parent.taskId).status === 'waiting_children', 30_000);
     assert.equal(daemon.store.get("SELECT COUNT(*) AS n FROM outbox WHERE dedupe_key=?", `task:${parent.taskId}:1:completed`).n, 0);
     const child = daemon.store.get('SELECT * FROM tasks WHERE parent_task_id=?', parent.taskId);
-    assert.ok(child); assert.equal(child.depth, 2);
+    assert.ok(child); assert.equal(child.depth, 2); assert.equal(child.notify, 'silent');
     await until(() => daemon.store.task(parent.taskId).status === 'completed', 45_000);
     assert.equal((await client.request('GET', `/v1/tasks/${parent.taskId}/result`)).resultText, '父任务核对下级后的最终结果');
-    assert.equal(daemon.store.get('SELECT COUNT(*) AS n FROM process_runs WHERE agora_session_id=?', parent.agoraSessionId).n, 2);
+    assert.equal(daemon.store.get('SELECT COUNT(*) AS n FROM process_runs WHERE agora_session_id=?', parent.agoraSessionId).n, idleReclaimMs === 100 ? 2 : 1);
     const notice = daemon.store.get('SELECT * FROM outbox WHERE dedupe_key=?', `task:${child.id}:1:completed`);
     await until(() => daemon.store.get('SELECT acked_at FROM outbox WHERE id=?', notice.id).acked_at, 10_000);
     const session = daemon.store.session(parent.agoraSessionId);

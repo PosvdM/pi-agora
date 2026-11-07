@@ -223,9 +223,9 @@ export class Store {
     )`, taskId, generation ?? null, generation ?? null)!.n;
     return totals;
   }
-  takeInbox(recipient: string, visibilityMs = 120_000): NoticeRow[] {
+  takeInbox(recipient: string, visibilityMs = 120_000, silentOnly = false): NoticeRow[] {
     return this.transaction(() => {
-      const rows = this.all<NoticeRow>("SELECT * FROM outbox WHERE recipient_id=? AND acked_at IS NULL AND visible_after<=? ORDER BY created_at,id LIMIT 200", recipient, Date.now());
+      const rows = this.all<NoticeRow>("SELECT * FROM outbox WHERE recipient_id=? AND acked_at IS NULL AND visible_after<=? AND (?=0 OR ((json_extract(payload,\'$.notify\')=\'silent\' OR json_extract(payload,\'$.silent\')=1) AND COALESCE(json_extract(payload,\'$.triggerTurn\'),0)<>1)) ORDER BY created_at,id LIMIT 200", recipient, Date.now(), silentOnly ? 1 : 0);
       for (const row of rows) this.run("UPDATE outbox SET visible_after=?,delivered_at=?,attempts=attempts+1 WHERE id=?", Date.now() + visibilityMs, now(), row.id);
       return rows;
     });
