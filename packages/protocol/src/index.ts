@@ -7,7 +7,7 @@ export const EXPLORE_TOOLS = ["read", "grep", "find", "ls"] as const;
 
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export type PermissionProfile = "explore" | "review" | "implement";
-export type TaskStatus = "created" | "running" | "waiting_decision" | "waiting_children" | "completed" | "failed" | "stopped" | "interrupted";
+export type TaskStatus = "created" | "running" | "waiting_decision" | "waiting_children" | "quota_paused" | "completed" | "failed" | "stopped" | "interrupted";
 export type PrincipalType = "user" | "host:cli" | "host:pane" | "agent:main" | "agent:child";
 export type SessionKind = "task" | "meeting-seat" | "secretary";
 
@@ -32,6 +32,7 @@ export interface SpawnTaskParams {
   notify?: "wake" | "silent";
   maxDepth?: number;
   maxChildren?: number | null;
+  skills?: string[];
 }
 export type AgoraTaskParams =
   | ({ action: "spawn" } & SpawnTaskParams)
@@ -54,6 +55,10 @@ export interface TaskSummary {
   revision: number;
   createdAt: string;
   updatedAt: string;
+  skills?: string[];
+  quotaResumeAt?: string | null;
+  usage?: UsageSummary;
+  treeUsage?: UsageSummary;
 }
 export interface TaskResult {
   taskId: string;
@@ -62,6 +67,12 @@ export interface TaskResult {
   status: TaskStatus;
   resultText?: string | null;
   usage?: unknown;
+  treeUsage?: UsageSummary;
+  generationUsage?: UsageSummary;
+}
+export interface UsageSummary {
+  requests: number; inputTokens: number; cacheReadTokens: number; cacheWriteTokens: number;
+  outputTokens: number; reasoningTokens: number; contextTokens: number;
 }
 export interface Notice {
   noticeId: string;
@@ -120,6 +131,7 @@ export const spawnTaskSchema = {
     notify: { enum: ["wake", "silent"] },
     maxDepth: { type: "integer", minimum: 1 },
     maxChildren: { type: ["integer", "null"], minimum: 0 },
+    skills: { type: "array", items: { type: "string", minLength: 1 }, uniqueItems: true },
   },
 } as const;
 export const agoraTaskSchema = {

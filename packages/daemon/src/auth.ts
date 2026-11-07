@@ -7,6 +7,7 @@ import { Store, id, now, type PrincipalRow } from "./store.js";
 
 export interface RunPolicy {
   profile: "explore" | "review" | "implement"; allowedRoots: string[]; protectedPaths: string[];
+  readOnlyRoots?: string[];
   tools: string[]; model: string; thinking: string; extensionVersion: string;
 }
 export interface Connection {

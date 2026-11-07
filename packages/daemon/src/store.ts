@@ -4,7 +4,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { AgoraError } from "./errors.js";
 
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 export const schemaMigrations: readonly string[] = [String.raw`
 CREATE TABLE principals (
   id TEXT PRIMARY KEY, type TEXT NOT NULL, label TEXT NOT NULL DEFAULT '',
@@ -98,6 +98,20 @@ CREATE TABLE worktrees (
   task_id TEXT PRIMARY KEY REFERENCES tasks(id), repo_root TEXT NOT NULL, base_commit TEXT NOT NULL,
   branch TEXT NOT NULL, path TEXT NOT NULL UNIQUE, owner_id TEXT NOT NULL, state TEXT NOT NULL
 );
+`, String.raw`
+ALTER TABLE tasks ADD COLUMN skills TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE tasks ADD COLUMN skill_paths TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE tasks ADD COLUMN quota_resume_at TEXT;
+ALTER TABLE tasks ADD COLUMN quota_notified_at TEXT;
+CREATE TABLE usage_records (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL REFERENCES tasks(id),
+  generation INTEGER NOT NULL, agora_session_id TEXT NOT NULL REFERENCES agora_sessions(id),
+  run_id TEXT NOT NULL REFERENCES process_runs(id), request_id TEXT NOT NULL,
+  input_tokens INTEGER NOT NULL, cache_read_tokens INTEGER NOT NULL, cache_write_tokens INTEGER NOT NULL,
+  output_tokens INTEGER NOT NULL, reasoning_tokens INTEGER NOT NULL, context_tokens INTEGER NOT NULL,
+  created_at TEXT NOT NULL, UNIQUE(run_id,request_id)
+);
+CREATE INDEX usage_task ON usage_records(task_id,generation,seq);
 `];
 
 export interface PrincipalRow {
@@ -113,6 +127,7 @@ export interface TaskRow {
   status_detail: string | null; created_at: string; updated_at: string;
   parent_task_id: string | null; depth: number; depth_limit: number; child_limit: number | null;
   recovery_attempts: number; pending_message: string | null;
+  skills: string; skill_paths: string; quota_resume_at: string | null; quota_notified_at: string | null;
 }
 export interface SessionRow {
   id: string; task_id: string; principal_id: string; session_file: string;
@@ -129,6 +144,11 @@ export interface RunRow {
 export interface NoticeRow {
   id: string; recipient_id: string; dedupe_key: string; kind: string; payload: string;
   created_at: string; visible_after: number; acked_at: string | null;
+}
+
+export interface UsageSummary {
+  requests: number; inputTokens: number; cacheReadTokens: number; cacheWriteTokens: number;
+  outputTokens: number; reasoningTokens: number; contextTokens: number;
 }
 
 export function id(prefix: string): string { return `${prefix}_${randomUUID()}`; }
@@ -171,11 +191,12 @@ export class Store {
   change(kind: string, objectId: string): void {
     this.run("INSERT INTO changes(epoch,object_type,object_id,created_at) VALUES((SELECT value FROM settings WHERE key='epoch'),?,?,?)", kind, objectId, now());
   }
-  transition(task: TaskRow, status: string, resultText?: string, runId?: string, usage?: unknown): TaskRow {
+  transition(task: TaskRow, status: string, resultText?: string, runId?: string, usage?: unknown, quota?: { resumeAt: string | null }): TaskRow {
     return this.transaction(() => {
       const at = now();
       const changed = this.run("UPDATE tasks SET status=?,revision=revision+1,status_detail=NULL,updated_at=? WHERE id=? AND generation=? AND revision=?", status, at, task.id, task.generation, task.revision);
       if (!changed.changes) throw new AgoraError(409, "conflict", "任务状态已变化，请重新读取");
+      if (quota) this.run("UPDATE tasks SET quota_resume_at=?,quota_notified_at=NULL WHERE id=?", quota.resumeAt, task.id);
       this.run("UPDATE agora_sessions SET status=?,revision=revision+1 WHERE id=?", status, task.agora_session_id);
       if (["completed", "failed", "stopped", "interrupted"].includes(status)) this.run("UPDATE agora_sessions SET ended_at=? WHERE id=?", at, task.agora_session_id);
       this.run("UPDATE task_generations SET status=?,result_text=COALESCE(?,result_text),settled_at=CASE WHEN ? IN ('completed','failed','stopped','interrupted') THEN ? ELSE settled_at END,started_at=CASE WHEN ?='running' THEN COALESCE(started_at,?) ELSE started_at END WHERE task_id=? AND generation=?", status, resultText ?? null, status, at, status, at, task.id, task.generation);
@@ -189,6 +210,18 @@ export class Store {
       this.change("task", task.id);
       return this.task(task.id);
     });
+  }
+  usage(taskId: string, tree = false, generation?: number): UsageSummary {
+    const ids = tree ? "WITH RECURSIVE subtree(id) AS (SELECT ? UNION ALL SELECT t.id FROM tasks t JOIN subtree s ON t.parent_task_id=s.id) SELECT id FROM subtree" : "SELECT ?";
+    const totals = this.get<UsageSummary>(`SELECT COUNT(*) AS requests,
+      COALESCE(SUM(input_tokens),0) AS inputTokens, COALESCE(SUM(cache_read_tokens),0) AS cacheReadTokens,
+      COALESCE(SUM(cache_write_tokens),0) AS cacheWriteTokens, COALESCE(SUM(output_tokens),0) AS outputTokens,
+      COALESCE(SUM(reasoning_tokens),0) AS reasoningTokens, 0 AS contextTokens
+      FROM usage_records WHERE task_id IN (${ids}) AND (? IS NULL OR generation=?)`, taskId, generation ?? null, generation ?? null)!;
+    totals.contextTokens = this.get<{ n: number }>(`SELECT COALESCE(SUM(context_tokens),0) AS n FROM usage_records WHERE seq IN (
+      SELECT MAX(seq) FROM usage_records WHERE task_id IN (${ids}) AND context_tokens>0 AND (? IS NULL OR generation=?) GROUP BY task_id
+    )`, taskId, generation ?? null, generation ?? null)!.n;
+    return totals;
   }
   takeInbox(recipient: string, visibilityMs = 120_000): NoticeRow[] {
     return this.transaction(() => {

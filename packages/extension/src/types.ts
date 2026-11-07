@@ -37,6 +37,7 @@ export interface ChildPolicy {
   profile: 'explore' | 'review' | 'implement';
   allowedRoots: string[];
   protectedPaths: string[];
+  readOnlyRoots?: string[];
   tools: string[];
   model: string;
   thinking: string;

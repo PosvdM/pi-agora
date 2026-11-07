@@ -11,7 +11,7 @@ import { piFixture, providerPath, containment, until } from './fixtures/driver-h
 const extensionPath = fileURLToPath(new URL('../packages/extension/dist/index.js', import.meta.url));
 test('真实 fork 继承父通知后仍收取自己的乱序完成通知，模型正文可定位任务', { timeout: 90_000 }, async () => {
   const f = await piFixture({ fallback: { segments: [{ type: 'text', text: '相同摘要' }] }, routes: [
-    { when: { lastUser: '后完成' }, reply: { segments: [{ type: 'text', text: '相同摘要', delayMs: 800 }] } },
+    { when: { includes: '后完成' }, reply: { segments: [{ type: 'text', text: '相同摘要', delayMs: 800 }] } },
   ] });
   const home = path.join(f.root, 'agora');
   const driver = new RpcSubprocessDriver({ home, piPath: f.install.packageDir, extensionPath, env: f.env, extraExtensions: [providerPath], containment });
