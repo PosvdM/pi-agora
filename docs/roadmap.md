@@ -1,6 +1,6 @@
 # 路线图
 
-> 状态：设计阶段，尚无代码。工期在 P0 验证后重估。
+> 状态：代码覆盖切片 1a；完整任务核心、存档、pane、board 和会议按后续切片推进。实现与测试入口见 [development.md](development.md)。
 
 ## P0 验证项
 
@@ -40,6 +40,15 @@ pi-agora 和 pi-pane 的 MVP 按同样的三个切片推进，两仓的 roadmap 
 | 3. board 与会议 | 先两席 + 只在最后出纪要的书记，验证 fencing、预算、故障恢复；再加中途书记、僵局启发式 | 会议进度（`steps` 面板）、board（`timeline` 面板）、会议相关动作和表单的联调（其 M4） |
 
 ### 切片 1：agora 任务核心
+
+切片 1 分四个 PR 交付，1a 的代码和测试见 [development.md](development.md#测试与-ci)：
+
+| 步骤 | 范围 |
+| --- | --- |
+| 1a：最小闭环 | 四包工程和三平台 CI；daemon 单实例、握手、主会话注册与恢复、租约、launch ticket、就绪检查、排空、版本和迁移；RPC driver、会话写锁、并发、诊断、旧进程清理、扩展 UI；explore 的 spawn / status / result / stop；outbox 可靠通知；CLI start / shutdown / status / ls / show |
+| 1b–1d | 其余完整动作与状态机、steer、worktree、三个档位、提问、用户确认、配对、存档与其他 CLI；archive 包在 1d 创建 |
+
+下面列出切片 1 的完整目标，不表示这些内容均已实现。
 
 - daemon：单实例（hostkit 锁）、`host.key` 握手、主会话注册与恢复、控制租约、launch ticket、受管扩展就绪检查、排空关闭、版本协商、数据库迁移与一致性备份。
 - 进程监管：`RpcSubprocessDriver`（hostkit 的 RPC 传输与进程树终止，Linux cgroup v2 默认开启支持；`StopReport` 覆盖范围标注）、会话写锁、并发上限与名额、空闲回收、崩溃诊断、无进展看门狗、重启时清理旧进程、子会话扩展 UI 的处理。

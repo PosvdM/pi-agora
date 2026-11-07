@@ -1,6 +1,6 @@
 # 任务（子代理）
 
-> 状态：设计草案。工具参数、状态名和默认值是草案，P0 验证后冻结。
+> 本文描述完整任务设计。切片 1a 提供 explore 档位的 spawn、status、result、stop 和可靠通知；其他动作按 [roadmap.md](roadmap.md) 推进。实现与测试见 [development.md](development.md)。
 
 任务是召集人派给一个协作会话（`kind = task`）的一件工作。它覆盖现有“派子代理”的核心用法：按模型和权限档位派任务、worktree 隔离、完成后叫醒召集人、steer 返工、查看列表和结果、停止、子代理提问并由召集人答复或转给用户。
 
@@ -37,6 +37,7 @@ type AgoraTaskParams =
       notify?: "wake" | "silent";    // 完成时是否叫醒召集人，默认 "wake"
     }
   | { action: "list"; status?: TaskStatus[]; scope?: "mine" | "all" }  // 默认 mine
+  | { action: "status"; taskId: string }                          // 当前任务详情
   | { action: "result"; taskId: string; generation?: number }        // 默认最新一代
   | { action: "steer"; taskId: string; message: string; interrupt?: boolean }
   | { action: "stop"; taskId: string; reason?: string }
@@ -61,6 +62,7 @@ type AgoraTaskParams =
 - **spawn**：建任务、建会话、拉起进程，等受管扩展就绪检查通过后用 RPC `prompt` 发出任务书（见 [architecture.md](architecture.md#受管扩展的就绪检查)），立即返回，不等待完成。模型名在 spawn 时用 `get_available_models` 校验，无效则任务直接 `failed` 并说明原因。推理名额不足时任务保持 `created` 排队，优先级低于会议（见 [architecture.md](architecture.md#名额优先级)）。
 - **review 档位的 git 查询**：review 任务可以用 `agora_git` 看 `status`、`diff`、`log`、`show`。只读 git 命令也可能被仓库配置利用来执行代码，所以该工具固定禁用这些机制、只接受白名单参数，规则见 [architecture.md](architecture.md#agora_git-的加固)。
 - **list**：返回任务摘要（标题、模型、档位、状态、代数、最近活动时间、待答复提问数）。`scope: "all"` 对主代理只返回摘要，见 [security.md](security.md#任务)。
+- **status**：返回当前任务状态、generation、revision 和详情；访问权限与 result 相同。
 - **result**：返回指定代的最终回复（RPC `get_last_assistant_text` 在 settled 时取得并存入 `task_generations`）、状态、worktree 信息、用量统计。任务仍在运行时返回当前状态和“尚无结果”。
 - **steer**：见“返工 generation”。
 - **stop**：取消当前运行，包括排队的消息：先 RPC `clear_queue`，再 `abort`（带超时，见 [pi-hostkit 设计文档的“进程树终止”](https://github.com/PosvdM/pi-hostkit/blob/main/docs/design.md#进程树终止)），等旧运行结束；abort 超时则终止进程树。任务进入 `stopped`。`clear_queue` 返回的排队文本中属于 agora 返工消息的，对应的 steer 记录标为 `dropped` 并在 stop 的结果里列出。停止不回滚文件。
@@ -120,7 +122,7 @@ pi 的 `queue_update` 事件只给出排队消息的文本（依据：`docs/json
 
 界面上分开显示这几种状态。标注会被模型看到，这是为了可靠追踪付出的小代价。
 
-每一代的结果单独保存在 `task_generations`（task_id、generation、started_at、settled_at、status、result_text、usage）。旧一代的结果不会被新一代覆盖。
+每一代的结果单独保存在 `task_generations`（task_id、generation、started_at、settled_at、status、result_text、usage）。旧一代的结果不会被新一代覆盖。`task_generations.agora_session_id` 记录该代所属会话；`tasks.agora_session_id` 只表示任务的当前会话。读取历史 result 时，会话标识取该代记录，不能用当前会话替代。
 
 ## 完成通知与 outbox
 
@@ -153,7 +155,7 @@ pi 的 `queue_update` 事件只给出排队消息的文本（依据：`docs/json
 
 ### 投递
 
-- **收取**：`GET /v1/inbox?wait=25` 返回发给当前 principal 的**全部未确认通知**中当前可见的那些，不按游标截断。daemon 在返回时给每条通知设可见性超时（默认 120 秒），超时前不再返回；超时后仍未确认的会再次返回。扩展除了持续长轮询，还在 `session_start` 和 `agent_settled` 时立即拉取一次。
+- **收取**：`GET /v1/inbox?wait=25` 从发给当前 principal 的全部未确认通知中，按创建时间、id 顺序返回当前可见的一批，每批最多 200 条，不使用游标。daemon 在返回时给每条通知设可见性超时（默认 120 秒），超时前不再返回；超时后仍未确认的会再次返回。扩展收到非空批次后连续用 `wait=0` 拉取，直到空批，再恢复长轮询；在 `session_start` 和 `agent_settled` 时也立即执行同一批量收取流程。这是至少一次投递，重复通知按 `dedupeKey` 去重，不把批次边界或已返回响应当作确认。
 - **注入**：扩展拿到通知后，先在当前会话条目（`ctx.sessionManager.getEntries()`，依据：`dist/core/session-manager.d.ts` 的 `ReadonlySessionManager`）中查找相同 `dedupeKey` 的 `agora:notice`：已存在就不再注入（是否确认按下面的规则）；不存在才注入：
 
   ```ts
@@ -165,6 +167,7 @@ pi 的 `queue_update` 事件只给出排队消息的文本（依据：`docs/json
   ```
 
   依据：`dist/core/extensions/types.d.ts` 的 `sendMessage`（`triggerTurn`、`deliverAs: "steer" | "followUp" | "nextTurn"`）；自定义消息在下一次模型请求前转成用户角色文本（`docs/message-types.md` 的 CustomMessage）。主代理空闲时立即开始新一轮；忙碌时作为 followUp 排队。
+- **确认归属**：待确认集合只接纳当前鉴权 inbox 返回的 noticeId / dedupeKey，不把会话文件中的历史通知直接视为本 principal 的通知。fork 继承的父会话通知只作历史展示，不能由新 principal 确认；服务端仍严格核对接收方。单条通知永久失效（404 / 410）从本地待确认集合移除，不阻断后续 inbox 收取。
 - **确认以会话文件为准**：扩展看到 `message_end` 时**不确认**，因为 pi 先把 `message_end` 发给扩展，再写入会话文件（依据：`dist/core/agent-session.js:760–779`），这期间进程退出会丢失这条消息。`getEntries()` 里出现也**不够**：新会话在出现第一条 user 或 assistant 消息之前，条目只在内存里，会话文件还不存在（依据：`dist/core/session-manager.js` 的 `_persist`、`_hasConversation`）。所以扩展在 `turn_end`、`agent_settled` 和每次拉取时：
   1. 在 `getEntries()` 里找到带该 `dedupeKey` 的条目，取得 entryId；
   2. 读 `ctx.sessionManager.getSessionFile()` 指向的文件（只读、从文件末尾向前扫描），确认文件存在，且有一行完整的 JSON 是该 entryId 的 `custom_message` 条目；
@@ -172,7 +175,7 @@ pi 的 `queue_update` 事件只给出排队消息的文本（依据：`docs/json
 - **静默通知**：`notify: "silent"` 的任务仍写 outbox（供列表和“待处理”展示），扩展注入时用 `triggerTurn: false`。会话空闲时这类消息直接写入会话，不经过扩展的消息事件（依据：`dist/core/agent-session.js` 的 `_appendCustomMessage`），所以同样只能靠检查会话条目来确认。
 - **不持久化的主会话**：主会话以 `--no-session` 运行时（`ctx.sessionManager` 没有会话文件），通知永远无法写入文件。扩展注册 principal 时声明 `ephemeral: true`；对这类 principal，通知出现在 `getEntries()` 后即以 `persisted: false` 确认，daemon 记为“只送达内存会话”。ephemeral principal 无法在进程退出后认领，进程退出后它召集的任务按“召集人不可达”处理，未处理的事项进入用户的“待处理”。
 - **被清掉的通知**：主会话里用户按停止（`clear_queue`）会清掉排队中的 `agora:notice`。扩展在内存里记录“已注入、尚未写入会话”的通知；在 `agent_settled` 时仍未写入的，从记录里移除，等可见性超时后重新注入。pane 和 agora 停止时都用 `clear_queue` + `abort`，这条路径实测通知只落盘一条。第三方 RPC 客户端如果只发 `abort`，排队中的通知仍在 pi 队列中（尚未写入会话），settled 时查不到条目便会重投，导致同一通知在下一轮和原队列中的通知各写一条（P0 实测复现，见 [D 组 RESULTS.md](../experiments/p0/d-notify/RESULTS.md)）；这是已知偏差，展示时统一按 `dedupeKey` 去重。
-- 内容只放结果摘要（默认前 2000 字）和取全文的方法（`agora_task result`），明确标注是子代理事件，不冒充用户发言。
+- 模型可见的正文固定包含 taskId、generation、标题、状态，以及带 taskId / generation 参数的 `agora_task` result 调用方法，再附最多 2000 字的摘要。pi 的模型投影不保留 details，因此定位信息不能只放 details；details 继续供界面卡片使用。正文明确标注为子代理事件，不冒充用户发言。
 
 ## 提问、答复与转交
 

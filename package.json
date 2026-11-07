@@ -1,0 +1,26 @@
+{
+  "name": "pi-agora",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "pi 编码智能体的协作引擎",
+  "engines": {
+    "node": ">=24"
+  },
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "tsc -b --clean",
+    "pretest": "npm run build",
+    "test": "node --test --test-concurrency=1 \"test/**/*.test.mjs\""
+  },
+  "dependencies": {
+    "pi-hostkit": "github:PosvdM/pi-hostkit#ec911be193668e4c6b3b0616323c2b18aefd142c"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "typescript": "^7.0.2"
+  }
+}
