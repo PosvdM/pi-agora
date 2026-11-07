@@ -252,7 +252,9 @@ export async function connectLaunch<T>(url: string, ticket: string): Promise<{ c
   url = loopbackUrl(url);
   const options = { timeoutMs: 10000 };
   const { protocolVersion, instanceId } = await connectionProtocol(url, options);
-  const launch = await jsonRequest<T & { token: string }>(url, 'POST', '/v1/auth/launch', { ticket }, undefined, options, undefined, protocolVersion);
+  const launch = await jsonRequest<T & { token: string; expiresAt?: unknown; connectionId?: unknown }>(url, 'POST', '/v1/auth/launch', { ticket }, undefined, options, undefined, protocolVersion);
   if (!record(launch) || !nonempty(launch.token)) throw new Error('agora 子会话登录响应无效');
-  return { client: createClient({ url, token: launch.token, protocolVersion, instanceId }), launch };
+  if (launch.expiresAt !== undefined && (!nonempty(launch.expiresAt) || !Number.isFinite(Date.parse(launch.expiresAt)))) throw new Error('agora 子会话凭证期限无效');
+  return { client: createClient({ url, token: launch.token, expiresAt: launch.expiresAt as string | undefined,
+    connectionId: typeof launch.connectionId === 'string' ? launch.connectionId : undefined, protocolVersion, instanceId }), launch };
 }
