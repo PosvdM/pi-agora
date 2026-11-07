@@ -233,6 +233,8 @@ node <pi>/dist/bundle/cli.js --mode rpc
 | 对话 | pi JSONL | 由 pi 自己写，daemon 不复制到数据库 |
 | 流片段、退出诊断 | `sessions/<id>/` 下的文件 | 见 [archive.md](archive.md) |
 
+数据库 schema v2 通过重建会话表移除 task_id 的唯一限制，并为旧代数回填所属会话。迁移先备份，保留数据、显式索引和触发器，提交前执行 foreign_key_check；失败回滚。首代分配会话时即写入代数到会话的关联。
+
 不做通用事件溯源：业务状态用普通表，board 条目追加，状态变更和 outbox 在同一事务里完成。代价是不能重放任意历史时刻的业务状态；需要追溯的信息（board、对话、状态变更时间）都单独保存。
 
 `node:sqlite` 的 API 是同步的，查询会阻塞 daemon 事件循环。约束：所有列表查询带 `LIMIT`，大字段（board 正文、诊断）按需读取，单个事务内不做 I/O 等待。
@@ -244,7 +246,7 @@ node <pi>/dist/bundle/cli.js --mode rpc
 | `principals` | id、type、label、pi_session_id、session_file、forked_from、created_at |
 | `agora_sessions` | id、kind、profile、model、thinking、cwd、session_file、pi_session_id、convener_id、parent_principal_id、task_id、meeting_id、inherits_from、inherit_reason、status、control_state、revision、archive_state、created_at、ended_at |
 | `process_runs` | id（runId）、agora_session_id、pid、process_start_time、daemon_instance_id、state（starting / ready / exited）、started_at、exited_at、exit_code、signal、diagnostics_path |
-| `tasks`、`task_generations`、`steer_messages` | 见 [tasks.md](tasks.md) |
+| `tasks`、`task_generations`、`steer_messages` | `tasks.agora_session_id` 指向当前会话；`agora_sessions.task_id` 是非唯一关联，同一任务可保留多个有继承关系的会话；`task_generations.agora_session_id` 记录每代所属会话。其他字段见 [tasks.md](tasks.md) |
 | `requests` | 见 [tasks.md](tasks.md#提问答复与转交) |
 | `worktrees` | id、task_id、repo_root、base_commit、branch、path、owner_id、state |
 | `boards`、`board_entries`、`board_drafts`、`board_cursors` | 见 [board.md](board.md) |

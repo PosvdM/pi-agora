@@ -318,6 +318,7 @@ export class TaskManager {
       const task = this.store.task(taskId);
       this.access(conn, task, true);
       if (body.expectedGeneration !== undefined && body.expectedGeneration !== task.generation || body.expectedRevision !== undefined && body.expectedRevision !== task.revision) throw new AgoraError(409, "conflict", "任务状态已变化，请重新读取");
+      if (!["created", "running", "waiting_decision", "interrupted", "completed", "failed", "stopped"].includes(task.status)) throw new AgoraError(409, "invalid_state", "任务当前状态不能停止");
       const runtime = this.runtimes.get(taskId);
       if (runtime) { runtime.stopped = true; runtime.terminal = "stopped"; runtime.rejectReady(new Error("任务已停止")); if (runtime.idleTimer) clearTimeout(runtime.idleTimer); }
       let report;
@@ -334,7 +335,7 @@ export class TaskManager {
       const recoveryReports = await this.recoverPreviousRuns(taskId, false);
       report ??= recoveryReports.at(-1);
       if (this.unconfirmedRun(taskId)) throw new AgoraError(409, "stop_incomplete", "旧运行尚未确认退出，不能将任务标为停止");
-      if (task.status === "stopped") return { ...taskSummary(task), stopReport: report ?? null };
+      if (["completed", "failed", "stopped"].includes(task.status)) return { ...taskSummary(task), stopReport: report ?? null };
       this.store.run("UPDATE agora_sessions SET control_state=NULL WHERE id=?", task.agora_session_id);
       this.auth.revokeRun(runtime?.runId ?? "");
       if (runtime) this.releaseSlot(runtime);

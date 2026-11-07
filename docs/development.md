@@ -66,10 +66,11 @@ node packages/daemon/dist/main.js --home <本地目录> --pi-path <pi 包目录>
 ## 关键约束
 
 - **启动与就绪分两层**：hostkit 的 gate 确保会话写者身份写入共享锁记录后才加载 pi。扩展用一次性 ticket 报告就绪；HTTP 响应后 pi 才结束 `session_start` 并开始读取 RPC，daemon 随后再核对 RPC 模型、thinking、会话路径和可用模型。全部通过前不发送任务书，见 [受管扩展的就绪检查](architecture.md#受管扩展的就绪检查)。
+- **停止条件**：stop 在任务控制队列内检查租约和 expectedGeneration / expectedRevision，失败不修改运行标志或回收定时器。所有 `exited_at IS NULL` 的持久化 run 都纳入 stop / shutdown 清理，即使没有内存 handle；安全重试失败时返回 stop_incomplete，保持 daemon 和诊断可用。
 - **停止与恢复**：正常停止和崩溃诊断保留 StopReport、最近 50 条事件、活动工具、stderr 和可能副作用。重启读取没有确认退出的 process_runs；旧写者按进程身份停止并确认退出后才可重新打开会话文件。1a 不开放恢复任务的用户动作，不自动重放运行中的任务。
 - **通知确认**：内存条目和磁盘上完整、带换行的 JSONL 行必须具有同一 entryId、noticeId 和 dedupeKey，才能确认持久通知。`message_end` 回调、排队中的消息以及未首次落盘的内存会话条目都不是磁盘证据。inbox 每批最多返回 200 条，扩展连续取到空批为止；可见性超时后的重投仍按 dedupeKey 去重。ephemeral 主会话只确认内存送达，不声明可恢复。
 - **幂等**：服务端按 principal 与 Idempotency-Key 记录请求指纹及当前操作状态；同 key 不同参数返回冲突，不启动第二个任务。调用方发生超时时需用原 key 重试，不通过换 key 推断上次没有执行。
-- **迁移**：同一个数据库连接调用 SQLite backup，再以只读连接核对备份完整性；所有 DDL 在事务中执行。备份或迁移失败不继续启动，不复制 WAL 主文件充当一致性备份。
+- **迁移**：schema v2 允许同一任务关联多个继承会话，tasks 指向当前会话，每代单独关联所属会话。迁移从 v1 回填代数关联，重建会话表保留数据、显式索引和触发器，提交前检查外键。同一个数据库连接调用 SQLite backup，再以只读连接核对备份完整性；所有 DDL 在事务中执行。备份或迁移失败不继续启动，不复制 WAL 主文件充当一致性备份。
 
 ## 测试与 CI
 
@@ -78,6 +79,7 @@ node packages/daemon/dist/main.js --home <本地目录> --pi-path <pi 包目录>
 | 测试文件 | 验收与边界 |
 | --- | --- |
 | `test/e2e.test.mjs` | 真实主 pi 调用 spawn；只读子 pi 读取文件并完成；主会话由通知自动唤醒，再调用 result；独立核对文件不变、工具集合和磁盘通知确认 |
+| `test/notice-fork.test.mjs` | 父会话已有落盘通知后真实 fork，新 principal 不确认父通知；新任务乱序完成且摘要相同时，模型正文仍包含各自 taskId、generation、标题、状态和 result 参数 |
 | `test/notify-faults.test.mjs` | 五个 P0 通知故障时点真实强杀并恢复；第一项使用实际子任务完成时关闭主会话；断言原 principal / task 结果保留、无提前确认、最终同 key 只落盘一次 |
 | `test/driver.test.mjs`、`test/driver-faults.test.mjs` | 写锁、就绪门槛、忽略 abort 的工具和 provider、shell 后代、StopReport 覆盖范围、扩展 UI、超时、崩溃和旧进程恢复；独立模块 mock 验证清理失败保留锁、多旧身份恢复屏障和清理确认 |
 | `test/extension-hooks.test.mjs`、`test/extension.test.mjs` | 扩展幂等初始化、认证恢复、只读权限、fail closed、路径及符号链接、通知确认和去重 |

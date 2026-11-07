@@ -468,7 +468,8 @@ GET /v1/health
 { "daemonVersion": "0.1.0", "instanceId": "in_5f2c", "protocol": { "min": 1, "max": 1 } }
 ```
 
-- 客户端选双方区间交集中的最大值，写进之后每个请求的 `Agora-Protocol` 头。
+- 主机与 launch 连接都先读取 `/v1/health`，校验协议范围并选择双方区间交集中的最大值，固定为该连接之后每个请求（包括认证、业务和续期）的 `Agora-Protocol` 头。主机连接还核对 health、发现记录与握手中的 instanceId 一致，并按 host.key 验证 serverProof；health 不能替代身份认证。
+- 没有交集时，在发送 clientProof 或 launch ticket 前拒绝连接，明确提示协议不兼容；不会因版本不兼容而自动启动另一个 daemon。
 - 没有交集：daemon 返回 `426 protocol_unsupported`，`details` 里带 daemon 的区间；主会话扩展提示用户升级哪一方，CLI 提示运行 `agora shutdown` 后用新版本启动。
 - 增加可选字段、增加端点不升版本；删除或改变字段语义才升版本。daemon 至少同时支持当前和上一个版本。
 

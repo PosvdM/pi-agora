@@ -29,7 +29,8 @@ export async function extensionWire(root) {
       let result;
       const path = req.url.split('?')[0];
       const fail = (status, code) => { res.writeHead(status, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: { code, message: '测试拒绝' } })); };
-      if (path === '/v1/auth/challenge') {
+      if (path === '/v1/health') result = { daemonVersion: '0.1.0', instanceId, protocol: { min: 1, max: 1 } };
+      else if (path === '/v1/auth/challenge') {
         const challengeId = `challenge-${++sequence}`;
         challenges.set(challengeId, 'server-nonce');
         result = { challengeId, serverNonce: 'server-nonce', instanceId,

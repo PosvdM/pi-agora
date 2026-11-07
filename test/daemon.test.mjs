@@ -101,7 +101,7 @@ async function setup(t, options = {}) {
   return { home, driver, daemon, client, async spawn(conn, extra = {}, key) { return conn.request('POST', '/v1/tasks', { ...spawnBody, cwd: home, ...extra }, key ? { idempotencyKey: key } : undefined); } };
 }
 
-test('settle屏障之后的过期stop在队列内返回conflict，且不修改运行标志', async t => {
+for (const expiredLease of [false, true]) test(`settle屏障后的stop在队列内核对${expiredLease ? '租约' : '版本'}，失败不修改运行标志`, async t => {
   const f = await setup(t), main = await f.client();
   const task = await f.spawn(main);
   await until(() => f.driver.handles[0]?.commands.includes('prompt'));
@@ -120,7 +120,8 @@ test('settle屏障之后的过期stop在队列内返回conflict，且不修改�
   // 直接进入任务控制队列，避免用时间等待推测 HTTP 是否已入队。
   const conn = f.daemon.auth.authenticate(`Bearer ${main.token}`);
   const stop = f.daemon.tasks.stop(conn, task.taskId, { expectedGeneration: before.generation, expectedRevision: before.revision });
-  const conflict = assert.rejects(stop, error => error.code === 'conflict');
+  if (expiredLease) f.daemon.store.run('UPDATE principals SET lease_expires_at=0 WHERE id=?', conn.principalId);
+  const conflict = assert.rejects(stop, error => error.code === (expiredLease ? 'lease_required' : 'conflict'));
   release();
   await conflict;
   assert.equal(f.daemon.store.task(task.taskId).status, 'completed');
@@ -129,6 +130,20 @@ test('settle屏障之后的过期stop在队列内返回conflict，且不修改�
   assert.equal(runtime.stopped, false);
   assert.ok(runtime.idleTimer);
   assert.equal(f.daemon.store.session(task.agoraSessionId).control_state, null);
+});
+
+test('stop清理终态的空闲进程，但不把完成结果改成取消', async t => {
+  const f = await setup(t), main = await f.client();
+  const task = await f.spawn(main);
+  await until(() => f.driver.handles[0]?.commands.includes('prompt'));
+  f.driver.handles[0].emit({ type: 'agent_settled', aborted: false });
+  await until(() => f.daemon.store.task(task.taskId).status === 'completed');
+  const before = f.daemon.store.task(task.taskId);
+  const result = await main.request('POST', `/v1/tasks/${task.taskId}/stop`, { expectedRevision: before.revision });
+  assert.equal(result.status, 'completed');
+  assert.equal(f.driver.handles[0].stopped, true);
+  assert.equal(f.daemon.store.task(task.taskId).revision, before.revision);
+  assert.equal((await main.request('GET', `/v1/tasks/${task.taskId}/result`)).resultText, '只读测试结果');
 });
 
 test('HTTP 边界拒绝 Origin、错误协议、匿名、伪造用户身份与未实现权限', async t => {
