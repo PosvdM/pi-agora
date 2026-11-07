@@ -60,7 +60,7 @@ export default function notifyFixture(pi) {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async function (url, options) {
     const path = new URL(String(url)).pathname;
-    if (path === '/v1/auth/challenge' && !armed && control().fault === 'daemon-before-ack') {
+    if (['/v1/health', '/v1/auth/challenge'].includes(path) && !armed && control().fault === 'daemon-before-ack') {
       // 故障期间让重连握手等待，恢复由父测试拥有的 daemon 完成。
       // 否则生产扩展可能先自动启动后台实例，与夹具重启争抢单实例锁。
       log({ kind: 'reconnect_blocked' });
