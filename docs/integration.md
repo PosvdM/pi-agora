@@ -96,6 +96,10 @@ cleanup 在有未提交改动且未指定 `discard` 时返回 `409 worktree_dirt
 
 子会话 inbox 只向最终就绪、未停止的 run 返回通知。run 未持有推理名额时只返回静默通知；需要推理的通知必须等 run 获得名额后领取。父任务处于 waiting_children 时，下级终态通知不受 notify: silent 限制：daemon 为其排队或重新拉起，并在通知 payload 中设置 triggerTurn: true，扩展据此真正启动回合。静默投递不领取名额，启动恢复扫描也不因纯静默 outbox 唤醒任务。
 
+### 主会话重连
+
+主会话在 daemon 重启后重新发现、握手并认领原 principal；换 client 的窗口内，工具请求可能返回 401 或连接错误，不会自动跨 client 重发；如需工具请求无感跨过重连，须另行确定身份、幂等和总期限策略，属于后续范围。
+
 ### 幂等
 
 `Idempotency-Key` 标识的是**一次操作**，不是一份响应快照：

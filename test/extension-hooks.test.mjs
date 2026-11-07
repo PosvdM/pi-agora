@@ -80,10 +80,16 @@ test('主会话初始化幂等，租约绑定并正确分发四个任务动作',
 test('daemon重启后重新发现握手并凭恢复证明认领原principal', async t => {
   const f = await setup(t);
   await f.handlers.get('session_start')({}, f.ctx);
-  let releasePublish, publicationBlocked = false, probeSeen = false;
+  let releasePublish, releaseReclaim, publicationBlocked = false, probeSeen = false;
+  let reclaimToken, newClientSeen = false;
   const gate = new Promise(resolve => { releasePublish = resolve; });
+  const reclaimGate = new Promise(resolve => { releaseReclaim = resolve; });
   f.wire.state.beforeRequest = async call => {
     if (publicationBlocked && call.path === '/v1/health') probeSeen = true;
+    if (reclaimToken && call.path.startsWith('/v1/inbox') && call.authorization === reclaimToken) newClientSeen = true;
+  };
+  f.wire.state.beforeResponse = async call => {
+    if (call.path === '/v1/principals/reclaim') { reclaimToken = call.authorization; await reclaimGate; }
   };
   const restart = f.wire.restart({ beforePublish: () => { publicationBlocked = true; return gate; } });
   try {
@@ -91,7 +97,13 @@ test('daemon重启后重新发现握手并凭恢复证明认领原principal', as
     await until(() => probeSeen, 10000);
   } finally { releasePublish(); }
   await restart;
-  await until(() => f.wire.state.reclaimCount === 1, 15000);
+  try {
+    await until(() => f.wire.state.reclaimCount === 1, 15000);
+    assert.equal(newClientSeen, false, '服务端接受 reclaim 不代表客户端已收到响应并完成切换');
+    await assert.rejects(f.registered[0].execute('before-reclaim-response', { action: 'status', taskId: 'task-one' }, undefined, undefined, f.ctx),
+      error => error.status === 401 && error.code === 'invalid_token');
+  } finally { releaseReclaim(); }
+  await until(() => newClientSeen, 15000);
   assert.ok(f.wire.calls.filter(c => c.path === '/v1/health').length >= 3, '初始化、发布前失败和发布后重试都须执行');
   const result = await f.registered[0].execute('after-restart', { action: 'status', taskId: 'task-one' }, undefined, undefined, f.ctx);
   assert.equal(result.details.taskId, 'task-one');
