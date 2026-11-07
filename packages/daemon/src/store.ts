@@ -188,6 +188,16 @@ export class Store {
   notice(recipientId: string, dedupeKey: string, kind: string, payload: unknown): void {
     this.run("INSERT OR IGNORE INTO outbox(id,recipient_id,dedupe_key,kind,payload,created_at) VALUES(?,?,?,?,?,?)", id("nt"), recipientId, dedupeKey, kind, JSON.stringify(payload), now());
   }
+  quotaUnknownNotice(task: TaskRow, runId: string, at = now()): void {
+    const key = `task:${task.id}:${task.generation}:quota_unknown:${runId}`;
+    this.notice(task.convener_id, key, "task:quota_unknown", {
+      taskId: task.id, generation: task.generation, title: task.title, status: "quota_paused", notify: "wake", triggerTurn: true,
+      contextTokens: this.usage(task.id).contextTokens,
+      summary: "模型额度用完，但服务未提供可识别的重置时间。请核对额度后手动 recover resume 续跑，或停止后改派。",
+    });
+    this.run("UPDATE outbox SET payload=json_set(payload,'$.triggerTurn',json('true')) WHERE dedupe_key=?", key);
+    this.run("UPDATE tasks SET quota_notified_at=? WHERE id=?", at, task.id);
+  }
   change(kind: string, objectId: string): void {
     this.run("INSERT INTO changes(epoch,object_type,object_id,created_at) VALUES((SELECT value FROM settings WHERE key='epoch'),?,?,?)", kind, objectId, now());
   }
@@ -198,14 +208,7 @@ export class Store {
       if (!changed.changes) throw new AgoraError(409, "conflict", "任务状态已变化，请重新读取");
       if (quota) {
         this.run("UPDATE tasks SET quota_resume_at=?,quota_notified_at=NULL WHERE id=?", quota.resumeAt, task.id);
-        if (status === "quota_paused" && !quota.resumeAt) {
-          this.notice(task.convener_id, `task:${task.id}:${task.generation}:quota_unknown:${runId ?? "unknown"}`, "task:quota_unknown", {
-            taskId: task.id, generation: task.generation, title: task.title, status, notify: "wake", triggerTurn: true,
-            contextTokens: this.usage(task.id).contextTokens,
-            summary: "模型额度用完，但服务未提供可识别的重置时间。请核对额度后手动 recover resume 续跑，或停止后改派。",
-          });
-          this.run("UPDATE tasks SET quota_notified_at=? WHERE id=?", at, task.id);
-        }
+        if (status === "quota_paused" && !quota.resumeAt) this.quotaUnknownNotice(task, runId ?? "unknown", at);
       }
       this.run("UPDATE agora_sessions SET status=?,revision=revision+1 WHERE id=?", status, task.agora_session_id);
       if (["completed", "failed", "stopped", "interrupted"].includes(status)) this.run("UPDATE agora_sessions SET ended_at=? WHERE id=?", at, task.agora_session_id);

@@ -811,9 +811,16 @@ export class TaskManager {
   startQueue(): void {
     let pausedCursor = "";
     while (true) {
-      const paused = this.store.all<TaskRow>("SELECT * FROM tasks WHERE status='quota_paused' AND quota_resume_at IS NOT NULL AND quota_notified_at IS NULL AND id>? ORDER BY id LIMIT 200", pausedCursor);
+      const paused = this.store.all<TaskRow>("SELECT * FROM tasks WHERE status='quota_paused' AND quota_notified_at IS NULL AND id>? ORDER BY id LIMIT 200", pausedCursor);
       if (!paused.length) break;
-      for (const task of paused) { pausedCursor = task.id; this.armQuotaTimer(task); }
+      for (const task of paused) {
+        pausedCursor = task.id;
+        if (task.quota_resume_at) this.armQuotaTimer(task);
+        else this.store.transaction(() => {
+          const run = this.store.get<{ id: string }>("SELECT id FROM process_runs WHERE agora_session_id=? ORDER BY started_at DESC,rowid DESC LIMIT 1", task.agora_session_id);
+          this.store.quotaUnknownNotice(task, run?.id ?? "unknown");
+        });
+      }
     }
     let cursor = "";
     while (true) {
