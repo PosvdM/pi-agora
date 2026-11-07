@@ -80,6 +80,19 @@ for (const forgetIdentity of [false, true]) test(`真实 daemon 强杀并重启�
     assert.ok(run.exited_at, '只有旧进程清理完成后才记 exited_at');
     assert.equal(run.state, 'exited');
     assert.equal(run.daemon_instance_id, started.instanceId);
+    assert.ok(run.diagnostics_path, '重启清理必须落盘退出诊断');
+    const diagnostic = JSON.parse(await readFile(run.diagnostics_path, 'utf8'));
+    assert.equal(diagnostic.cleanupConfirmed, true);
+    assert.equal(diagnostic.previousDaemonInstanceId, started.instanceId);
+    assert.equal(diagnostic.daemonInstanceId, restarted.instanceId);
+    assert.equal(diagnostic.runId, before.id);
+    assert.ok(Array.isArray(diagnostic.stopReports));
+    assert.match(diagnostic.warnings[0], /内存事件.*不可用/);
+    for (const report of diagnostic.stopReports) {
+      assert.ok(['job_object', 'cgroup', 'snapshot_visible'].includes(report.coverage));
+      assert.deepEqual(report.leftovers, []);
+    }
+    if (!forgetIdentity) assert.equal(diagnostic.stopReports.length, 1);
     assert.equal(query(home, 'SELECT COUNT(*) AS n FROM process_runs')[0].n, 1, '不会自动新建 run');
     const notices = query(home, "SELECT * FROM outbox WHERE recipient_id='user' AND kind='task:interrupted'");
     assert.equal(notices.length, 1);

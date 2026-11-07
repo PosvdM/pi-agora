@@ -1,6 +1,6 @@
-import { realpath, mkdir, stat } from "node:fs/promises";
+import { realpath, mkdir, stat, writeFile, rename } from "node:fs/promises";
 import path from "node:path";
-import { acquireSessionWriterLock, currentProcessIdentity, isSessionWriterLock, type ProcessIdentity, type RpcResponse, type SessionWriterLock } from "pi-hostkit";
+import { acquireSessionWriterLock, currentProcessIdentity, isSessionWriterLock, type ProcessIdentity, type RpcResponse, type SessionWriterLock, type StopReport } from "pi-hostkit";
 import { Auth, type Connection, type RunPolicy } from "./auth.js";
 import { AgoraError, invalid, text } from "./errors.js";
 import { Store, id, now, type RunRow, type TaskRow } from "./store.js";
@@ -341,13 +341,21 @@ export class TaskManager {
         cursor = run.id;
         const session = this.store.session(run.agora_session_id);
         let clean = false;
+        let recoveryError: unknown;
+        let identity: ProcessIdentity | undefined;
+        let reports: StopReport[] = [];
         try {
-          if (run.identity) await this.driver.recoverOldRun(JSON.parse(run.identity) as ProcessIdentity, session.session_file);
+          if (run.identity) {
+            identity = JSON.parse(run.identity) as ProcessIdentity;
+            reports.push(await this.driver.recoverOldRun(identity, session.session_file));
+          }
           else {
             const lock = await acquireSessionWriterLock(session.session_file, { app: "pi-agora", identity: currentProcessIdentity(this.options.instanceId) });
             if (!isSessionWriterLock(lock)) throw new Error("旧会话仍被锁定");
-            if (await lock.recoverPreviousWriter() === "failed") throw new Error("旧写者身份不明");
-            if (lock.recoveryReports.some(report => report.leftovers.length || report.steps.some(step => ["snapshot", "snapshot cleanup", "verify"].includes(step.step) && !step.ok))) {
+            const recovered = await lock.recoverPreviousWriter();
+            reports = [...lock.recoveryReports];
+            if (recovered === "failed") throw new Error("旧写者身份不明");
+            if (reports.some(report => report.leftovers.length || report.steps.some(step => ["snapshot", "snapshot cleanup", "verify"].includes(step.step) && !step.ok))) {
               this.recoveryLocks.set(session.id, lock);
               throw new Error("旧进程清理尚未确认");
             }
@@ -355,7 +363,27 @@ export class TaskManager {
           }
           clean = true;
         } catch (error) {
-          this.store.run("UPDATE process_runs SET cleanup_error=? WHERE id=?", JSON.stringify({ message: "旧进程尚未确认退出，禁止恢复", diagnostic: failureDiagnostic(error) }), run.id);
+          recoveryError = failureDiagnostic(error);
+          const report = (error as { stopReport?: StopReport })?.stopReport;
+          if (report && !reports.includes(report)) reports.push(report);
+          this.store.run("UPDATE process_runs SET cleanup_error=? WHERE id=?", JSON.stringify({ message: "旧进程尚未确认退出，禁止恢复", diagnostic: recoveryError }), run.id);
+        }
+        const diagnostic = {
+          reason: "daemon 重启清理旧运行", runId: run.id, agoraSessionId: session.id,
+          previousDaemonInstanceId: run.daemon_instance_id, daemonInstanceId: this.options.instanceId,
+          identity: identity ?? null, cleanupConfirmed: clean,
+          stopReports: reports, error: recoveryError,
+          warnings: ["旧 daemon 的内存事件、活动工具和 stderr 已不可用，不能据此断言中断前没有副作用",
+            ...(reports.some(report => report.coverage === "snapshot_visible") ? ["停止仅覆盖快照见过的进程，空残留列表不能证明整棵进程树均已退出"] : [])],
+        };
+        const diagnosticPath = path.join(this.options.home, "sessions", session.id, `${run.id}.recovery.diagnostics.json`);
+        try {
+          await mkdir(path.dirname(diagnosticPath), { recursive: true });
+          await writeFile(`${diagnosticPath}.tmp`, JSON.stringify(diagnostic, null, 2), { mode: 0o600 });
+          await rename(`${diagnosticPath}.tmp`, diagnosticPath);
+          this.store.run("UPDATE process_runs SET diagnostics_path=? WHERE id=?", diagnosticPath, run.id);
+        } catch {
+          this.store.run("UPDATE process_runs SET cleanup_error=? WHERE id=?", JSON.stringify({ message: "重启诊断写入失败，诊断保留在数据库中", diagnostic }), run.id);
         }
         if (clean) this.store.run("UPDATE process_runs SET state='exited',exited_at=? WHERE id=?", now(), run.id);
         const task = this.store.task(session.task_id);
