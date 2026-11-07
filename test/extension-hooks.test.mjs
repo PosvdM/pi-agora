@@ -176,6 +176,86 @@ function barrier() {
   return { entering, release, async wait() { entered(); await gate; } };
 }
 
+for (const finalSuccess of [true, false]) {
+  test(`child HTTP ready 接受后最终核对${finalSuccess ? '成功才放行任务' : '失败始终拒绝任务'}`, { timeout: 10000 }, async t => {
+    const tools = ['read', 'grep', 'find', 'ls', 'agora_task', 'agora_request'];
+    const f = await setup(t, { managed: true, tools });
+    f.wire.state.allowedTools = tools;
+    const gate = barrier();
+    t.after(() => gate.release());
+    f.wire.state.finalReadyBlocked = true;
+    f.wire.state.beforeResponse = async (call, result) => {
+      if (call.path.endsWith('/authorized') && f.wire.state.authorizedCount === 1) {
+        assert.equal(result.ready, false);
+        await gate.wait();
+      }
+    };
+    await f.handlers.get('session_start')({}, f.ctx);
+    await gate.entering;
+    assert.equal(f.wire.state.readyCount, 1);
+    assert.equal(f.wire.state.authorizedCount, 1);
+    assert.equal(f.shutdown, false);
+    const task = f.registered.find(tool => tool.name === 'agora_task');
+    const params = { action: 'spawn', profile: 'explore', prompt: '核对最终授权', model: 'fake/model' };
+    const hook = () => f.handlers.get('tool_call')({ toolName: 'agora_task', input: params }, f.ctx);
+    const execute = id => task.execute(id, params, undefined, undefined, f.ctx);
+    const fetch = globalThis.fetch;
+    const taskRequests = [];
+    t.mock.method(globalThis, 'fetch', (...args) => {
+      if (new URL(String(args[0])).pathname.startsWith('/v1/tasks')) taskRequests.push(args);
+      return fetch(...args);
+    });
+    let hookSettled = false, executorSettled = false;
+    const checking = hook().then(result => { hookSettled = true; return result; });
+    const executing = execute('during-final-check').then(
+      result => { executorSettled = true; return { result }; },
+      error => { executorSettled = true; return { error }; },
+    );
+    const taskCalls = () => f.wire.calls.filter(call => call.path.startsWith('/v1/tasks'));
+    try {
+      // 屏障持有最终授权响应，事件循环推进后两个入口仍须等待且无任务请求。
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(hookSettled, false);
+      assert.equal(executorSettled, false);
+      assert.equal(taskRequests.length, 0, '最终授权前连任务请求也不能发出');
+      assert.deepEqual(taskCalls(), []);
+      assert.deepEqual(f.wire.state.taskEffects, []);
+      f.wire.state.finalReadyBlocked = false;
+      f.wire.state.finalReadyReject = !finalSuccess;
+    } finally { gate.release(); }
+
+    const [checked, executed] = await Promise.all([checking, executing]);
+    assert.equal(f.wire.state.authorizedCount, 2, 'ready:false 不能结束最终核对，必须重新查询');
+    if (finalSuccess) {
+      assert.equal(checked, undefined);
+      assert.equal(executed.error, undefined);
+      assert.equal(executed.result.details.taskId, 'task-one');
+      assert.equal(taskRequests.length, 1);
+      assert.equal(taskCalls().length, 1);
+      assert.equal(f.wire.state.taskEffects.length, 1);
+      assert.equal(f.wire.state.taskEffects[0].originToolCall.toolCallId, 'during-final-check');
+      assert.equal(await hook(), undefined);
+      await execute('after-final-check');
+      assert.equal(taskRequests.length, 2);
+      assert.equal(taskCalls().length, 2);
+      assert.equal(f.wire.state.taskEffects.length, 2);
+      assert.equal(f.shutdown, false);
+    } else {
+      assert.equal(checked.block, true);
+      assert.match(executed.error.message, /尚未通过连接核对/);
+      assert.equal(f.shutdown, true);
+      await until(() => f.wire.state.fatalCount === 1);
+      f.wire.state.finalReadyReject = false;
+      assert.equal((await hook()).block, true, '最终核对失败后不能恢复工具权限');
+      await assert.rejects(execute('after-final-failure'), /尚未通过连接核对/);
+      assert.equal(taskRequests.length, 0);
+      assert.deepEqual(taskCalls(), []);
+      assert.deepEqual(f.wire.state.taskEffects, []);
+      assert.equal(f.wire.state.authorizedCount, 2, '最终拒绝不能自动重新授权');
+    }
+  });
+}
+
 test('shutdown遇到迟到注册时释放租约，不追加引用或启动poll', { timeout: 10000 }, async t => {
   const f = await setup(t);
   const gate = barrier();
