@@ -47,3 +47,12 @@ jobs:
           echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus" >> "$GITHUB_ENV"
           if [ "${{ matrix.containment }}" = auto ]; then echo "HOSTKIT_TEST_REQUIRE_CGROUP=1" >> "$GITHUB_ENV"; fi
       - run: npm test
+      - name: Windows 进程退出可见性重复十次
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          foreach ($iteration in 1..10) {
+            Write-Output "退出可见性观测 $iteration/10"
+            node --test --test-name-pattern "shell 与脱离进程组" test/driver.test.mjs
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }

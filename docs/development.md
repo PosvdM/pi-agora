@@ -92,7 +92,7 @@ node packages/daemon/dist/main.js --home <本地目录> --pi-path <pi 包目录>
 
 通知故障测试在受控子进程里包装生产扩展调用点，强杀进程而不是用异常代替崩溃。ack 前杀 daemon 的夹具将重连握手挂起，直到旧 pi 退出，避免生产扩展自动启动实例与测试控制的重启争抢锁；生产自动重连路径另有测试。重连夹具通过屏障先固定实例已更换、发现记录尚未发布的窗口，确认首次重连失败后才原子发布；回归等待 15 秒，为生产 5 秒退避及请求延迟留余量，不依赖发布竞争偶然成功。公共事件故障点只声称 pi 内部 listener 已运行，不声称 RPC 对端已收到消息。为缩短测试时间，fixture 把 inbox 可见性设为 150 毫秒，并直接使旧租约过期；生产仍使用 120 秒和 90 秒。无对话的静默通知用例预建仅含 header 和 principal 引用的会话，不预写通知；它验证通知首次落盘边界，不声称进程退出后能恢复尚未落盘的 principal 引用。
 
-CI 的 `.github/workflows/ci.yml` 用 Node 24 安装原生依赖和 pi 1.5.0，执行相同的 `npm test`：Windows 和 macOS 各一次；Linux auto / snapshot 各一次。Linux auto 启动用户 systemd 实例并要求 cgroup 可用，避免静默退回快照模式。每项自动测试都在这四个矩阵组合运行，平台差异由 StopReport 断言区分。
+CI 的 `.github/workflows/ci.yml` 用 Node 24 安装原生依赖和 pi 1.5.0，执行相同的 `npm test`：Windows 和 macOS 各一次；Linux auto / snapshot 各一次。Linux auto 启动用户 systemd 实例并要求 cgroup 可用，避免静默退回快照模式。每项自动测试都在这四个矩阵组合运行，平台差异由 StopReport 断言区分。Windows 的 shell 后代用例在完整测试后额外重复 10 次；每次把 StopReport 全文、oracle 的 pid / startTime 和从返回时刻开始的退出状态序列写入 CI 日志。观察期间不补发终止信号，Windows 最多等待 2 秒使退出可见性收敛；仍存活或未知则失败，其他平台保持立即确认。该观察窗口不改变 hostkit 的 Job verify 应保证退出的接口承诺，不把短暂 alive 静默忽略；出现延迟时保留证据供上游排查。
 
 ## 未实测范围
 

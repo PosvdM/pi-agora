@@ -98,9 +98,29 @@ test("真实 pi：shell 与脱离进程组的孙进程都退出，独立核对�
     await delay(200);
     assert.equal((await handle.send({ type: "get_state" })).data.isStreaming, true);
     const report = await handle.stop(FAST_STOP);
+    const stopReturnedAt = new Date().toISOString();
+    const returnedClock = performance.now();
+    const observations = [];
+    const observe = async () => {
+      const at = new Date().toISOString();
+      const elapsedMs = Math.round(performance.now() - returnedClock);
+      const states = await Promise.all(identities.map(async identity => {
+        try { return { pid: identity.pid, startTime: identity.startTime, state: await isSameProcess(identity) }; }
+        catch (error) { return { pid: identity.pid, startTime: identity.startTime, state: 'unknown', error: String(error) }; }
+      }));
+      observations.push({ at, elapsedMs, states });
+      return states.every(row => row.state === 'gone');
+    };
+    let gone = await observe();
+    // 观察窗口不发送任何额外终止信号；仅Windows允许退出可见性在2秒内收敛。
+    while (!gone && isWin && performance.now() - returnedClock < 2000) {
+      await delay(Math.min(50, Math.max(1, 2000 - (performance.now() - returnedClock))));
+      gone = await observe();
+    }
+    t.diagnostic(JSON.stringify({ kind: '停止后的独立退出可见性', stopReturnedAt, report, identities, observations, observationLimitMs: isWin ? 2000 : 0 }));
     await assertCoverage(report);
     assert.equal(report.steps.find((step) => step.step === "abort").ok, false);
-    for (const identity of identities) assert.equal(await isSameProcess(identity), "gone");
+    assert.equal(gone, true, 'StopReport返回后，独立oracle必须在覆盖范围与观察期限内确认退出；观察期间未补杀');
   } finally {
     // 即使等待第二个 oracle 超时，也独立回收已经登记的后代，不向被测算法补记录。
     identities = records(oracle);
