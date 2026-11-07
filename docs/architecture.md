@@ -96,6 +96,8 @@ interface LaunchSpec {
 
 MVP 的唯一实现是 `RpcSubprocessDriver`，用 pi-hostkit 的 `spawnManaged` 和 `RpcTransport`（JSONL 只按 LF 切分，不用 `readline`，见 [pi-hostkit 设计文档的“RPC 传输”](https://github.com/PosvdM/pi-hostkit/blob/main/docs/design.md#rpc-传输)）。
 
+驱动的 `exited` 只兑现一次，后续重试会就地刷新同一退出结果。`cleanupConfirmed: false` 只发布未确认的停止结果，不拆除 RPC 订阅；此时禁止发送和恢复，但仍接收原运行的助手结束事件用于记账。确认清理后才退订，并通过 `onExit` 再通知一次确认结果。
+
 拉起前，daemon 先用 pi-hostkit 取得该会话文件的**会话写锁**（[pi-hostkit 设计文档的“会话写锁”](https://github.com/PosvdM/pi-hostkit/blob/main/docs/design.md#会话写锁)），保证 pi-pane 和 daemon 不会同时托管同一个会话文件。取得锁后先按共享记录清理上一个写者（可能是 pi-pane 留下的，见[“取得锁之后”](https://github.com/PosvdM/pi-hostkit/blob/main/docs/design.md#取得锁之后)），再用 `spawnWriter` 拉起 pi：pi 停在启动门闩，进程身份写入记录后才加载；确认进程树已退出后才释放锁。
 
 ### 启动参数
@@ -312,14 +314,7 @@ P0 测试用例：搜索根是受保护目录的祖先、受保护目录嵌套�
 只读的 git 命令也能执行代码：仓库自带的 `.git/config` 和 `.gitattributes` 可以配置 `diff.<driver>.textconv`、`diff.external`、`core.fsmonitor`、`core.pager`、`filter.<driver>.clean`、`log.showSignature`（会调用 `gpg.program`）等。review 任务审查的恰恰可能是不可信的代码，所以 `agora_git` 按以下规则执行：
 
 - **调用方式**：`execFile("git", argv, { cwd: 任务工作目录, env })`，不经 shell；单次超时 30 秒，输出上限 1 MiB。
-- **固定前缀**（全部是 git 的全局选项，放在子命令之前）：
-
-  ```text
-  git --no-pager --no-optional-locks
-      -c core.fsmonitor= -c core.pager=cat -c color.ui=never -c log.showSignature=false -c core.hooksPath=/dev/null
-      -c submodule.recurse=false -c diff.submodule=short -c diff.ignoreSubmodules=all -c status.submoduleSummary=false
-      [ -c filter.<driver>.clean= -c filter.<driver>.smudge= -c filter.<driver>.process= -c filter.<driver>.required=false ]…
-  ```
+- **固定前缀**：全部配置覆盖均作为全局 `-c` 放在子命令前，hooks、fsmonitor、filter、传输、编辑器、自动维护、notes/mailmap 的配置边界及测试清单见 [Git 安全调用层](security.md#git-安全调用层)。Windows 固定 `core.unsetenvvars=`，内部子 Git 必须继承同样的安全配置和环境。
 
 - **各子命令的完整 argv**（`<前缀>` 为上面的固定前缀；`[白名单选项]` 见下；末尾总是追加 `--`，之后才是路径）：
 
@@ -327,15 +322,15 @@ P0 测试用例：搜索根是受保护目录的祖先、受保护目录嵌套�
   | --- | --- |
   | `status` | `<前缀> status --porcelain=v1 --ignore-submodules=all --untracked-files=normal -- [<路径>…]` |
   | `diff` | `<前缀> diff --no-ext-diff --no-textconv --no-color [白名单选项] [--cached] [<提交> \| <提交>..<提交>] -- [<路径>…]` |
-  | `log` | `<前缀> log --no-ext-diff --no-textconv --no-color --no-show-signature [白名单选项] [<提交范围>] -- [<路径>…]` |
-  | `show` | `<前缀> show --no-ext-diff --no-textconv --no-color --no-show-signature [白名单选项] <提交> -- [<路径>…]` |
+  | `log` | `<前缀> log --no-ext-diff --no-textconv --no-color --no-show-signature --no-notes --no-mailmap -n50 [白名单选项] [<提交范围>] -- [<路径>…]` |
+  | `show` | `<前缀> show --no-ext-diff --no-textconv --no-color --no-show-signature --no-notes --no-mailmap [白名单选项] <提交> -- [<路径>…]` |
 
   `status` 不接受 `--no-color`，颜色由全局的 `-c color.ui=never` 关闭；`--no-optional-locks` 是全局选项，不能放在子命令之后。git 最低支持版本定为 **2.34**（覆盖主流仍维护的 LTS 发行版如 Ubuntu 22.04 自带版本，补测已在 git 2.34.1 与 2.56.0 上通过，见 `experiments/p0/c-tools/RESULTS.md`）。1b 固定使用空值 `core.fsmonitor=`，避免旧版把字符串值解释为 hook。1b 本机测试为 Git 2.53.0.windows.2，2.34.1 与 2.56.0 的记录属于 P0，不代替本轮最低版本实测。
-- **环境变量**：删除继承环境中的全部 `GIT_*`，再设置 `GIT_CONFIG_NOSYSTEM=1`、`GIT_CONFIG_GLOBAL` 为平台空设备、`GIT_PAGER=cat`、`PAGER=cat`、`GIT_EXTERNAL_DIFF=`（空）、`GIT_TERMINAL_PROMPT=0` 和 `GIT_OPTIONAL_LOCKS=0`。
+- **环境与对象读取**：清理继承环境后固定空协议白名单、禁止 lazy fetch/replace 和空 graft 文件；notes、mailmap、自定义默认格式和 follow/rename 不得额外带入对象内容或路径。具体变量与配置只在 [Git 安全调用层](security.md#git-安全调用层) 维护。旧 Git 不认识 `GIT_NO_LAZY_FETCH` 时仍由空协议白名单阻止下载和 helper 执行。
 - **白名单选项**：模型只能传白名单内的选项（如 `--stat`、`--name-only`、`--name-status`、`-n<数字>`、`--oneline`、`--format=<固定几种>`、`-U<数字>`、`--cached`（仅 `diff`））、提交号和提交范围，以及 `--` 之后的路径。其余一律拒绝，尤其是 `-c`、`--output`、`--exec`、`--git-dir`、`--work-tree`、`-C`、`--ext-diff`、`--textconv`、`--show-signature`、`--config-env`、`--color` 和任何会写文件或改引用的选项。提交表达式先校验字符，不允许以 `-` 开头或包含 `:`、reflog 表达式。每个提交及 `A..B`、`A...B` 的两个端点都通过同一安全调用层执行 `rev-parse --verify --end-of-options <ref>^{commit}`，校验返回的完整 SHA-1 或 SHA-256 OID，后续查询只传 OID。范围省略的端点按 `HEAD` 解析。指向 commit 的 tag 可用，tree、blob 及指向它们的 tag 一律拒绝，防止 `show` 忽略路径限制直接输出对象。
 - **路径限定**：`--` 之后的路径用 `canonicalPath` 规范化，必须在任务工作目录内，同时受“受保护目录”规则约束。传给 Git 的是核对后的相对路径，并在全局选项中设置 `--literal-pathspecs`，禁止将 glob 解释成其他路径。省略路径时显式使用 `.`，将查询限制在任务 cwd 内。
 - **共用安全调用层**：daemon 和扩展的 Git 调用统一经过 `packages/protocol/src/git.ts` 的 `gitExec`，包括 worktree 的创建、检出与清理。先用 `worktree add --no-checkout` 建立新分支与目录，再在新 cwd 中重新探测配置并用 `reset --hard` 检出，覆盖只在新分支或 gitdir 生效的条件 include。固定前缀将 hooks 路径设为 `/dev/null`。`gitExec(cwd, args, signal?, configContexts = [])` 在每次实际命令前只读查询 cwd 及全部附加上下文的 filter 配置，合并 driver 集合，再用 `-c` 将每个 driver 的 `clean`、`smudge`、`process` 覆盖为空，并设置 `required=false`。配置探测本身不读取工作区或运行转换器；任一上下文查询失败均拒绝实际命令。清理时传入目标 worktree 路径作为附加上下文，覆盖 `worktree remove` 在目标目录内部执行的非 force `status`。固定前缀的 fsmonitor 与 hooks 禁用同样传入子 Git。真实 Git 回归覆盖 `onbranch` / `gitdir` 引入的 clean/process 清理、smudge 检出、fsmonitor 和 hook，并检查正控进程退出、加固调用无执行标记及脏内容拒绝。
-- **子模块边界**：固定前缀禁止配置驱动的递归检出、子模块 diff 展开和 status 摘要；只读查询忽略子模块改动，不进入子仓库。自动清理先检查索引，含 `160000` gitlink 条目的 worktree 无论是否指定 `discard` 均拒绝，须手动验收和清理，避免内部 `status --ignore-submodules=none` 进入未探测 filter 配置的子仓库。
+- **子模块边界**：固定前缀禁止配置驱动的递归检出、子模块 diff 展开和 status 摘要；只读查询忽略子模块改动，不进入子仓库。自动清理用有界内存流式检查索引，含 `160000` gitlink 条目的 worktree 无论是否指定 `discard` 均拒绝，须手动验收和清理，避免内部 `status --ignore-submodules=none` 进入未探测 filter 配置的子仓库。
 
 P0 用一个带恶意配置的测试仓库验证：仓库配置了 textconv、`diff.external`、`core.fsmonitor`、`core.pager`、clean/smudge/process filter、`log.showSignature` + `gpg.program`，并让工作区文件的状态信息过期；对 `status`、`diff`（工作区、`--cached`、两个提交之间）、`log`（含 `-p`）、`show` 的每一种调用都检查，这些程序一次都不会执行（用写标记文件的脚本判断）。
 

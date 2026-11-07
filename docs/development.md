@@ -104,6 +104,7 @@ shutdown 默认排空，超时后保留 daemon；force 中断并清理运行。�
 | `test/task-d15.test.mjs`、`driver-d15.test.mjs`、`d15-e2e.test.mjs` | 子代理标记、skill 白名单与只读授权、同项目双主会话的提问路由、任务 / 代 / 树用量及 stop / interrupt 收尾记账、静默终态唤醒与未知重置时间提示的持久化恢复、额度暂停与通知 / 自动恢复、v3→v4 备份和迁移回滚；真实 pi 的本地 429 与 skill 加载 |
 | `test/tree-e2e.test.mjs` | 真实子代理调用 agora_task 再派下级；单名额下静默下级通知真正启动父回合，覆盖父进程未回收及回收重拉、通知落盘；恶意 MCP / 扩展不启动；Windows 原生 PowerShell 实际工具调用 |
 | `test/permissions-1b.test.mjs`、`git-1b.test.mjs`、`git-paths-review.test.mjs`、`git-contexts-review.test.mjs` | 三档精确工具集合、受保护路径及祖先、新文件、真实 junction、Unicode / 大小写、Windows 8.3 短名（所在卷不分配短名时说明原因并跳过）；Git 字面路径与 cwd 边界、非提交对象拒绝、范围端点固定 OID、恶意配置、worktree 创建/清理的条件 filter / hooks 正负控及进程退出、子模块递归与清理边界 |
+| `test/git-security-review.test.mjs`、`git-execution-review.test.mjs`、`git-index-review.test.mjs` | notes/replace/grafts/mailmap 的受保护内容正负控；缺失 promisor 对象的 SSH/helper、空协议白名单及 Windows 环境删除绕过；执行入口代表性正控与命令白名单拒绝；POSIX TTY pager；超过 1 MiB 干净索引的流式清理。完整分类见 [Git 安全调用层](security.md#git-安全调用层) |
 | `test/client-retry.test.mjs` | 保留 keep-alive 的真实 socket 故障、响应丢失后的原 key 重试、总期限、取消、拒绝和一次性 ticket 不重放 |
 | `test/e2e.test.mjs`、`notice-fork.test.mjs` | 真实主 pi 派活、通知叫醒取结果；fork 不确认父通知、同摘要乱序完成仍可定位 |
 | `test/notify-faults.test.mjs` | P0 五个真实强杀故障时点、无提前确认、恢复后同 key 一条 |
@@ -129,7 +130,7 @@ macOS 完整测试后额外执行 25 次“忽略 abort 的 provider”真实用
 
 - 可选 MCP / 扩展白名单和 saved 项目信任未开放。pi 1.5.0 没有独立 MCP 配置参数，配置隔离方式尚未确定；当前基线直接关闭 MCP。
 - CLI 答复无设备确认，完整用户身份与审计在 1c。此项限制不能通过工具层 ACL 消除。
-- git 最低设计版本为 2.34；1b 本机实际测试版本为 2.53.0.windows.2，旧版 2.34 的 P0 证据不等同于本轮重测。非 TTY 下未触发真实 pager，--no-pager 的固定 argv 有独立回归。
+- Git 最低设计版本为 2.34；1b 本机实际测试版本为 2.53.0.windows.2，旧版 2.34 的 P0 证据不等同于本轮重测。lazy-fetch 回归另行移除 `GIT_NO_LAZY_FETCH`，验证兼容旧版的协议防线。真实 TTY pager 由 Linux/macOS 的 Python PTY 执行；Windows 无 POSIX PTY 时说明原因跳过，固定 `--no-pager` argv 仍有独立回归。
 - 未做真实断电、PID 复用、机器重启、网络文件系统或 macOS 大小写敏感卷的破坏性实测。
 - hostkit 的快照盲窗及路径校验 TOCTOU 没有消除，snapshot_visible 的空 leftovers 不证明整树退出。
 - 第三方 RPC 客户端只发 abort 而不 clear_queue，可能保留原队列并产生重复记录；展示仍按 dedupeKey 去重。
