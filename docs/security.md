@@ -1,6 +1,6 @@
 # 安全模型
 
-> 本文描述完整安全设计。切片 1a 实现主 / 子 Agent 级身份、握手、主会话恢复与租约、launch ticket 和只读权限；不开放用户级操作。用户确认、设备配对及相关接口按后续切片提供。
+> 本文描述完整安全设计。切片 1b 实现 principal、租约、launch ticket、最终就绪、三档路径检查，以及任务树的直接召集关系与权限限制。完整用户级确认、设备配对、审计和资源 ACL 在 1c。1b 的 CLI 可以直接答复提问，尚不能区分用户与同一系统用户下的 Agent。
 
 本文定义 agora daemon 的身份、鉴权、用户确认、设备配对、资源访问控制、审计和剩余风险。进程与存储见 [architecture.md](architecture.md)，平台相关的实现（密钥目录权限、路径规范化）见 [pi-hostkit 设计文档](https://github.com/PosvdM/pi-hostkit/blob/main/docs/design.md)，HTTP 端点见 [integration.md](integration.md)。
 
@@ -15,7 +15,7 @@
 
 | 级别 | 谁 | 凭证来源 | 能做什么 |
 | --- | --- | --- | --- |
-| 子 Agent 级 | `agent:child`（任务、参会者、书记） | launch ticket 换来的连接 token | 只做自己的工作：读写自己会话可见的内容、按档位使用工具、写自己所在的 board、认可（参会者）、用 `agora_request ask` 向召集人提问。不能做主 Agent 级和用户级的任何操作，只能发起提问 |
+| 子 Agent 级 | `agent:child`（任务、参会者、书记） | launch ticket 换来的连接 token | 按档位做自己的工作；任务子代理在限制内派下级，查看、返工、停止及答复自己直接派出的任务；向直接上级提问或逐级转交。不能做主 Agent 级或用户级操作；board 与会议权限随对应切片提供 |
 | 主 Agent 级 | `agent:main`（主代理，用户的代理人）；`host:cli`、`host:pane` | 磁盘凭证（`secret/` 下的文件） | 派任务、召开会议、返工、停止、读取、转发、发起待确认；`agent:main` 还可以裁决自己召集的会议、答复发给自己的提问、在 `agentLimitCap` 以内提高自己会议的上限（见 [meetings.md](meetings.md#参数)） |
 | 用户级 | `user` | 已配对浏览器的设备密钥对 daemon 挑战的签名 | 见下表 |
 
@@ -46,8 +46,9 @@ principal 是 daemon 里的行为主体。所有任务、提问、board 条目�
 | `agent:main` | 一个主代理会话（终端或 pi-pane 托管），绑定 pi 的 sessionId | 主 Agent 级 |
 | `agent:child` | daemon 拉起的协作会话（kind = task / meeting-seat / secretary） | 子 Agent 级 |
 
-- 召集人（convener）是任务或会议的发起方，只能是 `agent:main` 或 `user`。`host:cli` 和 `host:pane` 创建任务和会议时召集人记为 `user`，同时记录实际发起的 principal；创建本身是主 Agent 级操作，之后对这些资源做的用户级决定仍需确认。
-- 协作会话不能再派任务或召开会议（MVP）。
+- 任务的召集人（convener）是直接派出该任务的 `agent:main`、任务 `agent:child` 或 `user`。任务子代理可以成为自己直接下级的召集人；更高层祖先不因任务树关系成为直接召集人。
+- 会议的召集人只能是 `agent:main` 或 `user`。`host:cli` 和 `host:pane` 创建任务和会议时召集人记为 `user`，同时记录实际发起的 principal；创建本身是主 Agent 级操作，之后对这些资源做的用户级决定仍需确认。
+- 任务子代理可以在配置和父子树限制内派下级，不得升级档位或放宽层数 / 下级数；不能召开会议。所有子任务管理在 daemon 按 token 的 principal 和任务树核对，不按 cwd 授权。
 
 ## 磁盘凭证与连接 token
 
@@ -93,7 +94,28 @@ daemon 拉起协作会话时生成一次性 launch ticket，经环境变量 `AGO
 - implement 可能按配置加载白名单扩展和 `builtin:mcp`。agora 扩展排在 `-e` 的第一位，在工厂函数里同步读取并删除该变量。P0 实测证明：首位扩展删除该变量后，后续扩展工厂、MCP 服务器进程和 `bash` 子进程均无法读取 ticket；即使 `builtin:mcp` 排在前面，MCP 进程也是在变量删除后才启动。若排在前面的其他扩展读到 ticket 并抢先兑换，pi 会以退出码 1 退出，被宿主捕获为启动故障而不予重试。此外，为了防止未列入白名单的 MCP 服务器产生后台副作用，agora 会为每个子代理单独生成只包含白名单服务器的 MCP 配置文件。
 - 读到 ticket 的代码最多抢先兑换它：ticket 只能兑换一次，被抢先后 agora 扩展兑换失败，就绪检查不通过，run 被结束（见 [architecture.md](architecture.md#受管扩展的就绪检查)）；抢到的 token 只有该协作会话自己的权限，且随进程退出作废。兑换之后还要完成受管扩展的就绪检查，见 [architecture.md](architecture.md#受管扩展的就绪检查)。
 
+## Skill 白名单
+
+`spawn.skills` 只接受名字，不接受路径。驱动从用户的 `~/.pi/agent/skills` 和用户 `~/.pi/agent/settings.json` 的 `skills` 路径解析 skill；`PI_CODING_AGENT_DIR` 可替换用户 agent 目录。daemon 的 `skillDirectories` 配置为显式目录时，仅在这些目录内查找。项目目录的 `.pi/skills` 和项目 settings 不参与解析。解析失败或名字有歧义时拒绝 spawn，不回退到项目 skill。
+
+未指定 `skills` 时使用 `defaultSkills` 对应档位的默认值，未配置时为空；显式名单覆盖默认值。下级名单只能取上级名单的子集，不能通过默认值扩大。配置示例：
+
+```json
+{
+  "defaultSkills": { "explore": [], "review": [], "implement": ["project-docs"] },
+  "quotaRecovery": "notify"
+}
+```
+
+子进程使用 `-ns` 禁用 skill 自动加载，仅用 `--skill <真实路径>` 加载选中的 skill。任务书包含子代理标记，但不禁用全局或项目 `AGENTS.md`。
+
+名单内 skill 的真实目录作为独立的只读根传给受管扩展：explore/review 可以用 `read`、`grep`、`find`、`ls` 读取该目录，名单外目录没有这项额外授权；所有档位的 `edit`、`write` 都不能修改名单内的 skill 目录。路径规范化、符号链接和受保护目录规则仍然适用，skill 名单不覆盖凭证目录保护。
+
+implement 档位可以用 shell 运行 skill 附带的脚本。shell 不做路径隔离，也不能靠 skill 只读根约束脚本的副作用；名单用于限制自动加载和文件工具授权，不构成操作系统沙箱。若名单外 skill 本身位于原本允许的工作目录，文件工具仍按已有的允许根规则处理；该 skill 不会自动加载。
+
 ## 用户确认
+
+本节是 1c 的设计目标。1b 只提供转交和 host:cli 直接答复通路，答复标注 confirmedBy: none；host:pane 不接受此直接执行路径。任何能取得 host.key 的同用户进程都能通过 CLI 身份答复，不能将 1b 声称为已实现用户防冒充。预算封顶、待确认、设备和安全审计尚未开放。
 
 用户级操作必须由已配对浏览器对 daemon 下发的一次性挑战签名，daemon 验签后才执行。pi-pane 服务端只转发，无法伪造签名；pi-pane 的 HTTP 接口没有任何 Agent 可用的凭证（pi-pane 的鉴权见其 `docs/architecture.md`）。
 
@@ -228,11 +250,12 @@ daemon 启动时、以及在线检测到状态变化时，检查以下情况，�
 
 | 操作 | host:* | 召集人（agent:main） | 其他 agent:main | agent:child |
 | --- | --- | --- | --- | --- |
-| spawn | ✔（召集人记为 user） | — | ✔（成为新任务的召集人） | ✘ |
-| list `scope: "mine"` | ✔（召集人为 user 的任务） | ✔ | ✔ | ✘ |
+| spawn | ✔（召集人记为 user） | — | ✔（成为新任务的召集人） | ✔，层数、下级数、档位不得放宽 |
+| list `scope: "mine"` | ✔（召集人为 user 的任务） | ✔ | ✔ | 仅直接下级 |
 | list `scope: "all"` | ✔ 全部 | 只返回摘要 | 只返回摘要 | ✘ |
-| 读详情、结果 | ✔ | ✔ | ✘ | 只能读自己所属任务的状态 |
-| steer、stop、cleanup | ✔ | ✔ | ✘ | ✘ |
+| 读详情、结果 | ✔ | ✔，包含自己任务树 | ✘ | 直接下级；另可读自己所属任务的状态 |
+| steer、cleanup | ✔ | 仅直接下级 | ✘ | 仅直接下级 |
+| stop | ✔，整个目标子树 | ✔，整个目标子树 | ✘ | 仅直接下级及随其停止的整棵子树 |
 | recover（召集人为 agent:main 且可达） | ✘ | ✔ | ✘ | ✘ |
 | recover（召集人为 user，或已转给用户） | 确认 | ✘（显示“已转给用户”） | ✘ | ✘ |
 | 接管（召集人改为 user） | 确认 | ✘ | ✘ | ✘ |
@@ -243,11 +266,11 @@ daemon 启动时、以及在线检测到状态变化时，检查以下情况，�
 
 | 操作 | host:* | 召集人 | 提问者（agent:child） |
 | --- | --- | --- | --- |
-| ask | ✘ | ✘ | ✔ |
+| ask | ✘ | ✔，主代理发给用户 | ✔，发给直接上级 |
 | 列表、读取 | ✔ 全部 | 发给自己的 | 自己提的 |
 | answer（`open`，召集人为 agent:main） | 确认 | ✔ | ✘ |
 | answer、cancel（`escalated`，或召集人为 user） | 确认 | ✘ | ✘ |
-| escalate | ✘ | ✔ | ✘ |
+| escalate | ✘ | ✔，主代理转给用户 | 作为直接召集人时逐级向上转交 |
 | cancel（`open`，召集人为 agent:main） | ✘ | ✔ | ✔（自己提的） |
 
 ### board
@@ -317,6 +340,8 @@ daemon 启动时、以及在线检测到状态变化时，检查以下情况，�
 ## 其他降低冒充成本的措施
 
 - **受保护目录**：所有档位的文件类工具（`read`、`grep`、`find`、`ls`、`edit`、`write`）的路径校验都拒绝 `AGORA_HOME/secret` 及其下的路径，以及配置项 `protectedPaths` 列出的目录。`bash` 和 `powershell` 只有工具级限制（是否提供），不检查命令内容，也不做路径隔离。规则见 [architecture.md](architecture.md#路径校验)。
+- **Git 对象与路径**：review 的 `agora_git` 将提交表达式及范围的每个端点解析为 commit，并校验完整 OID，查询只使用解析后的 OID。tree、blob 及指向它们的 tag 不能作为查询修订，避免 `show` 绕过路径限制直接返回对象内容。路径规范化、字面 pathspec 与 cwd 限定见 [architecture.md](architecture.md#agora_git-的加固)。
+- **Git 配置上下文**：共用安全层合并 cwd 及附加上下文中的 filter driver，统一禁用 clean、smudge、process、required，并用固定前缀禁用 fsmonitor 与 hooks。worktree 清理同时探测父仓库和目标目录的条件配置，保留非 force 检查；仅显式 `discard` 可以强制清理。配置驱动的子模块递归、diff 展开和 status 摘要被禁用，只读查询忽略子模块改动。含 gitlink 的 worktree 不支持自动清理，包括指定 `discard` 的调用，须手动验收和清理，防止内部子 Git 进入未探测的子仓库。
 - **不给路径提示**：daemon 拉起子进程时从环境变量里去掉 `AGORA_HOME`（以及 `PI_PANE_HOME`），只传 `AGORA_URL` 和 `AGORA_LAUNCH_TICKET`；任务书、工具结果和错误信息里不出现密钥目录的路径。
 - **网络边界**：daemon 只监听 `127.0.0.1`；浏览器不直接连 daemon，daemon 拒绝带 `Origin` 头的请求。
 

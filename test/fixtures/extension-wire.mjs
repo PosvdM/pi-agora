@@ -14,7 +14,8 @@ export async function extensionWire(root) {
   const tokens = new Map();
   const calls = [];
   const state = { calls, key, recovery, invalidProof: false, registerCount: 0, reclaimCount: 0, readyCount: 0,
-    fatalCount: 0, refreshCount: 0, leaseHeld: false, expectedModel: 'fake/model', readyReject: false };
+    fatalCount: 0, refreshCount: 0, leaseHeld: false, expectedModel: 'fake/model', readyReject: false,
+    authorizedCount: 0, taskEffects: [] };
   await mkdir(join(root, 'secret', 'principals'), { recursive: true });
   await mkdir(join(root, 'run'), { recursive: true });
   await writeFile(join(root, 'secret', 'host.key'), key);
@@ -47,14 +48,14 @@ export async function extensionWire(root) {
       } else if (path === '/v1/auth/launch') {
         if (body.ticket !== 'one-use-ticket') return fail(401, 'bad_ticket');
         tokens.set('child-token', {});
-        result = { token: 'child-token', runId: 'run-one', principalId: 'child-one', policy: {
-          profile: 'explore', tools: ['read', 'grep', 'find', 'ls'], allowedRoots: [root], protectedPaths: [join(root, 'secret')],
+        result = { token: 'child-token', expiresAt: new Date(Date.now() + 3600000).toISOString(), runId: 'run-one', principalId: 'child-one', policy: {
+          profile: 'explore', tools: state.allowedTools ?? ['read', 'grep', 'find', 'ls'], allowedRoots: [root], protectedPaths: [join(root, 'secret')],
           model: state.expectedModel, thinking: 'off', extensionVersion: '0.1.0',
         } };
       } else {
         const conn = tokens.get(req.headers.authorization?.replace('Bearer ', ''));
         if (!conn) return fail(401, 'invalid_token');
-        if (path === '/v1/principals/register') { state.registerCount++; state.leaseHeld = true; conn.bound = true; result = { principalId: 'principal-one' }; }
+        if (path === '/v1/principals/register') { state.registerCount++; state.leaseHeld = true; conn.bound = true; result = { principalId: state.registerPrincipalId ?? 'principal-one' }; }
         else if (path === '/v1/principals/reclaim') {
           if (body.proof !== hmacProof(recovery, ['reclaim', body.principalId, body.sessionId, conn.connectionId, instanceId])) return fail(403, 'bad_proof');
           state.reclaimCount++;
@@ -65,18 +66,29 @@ export async function extensionWire(root) {
         else if (path === '/v1/lease/renew') result = {};
         else if (path === '/v1/auth/refresh') {
           state.refreshCount++;
+          if (state.refreshTransportFailure) { req.socket.destroy(); return; }
+          if (state.refreshReject) return fail(401, state.refreshReject);
           result = { token: req.headers.authorization.replace('Bearer ', ''), expiresAt: new Date(Date.now() + 7200000).toISOString() };
         } else if (path === '/v1/inbox') {
           if (state.enforceLease && !state.leaseHeld) return fail(409, 'lease_required');
           result = { items: state.inboxItems?.splice(0, 200) ?? [] };
         }
+        else if (path.endsWith('/authorized')) {
+          state.authorizedCount++;
+          if (state.finalReadyReject) return fail(403, 'ready_mismatch');
+          result = { ready: !state.finalReadyBlocked };
+        }
         else if (path.endsWith('/ready')) { state.readyCount++; if (state.readyReject) return fail(403, 'ready_mismatch'); result = { ready: true }; }
         else if (path.endsWith('/fatal')) { state.fatalCount++; result = {}; }
         else if (path === '/v1/failure') return fail(403, 'forbidden');
         else if (path === '/v1/test/shutdown') { result = {}; res.once('finish', () => { server.closeAllConnections(); server.close(); }); }
-        else result = { taskId: 'task-one', status: 'completed', resultText: '测试结果' };
+        else {
+          if (path === '/v1/tasks' && req.method === 'POST') state.taskEffects.push(body);
+          result = { taskId: 'task-one', status: 'completed', resultText: '测试结果' };
+        }
       }
       if (state.transformResponse) result = state.transformResponse(path, result);
+      await state.beforeResponse?.(call, result);
       res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(result));
     } catch { res.writeHead(500); res.end('{}'); }
   });

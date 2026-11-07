@@ -135,7 +135,7 @@ export class NoticeDelivery {
           this.pi.sendMessage({ customType: 'agora:notice', display: true,
             content: `【agora 子代理事件】任务：${taskId ?? '未提供'}；generation：${generation ?? '未提供'}；标题：${title}；状态：${status}\n取结果：${resultCall}\n摘要：${summary}`,
             details: { noticeId: notice.noticeId, dedupeKey: key, taskId: p.taskId, generation: p.generation, nodeId: p.nodeId } },
-          { triggerTurn: p.notify !== 'silent' && p.silent !== true, deliverAs: 'followUp' });
+          { triggerTurn: p.triggerTurn === true || p.notify !== 'silent' && p.silent !== true, deliverAs: 'followUp' });
         } catch (error) { this.injected.delete(key); throw error; }
       }
       await this.confirmEntries();

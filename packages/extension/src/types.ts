@@ -34,9 +34,10 @@ export interface PiExtensionApi {
   getThinkingLevel(): string;
 }
 export interface ChildPolicy {
-  profile: 'explore';
+  profile: 'explore' | 'review' | 'implement';
   allowedRoots: string[];
   protectedPaths: string[];
+  readOnlyRoots?: string[];
   tools: string[];
   model: string;
   thinking: string;

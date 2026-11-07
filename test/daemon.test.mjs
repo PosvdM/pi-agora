@@ -70,7 +70,7 @@ class MockDriver {
       assert.equal(launched.status, 200);
       handle.token = launched.body.token;
       if (this.options.noReady) return;
-      const ready = await http(spec.env.AGORA_URL, handle.token, 'POST', `/v1/runs/${spec.runId}/ready`, { tools: ['read', 'grep', 'find', 'ls'], model: spec.model, thinking: spec.thinking, extensionVersion: '0.1.0', ...(this.options.readyOverride ?? {}) });
+      const ready = await http(spec.env.AGORA_URL, handle.token, 'POST', `/v1/runs/${spec.runId}/ready`, { tools: spec.tools, model: spec.model, thinking: spec.thinking, extensionVersion: '0.1.0', ...(this.options.readyOverride ?? {}) });
       handle.readyStatus = ready.status;
     })();
     void handle.boot.catch(error => { handle.bootError = error; });
@@ -190,8 +190,8 @@ test('HTTP 边界拒绝 Origin、错误协议、匿名、伪造用户身份与�
   assert.equal((await http(f.daemon.url, undefined, 'GET', '/v1/status')).status, 401);
   assert.equal((await http(f.daemon.url, cli.token, 'GET', '/v1/status', undefined, { 'Agora-Protocol': '999' })).status, 426);
   assert.equal((await http(f.daemon.url, cli.token, 'GET', '/v1/status', undefined, { 'Agora-Act-As': 'user' })).status, 403);
-  assert.equal((await http(f.daemon.url, cli.token, 'POST', '/v1/tasks', { ...spawnBody, profile: 'implement', cwd: f.home })).status, 400);
-  assert.equal((await http(f.daemon.url, cli.token, 'POST', '/v1/tasks', { ...spawnBody, isolation: 'worktree', cwd: f.home })).status, 400);
+  assert.equal((await http(f.daemon.url, cli.token, 'POST', '/v1/tasks', { ...spawnBody, profile: 'invalid', cwd: f.home })).status, 400);
+  assert.equal((await http(f.daemon.url, cli.token, 'POST', '/v1/tasks', { ...spawnBody, isolation: 'invalid', cwd: f.home })).status, 400);
   assert.equal((await http(f.daemon.url, cli.token, 'POST', '/v1/tasks', { ...spawnBody, boardId: '伪造', cwd: f.home })).status, 400);
   assert.equal((await http(f.daemon.url, cli.token, 'GET', '/v1/tasks?limit=201')).status, 400);
   assert.equal(f.daemon.store.get('SELECT COUNT(*) AS n FROM tasks').n, 0);
@@ -294,7 +294,7 @@ test('assistant 错误不能误判 completed；非召集人、child ACL 与用�
   assert.equal(all.items[0].model, undefined);
   assert.equal((await http(f.daemon.url, handle.token, 'GET', `/v1/tasks/${task.taskId}`)).status, 200);
   assert.equal((await http(f.daemon.url, handle.token, 'GET', `/v1/tasks/${task.taskId}/result`)).status, 403);
-  assert.equal((await http(f.daemon.url, handle.token, 'POST', '/v1/tasks', { ...spawnBody, cwd: f.home, principalId: 'user' })).status, 403);
+  assert.equal((await http(f.daemon.url, handle.token, 'POST', '/v1/tasks', { ...spawnBody, profile: 'implement', cwd: f.home, principalId: 'user' })).status, 403);
   assert.equal((await http(f.daemon.url, handle.token, 'POST', `/v1/tasks/${task.taskId}/stop`, {})).status, 403);
   handle.emit({ type: 'message_end', message: { role: 'assistant', stopReason: 'error', errorMessage: '受控模型错误' } });
   handle.emit({ type: 'agent_settled', aborted: false });

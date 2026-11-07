@@ -1,6 +1,6 @@
 # 任务（子代理）
 
-> 本文描述完整任务设计。切片 1a 提供 explore 档位的 spawn、status、result、stop 和可靠通知；其他动作按 [roadmap.md](roadmap.md) 推进。实现与测试见 [development.md](development.md)。
+> 切片 1b 提供完整任务动作、多层委派、三个权限档位、worktree、提问与逐级转交，以及 skill 白名单、用量记录和额度暂停。用户确认、接管、board 和会议相关权限仍是后续设计目标；CLI 答复尚无设备签名。实现与测试见 [development.md](development.md)。
 
 任务是召集人派给一个协作会话（`kind = task`）的一件工作。它覆盖现有“派子代理”的核心用法：按模型和权限档位派任务、worktree 隔离、完成后叫醒召集人、steer 返工、查看列表和结果、停止、子代理提问并由召集人答复或转给用户。
 
@@ -12,12 +12,14 @@ agora 扩展按连接 token 的权限注册工具。子代理功能只注册 `ag
 
 | 工具 | 谁能用 | 用途 |
 | --- | --- | --- |
-| `agora_task` | 主代理（`agent:main`） | 派任务、列表、取结果、返工、停止、清理 worktree |
+| `agora_task` | 主代理及任务子代理（最终就绪后） | 派任务、列表、取结果、返工、停止子树、清理 worktree、恢复 |
 | `agora_request` | 所有 agora 会话 | 子代理提问；召集人答复、转给用户、取消 |
 | `agora_board` | 绑定了 board 的会话 | 读写共享桌面，见 [board.md](board.md) |
 | `agora_meeting` | 主代理；参会者只有 `endorse` | 召开和管理会议，见 [meetings.md](meetings.md) |
 
-MVP 不允许子代理再派子代理：协作会话的 token 没有 `agora_task` 权限。用户通过 CLI 或 pi-pane 也能执行 `agora_task` 的各项操作，这类任务的召集人记为 `user`；其中属于用户级的操作（如处理转给用户的中断任务、接管）需要用户确认，见 [security.md](security.md#权限级别)。
+任务子代理可以继续派出下级。默认层数为 2（子代理、孙代理），每个任务同时存在的未结束下级数默认不限，整棵树共用并发名额。配置、主代理派活和下级派活可以逐层收紧，不能放宽；下级档位不能高于父任务，skill 名单只能取父任务名单的子集。谁派的谁管理：子代理只能查看、返工、停止和答复自己直接派出的下级；主代理可查看、停止整棵树，但只返工直接下级。CLI 在 1b 可操作任意任务；完整用户确认在 1c。
+
+父任务 settled 时仍有未结束下级，进入 `waiting_children`，不交付最终结果，也不占推理名额。下级进入终态（完成、启动失败、fatal、异常退出、结果读取失败或停止）时，由统一的状态结算入口通知召集人。父任务处于 `waiting_children` 时，不论下级 `notify` 是否为 `silent`，均领取推理名额并通过通知启动真实回合；父进程已回收时重新拉起后投递。父任务不在等待下级时，静默消息只投递，不领取名额，也不延长空闲进程的存活时间；已回收进程的静默消息保留到下一次运行。额度暂停的未知重置时间提示与到时通知也通过同一调度入口。父任务自行核对并交出最终结果后才完成。停止父任务时逐层停止整棵子树，返回每层 StopReport。
 
 ## `agora_task` 接口
 
@@ -30,18 +32,22 @@ type AgoraTaskParams =
       thinking?: ThinkingLevel;      // 默认 "high"
       profile: "explore" | "review" | "implement"; // 各档位的工具和限制见 architecture.md“权限档位”
       prompt: string;                // 完整任务书，子代理看不到召集人的对话
+      skills?: string[];            // 按名字选择用户 skill；未配置档位默认值时为空，[] 显式禁用
       title?: string;                // 侧栏显示用，默认取 prompt 首行
       cwd?: string;                  // 默认召集人的 cwd
       isolation?: "none" | "worktree"; // 默认 "none"
       boardId?: string;              // 可选，挂到已有 board（调用方须是该 board 的 owner）
-      notify?: "wake" | "silent";    // 完成时是否叫醒召集人，默认 "wake"
+      notify?: "wake" | "silent";    // 默认 wake；父任务等待下级时始终叫醒
+      maxDepth?: number;              // 以新任务为第一层的子树层数，不能超过父任务剩余层数
+      maxChildren?: number | null;    // 每个任务同时存在的未结束下级数，null 为不限
     }
   | { action: "list"; status?: TaskStatus[]; scope?: "mine" | "all" }  // 默认 mine
   | { action: "status"; taskId: string }                          // 当前任务详情
   | { action: "result"; taskId: string; generation?: number }        // 默认最新一代
   | { action: "steer"; taskId: string; message: string; interrupt?: boolean }
   | { action: "stop"; taskId: string; reason?: string }
-  | { action: "cleanup"; taskId: string; discard?: boolean };
+  | { action: "cleanup"; taskId: string; discard?: boolean }
+  | { action: "recover"; taskId: string; mode: "resume" | "reopen" | "replace" | "abandon"; model?: string; profile?: "explore" | "review" | "implement" };
 ```
 
 返回值（工具结果的 `details`，同时给模型一段简短文本）：
@@ -52,7 +58,7 @@ type AgoraTaskParams =
   "agoraSessionId": "as_c21e",
   "status": "created",
   "generation": 1,
-  "worktree": { "path": "~/.pi/agora-worktrees/repo-1c9e2a7b/agora-tk_8f3a", "branch": "agora/tk_8f3a", "baseCommit": "4e1c9d0" },
+  "worktree": { "path": "~/.pi/agora-worktrees/repo-1c9e2a7b/agora-tk_8f3a", "branch": "agora/tk_8f3a", "base_commit": "4e1c9d0" },
   "warnings": ["主目录有 3 处未提交改动，不会带入 worktree"]
 }
 ```
@@ -70,6 +76,26 @@ type AgoraTaskParams =
 
 agora 对任务只提供“取消（含队列）”这一种停止。协作会话的 pi 队列里只有 agora 自己发的消息，被清掉的消息都有记录，召集人可以重新发送。
 
+### 派活与 skill 名单
+
+任务书应只覆盖一件范围明确的工作，将必要的接口和结论直接摘入；并行前先确定接口，机械性工作使用 `medium`，完成的任务不追加新工作。daemon 发出的任务书固定以“你是子代理。”开头，包括重新拉起后的任务说明。全局和项目 `AGENTS.md` 仍由 pi 加载；只针对主会话的规则由其中的子代理约定跳过。
+
+`spawn.skills` 按名字选择用户 skill，覆盖 `AGORA_HOME/config.json` 的 `defaultSkills` 对应档位名单；未指定且未配置时为空，显式 `[]` 禁用该档位默认值。下级名单必须是上级名单的子集；配置的默认值也受此限制。不存在、歧义或不可访问的名字在 spawn 返回 `400 skill_not_found`，越出上级名单返回 `403 skill_upgrade`。解析范围和文件访问规则见 [security.md](security.md#skill-白名单)。
+
+### 用量与上下文
+
+`status` 和 `result` 的 `usage` 汇总当前任务全部代数，`treeUsage` 汇总该任务及全部后代；`result.generationUsage` 只汇总请求的代数。字段为 `requests`、`inputTokens`、`cacheReadTokens`、`cacheWriteTokens`、`outputTokens`、`reasoningTokens`、`contextTokens`。result 的 `usage` 同时保留原 `get_session_stats` 数据（如 `tokens`、`cost`），新字段以逐请求记录为准。
+
+每次模型请求结束记录一条用量，关联 taskId、generation、agoraSessionId、runId 和驱动提供的 requestId；重复事件不重复记账。禁止继续执行与接收用量分别控制：stop、额度暂停或中断返工的 abort 收尾期间，旧运行确认结束前收到的合法用量仍记入原任务、原代和原会话。复用进程时，在旧回合中断确认、开始新代回合后才切换记账代数；运行退出后拒收事件。输入、缓存读、缓存写、输出和推理 token 按请求相加。模型未单独返回推理 token 时记为 0，不把输出 token 推测为推理 token。`contextTokens` 取最近一次非零的 `input + cacheRead + cacheWrite`，代表服务最近报告的输入上下文大小；没有可用数据时为 0。任务树的上下文大小是各任务最近值之和，不是历史请求的输入总和，也不是模型上下文窗口上限。CLI 的专用展示在 1d，pane 展示在切片 2。
+
+### 额度暂停
+
+驱动识别模型额度用完后，任务在 settled 时进入 `quota_paused`，不记为失败。daemon 停止该进程、保留原会话和代数并释放推理名额；停止未确认时保留清理记录并拒绝恢复。`quotaResumeAt` 记录服务返回的重置时间。识别规则由 [architecture.md](architecture.md#用量与额度事件) 定义。
+
+默认 `quotaRecovery: "notify"`：到达重置时间后向直接上级发送持久化的 `task:quota_ready` 通知，附该上级最多 200 个暂停任务的上下文大小，其余任务可按状态分页查询，由上级调用 `recover`、`mode: "resume"` 续跑，或 stop 后重新派活。配置 `quotaRecovery: "auto"` 时，到期只续跑该任务，不递归续跑下级。重置时间缺失时不猜测时间，暂停状态、`task:quota_unknown` 通知及唤醒标记在同一事务中提交，等待上级核对后手动续跑。通知可在停止确认前投递，但续跑仍要求旧运行已确认退出；停止进行中或内存通知前退出时，启动恢复会补投同一条 outbox，不生成重复提示。启动时也扫描尚无通知标记的未知时间暂停记录，按原运行去重键补建提示及标记，兼容已有的待通知暂停记录。重置时间未到的手动恢复返回 `409 quota_not_reset`。额度暂停任务只接受 resume 或 abandon；需换模型时先停止再派活。
+
+`quota_paused` 与 `waiting_children` 不同：前者不能被下级完成、答复或普通 inbox 通知唤醒，后者可以。暂停进程直接停止，不依赖空闲回收定时器；暂停状态和重置时间跨 daemon 重启保留，到期通知按去重键只生成一次。停止父任务会递归停止额度暂停的下级并取消定时恢复；续跑父任务不会自动续跑任何下级。
+
 ## 状态机
 
 ```text
@@ -78,8 +104,10 @@ agora 对任务只提供“取消（含队列）”这一种停止。协作会�
 created ──► running ──► completed ───────────────────────────────┤
               │  ▲  └─► failed ──────────────────────────────────┤
               │  │                                               │
+              ├────► quota_paused ── recover resume / 自动续跑 ──► running
+              │             └── stop / abandon ──► stopped
               ▼  │ 答复送达                                      │
-        waiting_decision                                         │
+        waiting_decision / waiting_children                      │
               │                                                  │
    任意运行态 ─┼─► stopped（stop）                                │
               └─► interrupted（崩溃 / 强制关闭）── 恢复 ──► running
@@ -91,8 +119,10 @@ created ──► running ──► completed ───────────�
 | `created` | 记录已写入；排队等推理名额，或进程尚未通过就绪检查 |
 | `running` | 任务书或返工消息已被 pi 接受（`prompt` 响应成功或已排队） |
 | `waiting_decision` | 会话 settled 时，该任务还有 `open` 或 `escalated` 状态的提问 |
-| `completed` | 会话 settled、`aborted: false`、没有未决提问 |
-| `failed` | 会话 settled 且最后一条助手消息是错误（如模型报错、重试耗尽），或 spawn 校验、就绪检查失败 |
+| `waiting_children` | 会话 settled 时，该任务还有未结束的下级且没有未决提问；释放名额并等待通知 |
+| `quota_paused` | 模型额度用完；不占推理名额，保留会话和代数，等待上级决定或配置的自动恢复 |
+| `completed` | 会话 settled、`aborted: false`、没有助手错误、未决提问或未结束的下级 |
+| `failed` | 会话 settled 且最后一条助手消息是错误（已识别的额度暂停除外），或 spawn 校验、就绪检查失败 |
 | `stopped` | 召集人或用户调用 stop，或放弃中断的任务 |
 | `interrupted` | 进程崩溃、心跳超时、daemon 强制关闭、恢复时就绪检查失败 |
 
@@ -106,8 +136,8 @@ created ──► running ──► completed ───────────�
 
 - 对 `completed` 或 `failed` 的任务 steer：`generation + 1`，状态回到 `running`，用 RPC `prompt` 发送返工消息（会话空闲时）。
 - 对 `running` 的任务 steer：不增加代数，用 RPC `steer` 排队。pi 的 steer 在当前助手回合的工具调用全部执行完后、下一次模型调用前送达，**不会打断正在执行的工具**（依据：`docs/rpc-commands.md` 的 `steer`）。
-- `interrupt: true`：先 `clear_queue`，再 `abort`（带超时），等旧运行结束（`agent_settled`，超时则终止进程树后用 `--session` 重新拉起），再以新一代发送消息。用于工具卡住、普通 steer 迟迟送不到的情况。
-- 对 `waiting_decision` 的任务 steer：视同答复之外的追加指令，按 `running` 处理并唤醒会话。
+- `interrupt: true`：先 `clear_queue`，再 `abort`（带超时），等旧运行结束（`agent_settled`，超时则终止进程树后用 `--session` 重新拉起），再以新一代发送消息。旧代若未进入终态，在切代的同一事务中封存为 `interrupted` 并记录结算时间；中断确认后尽量读取部分回复与会话统计，读取失败时保留已有数据。逐请求用量保留在原代，不转入新代。用于工具卡住、普通 steer 迟迟送不到的情况。
+- 对 `waiting_decision` 或 `waiting_children` 的任务 steer：按同代追加指令处理，先取得名额再唤醒会话。
 
 ### 送达追踪
 
@@ -128,20 +158,22 @@ pi 的 `queue_update` 事件只给出排队消息的文本（依据：`docs/json
 
 ### 写入
 
-任务进入 `completed`、`failed`、`interrupted`、`waiting_decision`（有新提问）时，daemon 在**同一个 SQLite 事务**里：
+任务进入 `completed`、`failed`、`interrupted` 或 `stopped` 时，daemon 在**同一个 SQLite 事务**里：
 
 1. 更新任务和代数记录；
-2. 向 `outbox` 插入一条通知，`dedupe_key` 唯一。
+2. 向 `outbox` 插入一条通知，`dedupe_key` 唯一；按当前父任务状态同时保存 `triggerTurn`。父任务处于 `waiting_children` 时，即使下级选择静默通知，也必须启动父任务回合。
 
 | 事件 | `dedupe_key` |
 | --- | --- |
 | 完成 / 失败 | `task:<taskId>:<generation>:<completed|failed>` |
 | 中断 | `task:<taskId>:<generation>:interrupted:<processRunId>` |
 | 工具无进展 | `task:<taskId>:stall:<toolCallId>:<n>` |
+| 额度重置时间已到 | `task:<taskId>:<generation>:quota:<quotaResumeAt>` |
+| 额度暂停但无重置时间 | `task:<taskId>:<generation>:quota_unknown:<runId>` |
 | 新提问 | `request:<requestId>:opened` |
 | 提问被答复（发给提问者） | `request:<requestId>:answered` |
 
-事务保证：要么状态和通知都写入，要么都没写入。daemon 在两者之间崩溃不会丢通知。
+事务保证：状态、通知和强制唤醒决定共同提交或回滚。daemon 启动时扫描未确认的唤醒通知，按名额调度父任务；提交后、内存调度前退出不会丢失唤醒。
 
 ### 三种状态
 
@@ -172,7 +204,7 @@ pi 的 `queue_update` 事件只给出排队消息的文本（依据：`docs/json
   1. 在 `getEntries()` 里找到带该 `dedupeKey` 的条目，取得 entryId；
   2. 读 `ctx.sessionManager.getSessionFile()` 指向的文件（只读、从文件末尾向前扫描），确认文件存在，且有一行完整的 JSON 是该 entryId 的 `custom_message` 条目；
   3. 两步都满足才调用 `POST /v1/inbox/ack`。会话文件尚未首次落盘时不确认，通知留在 outbox，等会话出现第一条对话消息、文件写出后再确认；期间进程退出，通知会在恢复后重新注入。
-- **静默通知**：`notify: "silent"` 的任务仍写 outbox（供列表和“待处理”展示），扩展注入时用 `triggerTurn: false`。会话空闲时这类消息直接写入会话，不经过扩展的消息事件（依据：`dist/core/agent-session.js` 的 `_appendCustomMessage`），所以同样只能靠检查会话条目来确认。
+- **静默通知**：`notify: "silent"` 的任务仍写 outbox（供列表和“待处理”展示）。父任务等待下级时，daemon 在通知中标记 `triggerTurn: true` 并按推理名额调度；其他静默事件以 `triggerTurn: false` 投递，空闲子进程可在不领取名额的情况下收取这类事件。会话空闲时静默消息直接写入会话，不经过扩展的消息事件（依据：`dist/core/agent-session.js` 的 `_appendCustomMessage`），所以同样只能靠检查会话条目来确认。
 - **不持久化的主会话**：主会话以 `--no-session` 运行时（`ctx.sessionManager` 没有会话文件），通知永远无法写入文件。扩展注册 principal 时声明 `ephemeral: true`；对这类 principal，通知出现在 `getEntries()` 后即以 `persisted: false` 确认，daemon 记为“只送达内存会话”。ephemeral principal 无法在进程退出后认领，进程退出后它召集的任务按“召集人不可达”处理，未处理的事项进入用户的“待处理”。
 - **被清掉的通知**：主会话里用户按停止（`clear_queue`）会清掉排队中的 `agora:notice`。扩展在内存里记录“已注入、尚未写入会话”的通知；在 `agent_settled` 时仍未写入的，从记录里移除，等可见性超时后重新注入。pane 和 agora 停止时都用 `clear_queue` + `abort`，这条路径实测通知只落盘一条。第三方 RPC 客户端如果只发 `abort`，排队中的通知仍在 pi 队列中（尚未写入会话），settled 时查不到条目便会重投，导致同一通知在下一轮和原队列中的通知各写一条（P0 实测复现，见 [D 组 RESULTS.md](../experiments/p0/d-notify/RESULTS.md)）；这是已知偏差，展示时统一按 `dedupeKey` 去重。
 - 模型可见的正文固定包含 taskId、generation、标题、状态，以及带 taskId / generation 参数的 `agora_task` result 调用方法，再附最多 2000 字的摘要。pi 的模型投影不保留 details，因此定位信息不能只放 details；details 继续供界面卡片使用。正文明确标注为子代理事件，不冒充用户发言。
@@ -192,7 +224,7 @@ interface AgoraRequest {
   questions: RequestQuestion[];  // 1–3 题
   context?: string;
   state: "open" | "answered" | "escalated" | "cancelled" | "expired";
-  escalatedTo?: string;          // 转交时为 user principal
+  route: string[];               // 已经转交过的直接上级 principal
   answers?: RequestAnswer[];
   answeredBy?: string;
   answeredVia?: {                // 答复者是 user 时由 daemon 填写，来自审计记录
@@ -224,7 +256,7 @@ interface RequestAnswer { id: string; selected: string[]; custom?: string }
 
 `RequestQuestion` 的字段与 pane 协议 v1 的 `FormQuestion` 相同（名称、类型和默认值以 pi-pane 仓库的 `docs/plugin-api.md` 为准；`allowCustom` 缺省为 `true`），转给用户时逐字段复制即可渲染；映射方式见 [integration.md](integration.md#表单)。pane 协议以后给 `FormQuestion` 增加的字段，agora 在升级 `paneProtocol` 时再决定是否跟进，未跟进的字段取 pane 的缺省值。daemon 校验 `dependsOn` 指向同一提问中排在前面的题目，`allowCustom: false` 时拒绝带 `custom` 的答复。核心包不引用 pi-pane 的类型，`RequestQuestion` 在 `packages/protocol` 中独立定义。
 
-用户答复（无论来自 CLI 还是 pi-pane）都是用户级操作，需要已配对浏览器签名确认，并写入审计；提问详情和提问者收到的通知里显示 `answeredVia`，如“由用户答复（设备：工作电脑 Chrome，2026-11-05 10:21）”。见 [security.md](security.md#用户确认)。
+完整安全设计中，用户答复（无论来自 CLI 还是 pi-pane）都是用户级操作，需要已配对浏览器签名确认，并写入审计；提问详情和提问者收到的通知里显示 `answeredVia`，如“由用户答复（设备：工作电脑 Chrome，2026-11-05 10:21）”。见 [security.md](security.md#用户确认)。
 
 ### 状态
 
@@ -237,8 +269,8 @@ open ──► answered
   └──► expired
 ```
 
-- **转给用户**（escalate）保留原 `requestId`，用户的答复回到同一个提问，提问者无需区分是谁答的。
-- **取消、过期都不算同意**。提问者收到的结果明确写“未获答复”，任务书要求它停在安全状态，不得自行假设批准。
+- **逐级转交**（escalate）保留原 `requestId`。下级先向直接上级提问，上级答不了时转给自己的召集人，直到主代理再转给用户。新提问和转交均通过鉴权 principal 找到所属任务，以任务树当前的 `tasks.convener_id` 解析直接上级，不使用会话创建时保存的上级关系；父任务 reopen / replace 后，现存下级也遵循当前任务树。`targetId` 表示当前接收方，`route` 保留经过的上级；答复始终送回原提问者。主代理自己的 ask 直接发给用户。
+- **取消、过期都不算同意**。提问者收到的结果明确写“未获答复”，任务书要求它停在安全状态，不得自行假设批准。可选 expiresAt 由 daemon 定时裁定；转给用户后停止计时，工具的 waitSeconds 超时只返回 pending，不使提问过期。
 - 同一提问并发答复时只接受一次（按 `revision` 条件更新），其余返回 `409 already_handled`。
 
 ### `agora_request` 接口
@@ -246,7 +278,7 @@ open ──► answered
 ```ts
 // 草案，P0 后冻结
 type AgoraRequestParams =
-  | { action: "ask"; questions: RequestQuestion[]; context?: string; waitSeconds?: number } // 子代理用，默认等 240 秒
+  | { action: "ask"; questions: RequestQuestion[]; context?: string; waitSeconds?: number; expiresAt?: string } // Agent 用，默认等 240 秒
   | { action: "answer"; requestId: string; answers: RequestAnswer[] }                       // 召集人
   | { action: "escalate"; requestId: string; note?: string }                                 // 召集人转给用户
   | { action: "cancel"; requestId: string }
@@ -255,7 +287,7 @@ type AgoraRequestParams =
 
 `ask` 的行为：
 
-1. 写入 `requests`，同事务写一条给召集人的 outbox 通知。
+1. 写入 `requests`，同事务写一条给直接上级的 outbox 通知。路由按鉴权 principal 和委派关系确定，同项目的其他主会话不接收该提问；转交后才逐级改变目标。
 2. 工具调用最多等待 `waitSeconds`（默认 240）：期间收到答复就把答复作为工具结果返回。
 3. 超时或被转给用户：工具返回“提问 rq_xxx 尚未答复（当前状态：open / escalated），答复到达后会以消息送达；在此之前停在安全状态”。提问保持原状态，转给用户后不再计时。
 4. 会话 settled 时该提问仍未答复，任务进入 `waiting_decision`，进程可按回收规则停止。
@@ -281,7 +313,7 @@ type AgoraRequestParams =
 - 对中断的任务选择恢复、重开、换人或放弃；
 - 接管任务：把任务的召集人改为 user，之后的通知都进入“待处理”。
 
-这些都是用户级操作：在 pi-pane 里点击后由浏览器确认；在 CLI 里只生成待确认（见 [security.md](security.md#经-cli-发起)）。
+完整安全设计将这些操作列为用户级：pi-pane 由浏览器确认，CLI 生成待确认（见 [security.md](security.md#经-cli-发起)）。1b 仅提供提问的转交和 CLI 直接答复 / 取消通路，`answeredVia.confirmedBy` 为 `none`；没有设备确认、接管或其他用户级动作，不能把磁盘凭证当作用户身份。
 
 召集人恢复后，补送的通知按产生顺序送达；已被用户处理的事项送达一条“已由用户处理”的说明，不再要求召集人决定。
 

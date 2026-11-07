@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
 import { isSameProcess, linuxCgroupSupport, probeSessionWriterLock, stopByIdentity } from "pi-hostkit";
@@ -21,6 +21,14 @@ async function setup(t, script, extra = {}) {
     model: "p0-fake/scripted", thinking: "off", profile: "explore", sessionFile: f.sessionPath("driver"), env: f.env };
   t.after(async () => {
     const results = await Promise.allSettled(handles.map((handle) => handle.stop(FAST_STOP)));
+    if (process.env.AGORA_DRIVER_DIAGNOSTICS_DIR) {
+      const directory = path.resolve(process.env.AGORA_DRIVER_DIAGNOSTICS_DIR);
+      mkdirSync(directory, { recursive: true });
+      for (const handle of handles) writeFileSync(path.join(directory, `${path.basename(f.root)}-${handle.identity.pid}.json`), JSON.stringify({
+        test: t.name, stopOptions: FAST_STOP, diagnostics: handle.diagnostics(),
+      }, null, 2));
+    }
+    for (let i = 0; i < results.length; i++) if (results[i].status === 'rejected') stopFailure(t, results[i].reason, handles[i]);
     try {
       for (const result of results) if (result.status === "rejected") throw result.reason;
     } finally { await f.cleanup(); }
@@ -34,6 +42,16 @@ async function setup(t, script, extra = {}) {
       return handle;
     },
   };
+}
+function stopFailure(t, error, handle) {
+  t.diagnostic(JSON.stringify({ kind: '停止失败完整诊断', code: error?.code ?? null, message: error?.message ?? String(error),
+    verificationPhase: error?.verificationPhase ?? null, status: error?.status ?? null, attempts: error?.attempts ?? null,
+    timeoutMs: error?.timeoutMs ?? null, identity: error?.identity ?? handle.identity,
+    stopReport: error?.stopReport ?? handle.diagnostics().stopReport ?? null, diagnostics: handle.diagnostics() }));
+}
+async function observedStop(t, handle) {
+  try { return await handle.stop(FAST_STOP); }
+  catch (error) { stopFailure(t, error, handle); throw error; }
 }
 async function assertCoverage(report) {
   const scope = process.platform === "linux" && containment === "auto" && await linuxCgroupSupport();
@@ -131,7 +149,9 @@ test("真实 pi：shell 与脱离进程组的孙进程都退出，独立核对�
   }
 });
 
-test("真实 pi：忽略 abort 的 provider 在清队列后终止，排队文字未执行", { timeout: 45_000 }, async (t) => {
+const providerRepeats = process.env.CI && process.env.AGORA_STOP_PROVIDER_REPEATS ? Number(process.env.AGORA_STOP_PROVIDER_REPEATS) : 1;
+assert.ok(Number.isSafeInteger(providerRepeats) && providerRepeats >= 1 && providerRepeats <= 100, 'CI provider 重复次数必须为 1 到 100 的整数');
+for (let iteration = 1; iteration <= providerRepeats; iteration++) test(`真实 pi：忽略 abort 的 provider 在清队列后终止，排队文字未执行 [${iteration}/${providerRepeats}]`,  { timeout: 45_000 }, async (t) => {
   const s = await setup(t, { turns: [{ ignoreAbort: true, segments: [{ type: "hang" }] }] });
   const handle = await s.start();
   await handle.send({ type: "prompt", message: "阻塞模型" });
@@ -139,7 +159,7 @@ test("真实 pi：忽略 abort 的 provider 在清队列后终止，排队文字
   await until(() => records(log).some((entry) => entry.kind === "hang"));
   await handle.send({ type: "steer", message: "不能运行的 steer" });
   await handle.send({ type: "follow_up", message: "不能运行的 follow_up" });
-  await assertCoverage(await handle.stop(FAST_STOP));
+  await assertCoverage(await observedStop(t, handle));
   assert.equal(records(log).filter((entry) => entry.kind === "request").length, 1);
   assert.equal(await isSameProcess(handle.identity), "gone");
 });

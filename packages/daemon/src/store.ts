@@ -4,7 +4,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { AgoraError } from "./errors.js";
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 4;
 export const schemaMigrations: readonly string[] = [String.raw`
 CREATE TABLE principals (
   id TEXT PRIMARY KEY, type TEXT NOT NULL, label TEXT NOT NULL DEFAULT '',
@@ -73,6 +73,45 @@ DROP TABLE agora_sessions;
 ALTER TABLE agora_sessions_v2 RENAME TO agora_sessions;
 ALTER TABLE task_generations ADD COLUMN agora_session_id TEXT REFERENCES agora_sessions(id);
 UPDATE task_generations SET agora_session_id=(SELECT agora_session_id FROM tasks WHERE tasks.id=task_generations.task_id);
+`, String.raw`
+ALTER TABLE tasks ADD COLUMN parent_task_id TEXT REFERENCES tasks(id);
+ALTER TABLE tasks ADD COLUMN depth INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE tasks ADD COLUMN depth_limit INTEGER NOT NULL DEFAULT 2;
+ALTER TABLE tasks ADD COLUMN child_limit INTEGER;
+ALTER TABLE tasks ADD COLUMN recovery_attempts INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tasks ADD COLUMN pending_message TEXT;
+CREATE INDEX tasks_parent ON tasks(parent_task_id);
+CREATE TABLE steer_messages (
+  id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id), generation INTEGER NOT NULL,
+  message TEXT NOT NULL, state TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE INDEX steers_task ON steer_messages(task_id,generation);
+CREATE TABLE requests (
+  id TEXT PRIMARY KEY, asker_id TEXT NOT NULL, target_id TEXT NOT NULL, task_id TEXT,
+  questions TEXT NOT NULL, context TEXT, state TEXT NOT NULL DEFAULT 'open',
+  route TEXT NOT NULL DEFAULT '[]', answers TEXT, answered_by TEXT,
+  expires_at TEXT, revision INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE INDEX requests_target ON requests(target_id,state);
+CREATE INDEX requests_task ON requests(task_id,state);
+CREATE TABLE worktrees (
+  task_id TEXT PRIMARY KEY REFERENCES tasks(id), repo_root TEXT NOT NULL, base_commit TEXT NOT NULL,
+  branch TEXT NOT NULL, path TEXT NOT NULL UNIQUE, owner_id TEXT NOT NULL, state TEXT NOT NULL
+);
+`, String.raw`
+ALTER TABLE tasks ADD COLUMN skills TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE tasks ADD COLUMN skill_paths TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE tasks ADD COLUMN quota_resume_at TEXT;
+ALTER TABLE tasks ADD COLUMN quota_notified_at TEXT;
+CREATE TABLE usage_records (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL REFERENCES tasks(id),
+  generation INTEGER NOT NULL, agora_session_id TEXT NOT NULL REFERENCES agora_sessions(id),
+  run_id TEXT NOT NULL REFERENCES process_runs(id), request_id TEXT NOT NULL,
+  input_tokens INTEGER NOT NULL, cache_read_tokens INTEGER NOT NULL, cache_write_tokens INTEGER NOT NULL,
+  output_tokens INTEGER NOT NULL, reasoning_tokens INTEGER NOT NULL, context_tokens INTEGER NOT NULL,
+  created_at TEXT NOT NULL, UNIQUE(run_id,request_id)
+);
+CREATE INDEX usage_task ON usage_records(task_id,generation,seq);
 `];
 
 export interface PrincipalRow {
@@ -86,11 +125,15 @@ export interface TaskRow {
   title: string; prompt: string; model: string; thinking: string; profile: string;
   cwd: string; notify: string; status: string; generation: number; revision: number;
   status_detail: string | null; created_at: string; updated_at: string;
+  parent_task_id: string | null; depth: number; depth_limit: number; child_limit: number | null;
+  recovery_attempts: number; pending_message: string | null;
+  skills: string; skill_paths: string; quota_resume_at: string | null; quota_notified_at: string | null;
 }
 export interface SessionRow {
   id: string; task_id: string; principal_id: string; session_file: string;
   pi_session_id: string | null; profile: string; model: string; thinking: string;
   cwd: string; status: string; revision: number; created_at: string;
+  convener_id: string; parent_principal_id: string; control_state: string | null;
 }
 export interface RunRow {
   id: string; agora_session_id: string; daemon_instance_id: string;
@@ -101,6 +144,11 @@ export interface RunRow {
 export interface NoticeRow {
   id: string; recipient_id: string; dedupe_key: string; kind: string; payload: string;
   created_at: string; visible_after: number; acked_at: string | null;
+}
+
+export interface UsageSummary {
+  requests: number; inputTokens: number; cacheReadTokens: number; cacheWriteTokens: number;
+  outputTokens: number; reasoningTokens: number; contextTokens: number;
 }
 
 export function id(prefix: string): string { return `${prefix}_${randomUUID()}`; }
@@ -140,31 +188,59 @@ export class Store {
   notice(recipientId: string, dedupeKey: string, kind: string, payload: unknown): void {
     this.run("INSERT OR IGNORE INTO outbox(id,recipient_id,dedupe_key,kind,payload,created_at) VALUES(?,?,?,?,?,?)", id("nt"), recipientId, dedupeKey, kind, JSON.stringify(payload), now());
   }
+  quotaUnknownNotice(task: TaskRow, runId: string, at = now()): void {
+    const key = `task:${task.id}:${task.generation}:quota_unknown:${runId}`;
+    this.notice(task.convener_id, key, "task:quota_unknown", {
+      taskId: task.id, generation: task.generation, title: task.title, status: "quota_paused", notify: "wake", triggerTurn: true,
+      contextTokens: this.usage(task.id).contextTokens,
+      summary: "模型额度用完，但服务未提供可识别的重置时间。请核对额度后手动 recover resume 续跑，或停止后改派。",
+    });
+    this.run("UPDATE outbox SET payload=json_set(payload,'$.triggerTurn',json('true')) WHERE dedupe_key=?", key);
+    this.run("UPDATE tasks SET quota_notified_at=? WHERE id=?", at, task.id);
+  }
   change(kind: string, objectId: string): void {
     this.run("INSERT INTO changes(epoch,object_type,object_id,created_at) VALUES((SELECT value FROM settings WHERE key='epoch'),?,?,?)", kind, objectId, now());
   }
-  transition(task: TaskRow, status: string, resultText?: string, runId?: string, usage?: unknown): TaskRow {
+  transition(task: TaskRow, status: string, resultText?: string, runId?: string, usage?: unknown, quota?: { resumeAt: string | null }): TaskRow {
     return this.transaction(() => {
       const at = now();
       const changed = this.run("UPDATE tasks SET status=?,revision=revision+1,status_detail=NULL,updated_at=? WHERE id=? AND generation=? AND revision=?", status, at, task.id, task.generation, task.revision);
       if (!changed.changes) throw new AgoraError(409, "conflict", "任务状态已变化，请重新读取");
+      if (quota) {
+        this.run("UPDATE tasks SET quota_resume_at=?,quota_notified_at=NULL WHERE id=?", quota.resumeAt, task.id);
+        if (status === "quota_paused" && !quota.resumeAt) this.quotaUnknownNotice(task, runId ?? "unknown", at);
+      }
       this.run("UPDATE agora_sessions SET status=?,revision=revision+1 WHERE id=?", status, task.agora_session_id);
       if (["completed", "failed", "stopped", "interrupted"].includes(status)) this.run("UPDATE agora_sessions SET ended_at=? WHERE id=?", at, task.agora_session_id);
       this.run("UPDATE task_generations SET status=?,result_text=COALESCE(?,result_text),settled_at=CASE WHEN ? IN ('completed','failed','stopped','interrupted') THEN ? ELSE settled_at END,started_at=CASE WHEN ?='running' THEN COALESCE(started_at,?) ELSE started_at END WHERE task_id=? AND generation=?", status, resultText ?? null, status, at, status, at, task.id, task.generation);
       if (usage !== undefined) this.run("UPDATE task_generations SET usage=? WHERE task_id=? AND generation=?", JSON.stringify(usage), task.id, task.generation);
-      if (["completed", "failed", "interrupted"].includes(status)) {
+      if (["completed", "failed", "interrupted", "stopped"].includes(status)) {
+        const parent = this.get<TaskRow>("SELECT t.* FROM tasks t JOIN agora_sessions s ON s.id=t.agora_session_id WHERE s.principal_id=?", task.convener_id);
+        const triggerTurn = task.notify !== "silent" || parent?.status === "waiting_children";
         this.notice(task.convener_id, `task:${task.id}:${task.generation}:${status}${status === "interrupted" ? `:${runId ?? "unknown"}` : ""}`, `task:${status}`, {
           taskId: task.id, agoraSessionId: task.agora_session_id, nodeId: `agora:session:${task.agora_session_id}`,
-          generation: task.generation, status, title: task.title, summary: (resultText ?? "").slice(0, 2000), notify: task.notify,
+          generation: task.generation, status, title: task.title, summary: (resultText ?? "").slice(0, 2000), notify: task.notify, triggerTurn,
         });
       }
       this.change("task", task.id);
       return this.task(task.id);
     });
   }
-  takeInbox(recipient: string, visibilityMs = 120_000): NoticeRow[] {
+  usage(taskId: string, tree = false, generation?: number): UsageSummary {
+    const ids = tree ? "WITH RECURSIVE subtree(id) AS (SELECT ? UNION ALL SELECT t.id FROM tasks t JOIN subtree s ON t.parent_task_id=s.id) SELECT id FROM subtree" : "SELECT ?";
+    const totals = this.get<UsageSummary>(`SELECT COUNT(*) AS requests,
+      COALESCE(SUM(input_tokens),0) AS inputTokens, COALESCE(SUM(cache_read_tokens),0) AS cacheReadTokens,
+      COALESCE(SUM(cache_write_tokens),0) AS cacheWriteTokens, COALESCE(SUM(output_tokens),0) AS outputTokens,
+      COALESCE(SUM(reasoning_tokens),0) AS reasoningTokens, 0 AS contextTokens
+      FROM usage_records WHERE task_id IN (${ids}) AND (? IS NULL OR generation=?)`, taskId, generation ?? null, generation ?? null)!;
+    totals.contextTokens = this.get<{ n: number }>(`SELECT COALESCE(SUM(context_tokens),0) AS n FROM usage_records WHERE seq IN (
+      SELECT MAX(seq) FROM usage_records WHERE task_id IN (${ids}) AND context_tokens>0 AND (? IS NULL OR generation=?) GROUP BY task_id
+    )`, taskId, generation ?? null, generation ?? null)!.n;
+    return totals;
+  }
+  takeInbox(recipient: string, visibilityMs = 120_000, silentOnly = false): NoticeRow[] {
     return this.transaction(() => {
-      const rows = this.all<NoticeRow>("SELECT * FROM outbox WHERE recipient_id=? AND acked_at IS NULL AND visible_after<=? ORDER BY created_at,id LIMIT 200", recipient, Date.now());
+      const rows = this.all<NoticeRow>("SELECT * FROM outbox WHERE recipient_id=? AND acked_at IS NULL AND visible_after<=? AND (?=0 OR ((json_extract(payload,\'$.notify\')=\'silent\' OR json_extract(payload,\'$.silent\')=1) AND COALESCE(json_extract(payload,\'$.triggerTurn\'),0)<>1)) ORDER BY created_at,id LIMIT 200", recipient, Date.now(), silentOnly ? 1 : 0);
       for (const row of rows) this.run("UPDATE outbox SET visible_after=?,delivered_at=?,attempts=attempts+1 WHERE id=?", Date.now() + visibilityMs, now(), row.id);
       return rows;
     });
