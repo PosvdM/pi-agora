@@ -17,6 +17,10 @@ test('F1：真实 Git 的 glob 按字面处理，省略路径只读 cwd，安全
   raw(['init']); raw(['config', 'user.name', '测试']); raw(['config', 'user.email', 'test@example.invalid']);
   await writeFile(join(safe, 'file.txt'), 'SAFE-CONTENT\n');
   await writeFile(join(secret, 'key.txt'), 'PROTECTED-CONTENT\n');
+  if (process.platform !== 'win32') {
+    await mkdir(join(repo, 'public\\..\\secret'));
+    await writeFile(join(repo, 'public\\..\\secret', 'key.txt'), 'LITERAL-BACKSLASH-CONTENT\n');
+  }
   raw(['add', '.']); raw(['-c', 'commit.gpgsign=false', 'commit', '-m', 'fixture']);
   const tools = ['read', 'grep', 'find', 'ls', 'agora_task', 'agora_request', 'agora_git'];
   wire.state.transformResponse = (route, value) => route === '/v1/auth/launch' ? { ...value, policy: {
@@ -48,6 +52,11 @@ test('F1：真实 Git 的 glob 按字面处理，省略路径只读 cwd，安全
     assert.match(scoped, /SAFE-CONTENT/); assert.doesNotMatch(scoped, /PROTECTED-CONTENT/);
     assert.match(await run({ ...args, paths: ['public/file.txt'] }), /SAFE-CONTENT/);
     await assert.rejects(run({ ...args, paths: ['secret/key.txt'] }), /受保护/);
+    if (process.platform !== 'win32') {
+      const literal = await run({ ...args, paths: ['public\\..\\secret/key.txt'] });
+      assert.match(literal, /LITERAL-BACKSLASH-CONTENT/);
+      assert.doesNotMatch(literal, /PROTECTED-CONTENT/);
+    }
     assert.doesNotMatch(await gitRead(safe, command, ['-p'], ['HEAD']), /PROTECTED-CONTENT/);
   }
 });
