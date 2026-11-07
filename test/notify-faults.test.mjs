@@ -78,7 +78,7 @@ for (const [point, name] of Object.entries(points)) {
           assert.equal(task.status, 'completed');
           assert.equal(key, `task:${task.id}:${task.generation}:completed`);
           assert.equal(state.runs.length, 1, '必须记录真实子代理进程的运行');
-          if (process.env.CI_REQUIRE_CGROUP === '1') {
+          if (process.env.HOSTKIT_TEST_REQUIRE_CGROUP === '1') {
             assert.ok(JSON.parse(state.runs[0].identity).cgroup, '此 CI 环境要求真实子代理运行在 cgroup 中，不得回退到快照模式');
           }
           assert.ok(evidence.some((entry) => entry.kind === 'extension_message_end' && entry.dedupeKey === key));

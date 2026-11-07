@@ -58,6 +58,7 @@ for (const forgetIdentity of [false, true]) test(`真实 daemon 强杀并重启�
     const before = query(home, 'SELECT * FROM process_runs WHERE agora_session_id=?', task.agoraSessionId)[0];
     assert.equal(before.state, 'ready');
     identity = JSON.parse(before.identity);
+    if (process.env.HOSTKIT_TEST_REQUIRE_CGROUP === '1') assert.ok(identity.cgroup, 'Linux auto CI 必须实际使用 cgroup，不得静默回退');
     assert.equal(await isSameProcess(identity), 'alive');
     if (forgetIdentity) {
       const forgot = message(first, 'identityForgotten');

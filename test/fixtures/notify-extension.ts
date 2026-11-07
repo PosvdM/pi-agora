@@ -60,6 +60,12 @@ export default function notifyFixture(pi) {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async function (url, options) {
     const path = new URL(String(url)).pathname;
+    if (path === '/v1/auth/challenge' && !armed && control().fault === 'daemon-before-ack') {
+      // 故障期间让重连握手等待，恢复由父测试拥有的 daemon 完成。
+      // 否则生产扩展可能先自动启动后台实例，与夹具重启争抢单实例锁。
+      log({ kind: 'reconnect_blocked' });
+      await new Promise(() => {});
+    }
     if (path !== '/v1/inbox/ack') return originalFetch(url, options);
     const body = JSON.parse(options.body);
     const key = ctx.sessionManager.getEntries().find((entry) => entry.id === body.entryId)?.details?.dedupeKey;

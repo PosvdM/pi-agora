@@ -87,7 +87,7 @@ node packages/daemon/dist/main.js --home <本地目录> --pi-path <pi 包目录>
 | `test/protocol-cli.test.mjs` | 协议版本、客户端地址限制、参数校验与 CLI 帮助 |
 | `test/cli.test.mjs` | 独立 CLI 进程自动启动、单实例复用、status / ls / show 和排空关闭 |
 
-通知故障测试在受控子进程里包装生产扩展调用点，强杀进程而不是用异常代替崩溃。公共事件故障点只声称 pi 内部 listener 已运行，不声称 RPC 对端已收到消息。为缩短测试时间，fixture 把 inbox 可见性设为 150 毫秒，并直接使旧租约过期；生产仍使用 120 秒和 90 秒。无对话的静默通知用例预建仅含 header 和 principal 引用的会话，不预写通知；它验证通知首次落盘边界，不声称进程退出后能恢复尚未落盘的 principal 引用。
+通知故障测试在受控子进程里包装生产扩展调用点，强杀进程而不是用异常代替崩溃。ack 前杀 daemon 的夹具将重连握手挂起，直到旧 pi 退出，避免生产扩展自动启动实例与测试控制的重启争抢锁；生产自动重连路径另有测试。公共事件故障点只声称 pi 内部 listener 已运行，不声称 RPC 对端已收到消息。为缩短测试时间，fixture 把 inbox 可见性设为 150 毫秒，并直接使旧租约过期；生产仍使用 120 秒和 90 秒。无对话的静默通知用例预建仅含 header 和 principal 引用的会话，不预写通知；它验证通知首次落盘边界，不声称进程退出后能恢复尚未落盘的 principal 引用。
 
 CI 的 `.github/workflows/ci.yml` 用 Node 24 安装原生依赖和 pi 1.5.0，执行相同的 `npm test`：Windows 和 macOS 各一次；Linux auto / snapshot 各一次。Linux auto 启动用户 systemd 实例并要求 cgroup 可用，避免静默退回快照模式。每项自动测试都在这四个矩阵组合运行，平台差异由 StopReport 断言区分。
 
