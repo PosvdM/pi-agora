@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 
 export function gitEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env = { ...source };
@@ -83,4 +83,29 @@ async function filterOverrides(cwd: string, signal?: AbortSignal, configContexts
 }
 export async function gitExec(cwd: string, args: string[], signal?: AbortSignal, configContexts: string[] = []): Promise<string> {
   return gitRaw(cwd, [...await filterOverrides(cwd, signal, configContexts), ...args], signal);
+}
+/** 流式检查索引的 gitlink；每条记录只保留固定长度的 mode 前缀。 */
+export async function gitHasGitlinks(cwd: string, signal?: AbortSignal): Promise<boolean> {
+  const filters = await filterOverrides(cwd, signal);
+  return new Promise((resolve, reject) => {
+    const child = spawn('git', [...prefix, ...filters, 'ls-files', '--stage', '-z'], {
+      cwd, env: gitEnvironment(), windowsHide: true, signal, stdio: ['ignore', 'pipe', 'ignore'], timeout: 30_000,
+    });
+    let mode = '', found = false, failed = false;
+    child.stdout.on('data', (chunk: Buffer) => {
+      for (const byte of chunk) {
+        if (byte === 0) { mode = ''; continue; }
+        if (mode.length < 7) {
+          mode += String.fromCharCode(byte);
+          if (mode === '160000 ') found = true;
+        }
+      }
+    });
+    child.on('error', () => { failed = true; reject(new Error('git 索引检查失败')); });
+    child.on('close', (code) => {
+      if (failed) return;
+      if (code !== 0 || signal?.aborted) reject(new Error('git 索引检查失败'));
+      else resolve(found);
+    });
+  });
 }
