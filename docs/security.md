@@ -1,6 +1,6 @@
 # 安全模型
 
-> 本文描述完整安全设计。切片 1a 实现主 / 子 Agent 级身份、握手、主会话恢复与租约、launch ticket 和只读权限；不开放用户级操作。用户确认、设备配对及相关接口按后续切片提供。
+> 本文描述完整安全设计。切片 1b 实现 principal、租约、launch ticket、最终就绪、三档路径检查，以及任务树的直接召集关系与权限限制。完整用户级确认、设备配对、审计和资源 ACL 在 1c。1b 的 CLI 可以直接答复提问，尚不能区分用户与同一系统用户下的 Agent。
 
 本文定义 agora daemon 的身份、鉴权、用户确认、设备配对、资源访问控制、审计和剩余风险。进程与存储见 [architecture.md](architecture.md)，平台相关的实现（密钥目录权限、路径规范化）见 [pi-hostkit 设计文档](https://github.com/PosvdM/pi-hostkit/blob/main/docs/design.md)，HTTP 端点见 [integration.md](integration.md)。
 
@@ -15,7 +15,7 @@
 
 | 级别 | 谁 | 凭证来源 | 能做什么 |
 | --- | --- | --- | --- |
-| 子 Agent 级 | `agent:child`（任务、参会者、书记） | launch ticket 换来的连接 token | 只做自己的工作：读写自己会话可见的内容、按档位使用工具、写自己所在的 board、认可（参会者）、用 `agora_request ask` 向召集人提问。不能做主 Agent 级和用户级的任何操作，只能发起提问 |
+| 子 Agent 级 | `agent:child`（任务、参会者、书记） | launch ticket 换来的连接 token | 按档位做自己的工作；任务子代理在限制内派下级，查看、返工、停止及答复自己直接派出的任务；向直接上级提问或逐级转交。不能做主 Agent 级或用户级操作；board 与会议权限随对应切片提供 |
 | 主 Agent 级 | `agent:main`（主代理，用户的代理人）；`host:cli`、`host:pane` | 磁盘凭证（`secret/` 下的文件） | 派任务、召开会议、返工、停止、读取、转发、发起待确认；`agent:main` 还可以裁决自己召集的会议、答复发给自己的提问、在 `agentLimitCap` 以内提高自己会议的上限（见 [meetings.md](meetings.md#参数)） |
 | 用户级 | `user` | 已配对浏览器的设备密钥对 daemon 挑战的签名 | 见下表 |
 
@@ -46,8 +46,9 @@ principal 是 daemon 里的行为主体。所有任务、提问、board 条目�
 | `agent:main` | 一个主代理会话（终端或 pi-pane 托管），绑定 pi 的 sessionId | 主 Agent 级 |
 | `agent:child` | daemon 拉起的协作会话（kind = task / meeting-seat / secretary） | 子 Agent 级 |
 
-- 召集人（convener）是任务或会议的发起方，只能是 `agent:main` 或 `user`。`host:cli` 和 `host:pane` 创建任务和会议时召集人记为 `user`，同时记录实际发起的 principal；创建本身是主 Agent 级操作，之后对这些资源做的用户级决定仍需确认。
-- 协作会话不能再派任务或召开会议（MVP）。
+- 任务的召集人（convener）是直接派出该任务的 `agent:main`、任务 `agent:child` 或 `user`。任务子代理可以成为自己直接下级的召集人；更高层祖先不因任务树关系成为直接召集人。
+- 会议的召集人只能是 `agent:main` 或 `user`。`host:cli` 和 `host:pane` 创建任务和会议时召集人记为 `user`，同时记录实际发起的 principal；创建本身是主 Agent 级操作，之后对这些资源做的用户级决定仍需确认。
+- 任务子代理可以在配置和父子树限制内派下级，不得升级档位或放宽层数 / 下级数；不能召开会议。所有子任务管理在 daemon 按 token 的 principal 和任务树核对，不按 cwd 授权。
 
 ## 磁盘凭证与连接 token
 
@@ -93,7 +94,28 @@ daemon 拉起协作会话时生成一次性 launch ticket，经环境变量 `AGO
 - implement 可能按配置加载白名单扩展和 `builtin:mcp`。agora 扩展排在 `-e` 的第一位，在工厂函数里同步读取并删除该变量。P0 实测证明：首位扩展删除该变量后，后续扩展工厂、MCP 服务器进程和 `bash` 子进程均无法读取 ticket；即使 `builtin:mcp` 排在前面，MCP 进程也是在变量删除后才启动。若排在前面的其他扩展读到 ticket 并抢先兑换，pi 会以退出码 1 退出，被宿主捕获为启动故障而不予重试。此外，为了防止未列入白名单的 MCP 服务器产生后台副作用，agora 会为每个子代理单独生成只包含白名单服务器的 MCP 配置文件。
 - 读到 ticket 的代码最多抢先兑换它：ticket 只能兑换一次，被抢先后 agora 扩展兑换失败，就绪检查不通过，run 被结束（见 [architecture.md](architecture.md#受管扩展的就绪检查)）；抢到的 token 只有该协作会话自己的权限，且随进程退出作废。兑换之后还要完成受管扩展的就绪检查，见 [architecture.md](architecture.md#受管扩展的就绪检查)。
 
+## Skill 白名单
+
+`spawn.skills` 只接受名字，不接受路径。驱动从用户的 `~/.pi/agent/skills` 和用户 `~/.pi/agent/settings.json` 的 `skills` 路径解析 skill；`PI_CODING_AGENT_DIR` 可替换用户 agent 目录。daemon 的 `skillDirectories` 配置为显式目录时，仅在这些目录内查找。项目目录的 `.pi/skills` 和项目 settings 不参与解析。解析失败或名字有歧义时拒绝 spawn，不回退到项目 skill。
+
+未指定 `skills` 时使用 `defaultSkills` 对应档位的默认值，未配置时为空；显式名单覆盖默认值。下级名单只能取上级名单的子集，不能通过默认值扩大。配置示例：
+
+```json
+{
+  "defaultSkills": { "explore": [], "review": [], "implement": ["project-docs"] },
+  "quotaRecovery": "notify"
+}
+```
+
+子进程使用 `-ns` 禁用 skill 自动加载，仅用 `--skill <真实路径>` 加载选中的 skill。任务书包含子代理标记，但不禁用全局或项目 `AGENTS.md`。
+
+名单内 skill 的真实目录作为独立的只读根传给受管扩展：explore/review 可以用 `read`、`grep`、`find`、`ls` 读取该目录，名单外目录没有这项额外授权；所有档位的 `edit`、`write` 都不能修改名单内的 skill 目录。路径规范化、符号链接和受保护目录规则仍然适用，skill 名单不覆盖凭证目录保护。
+
+implement 档位可以用 shell 运行 skill 附带的脚本。shell 不做路径隔离，也不能靠 skill 只读根约束脚本的副作用；名单用于限制自动加载和文件工具授权，不构成操作系统沙箱。若名单外 skill 本身位于原本允许的工作目录，文件工具仍按已有的允许根规则处理；该 skill 不会自动加载。
+
 ## 用户确认
+
+本节是 1c 的设计目标。1b 只提供转交和 host:cli 直接答复通路，答复标注 confirmedBy: none；host:pane 不接受此直接执行路径。任何能取得 host.key 的同用户进程都能通过 CLI 身份答复，不能将 1b 声称为已实现用户防冒充。预算封顶、待确认、设备和安全审计尚未开放。
 
 用户级操作必须由已配对浏览器对 daemon 下发的一次性挑战签名，daemon 验签后才执行。pi-pane 服务端只转发，无法伪造签名；pi-pane 的 HTTP 接口没有任何 Agent 可用的凭证（pi-pane 的鉴权见其 `docs/architecture.md`）。
 
@@ -228,11 +250,12 @@ daemon 启动时、以及在线检测到状态变化时，检查以下情况，�
 
 | 操作 | host:* | 召集人（agent:main） | 其他 agent:main | agent:child |
 | --- | --- | --- | --- | --- |
-| spawn | ✔（召集人记为 user） | — | ✔（成为新任务的召集人） | ✘ |
-| list `scope: "mine"` | ✔（召集人为 user 的任务） | ✔ | ✔ | ✘ |
+| spawn | ✔（召集人记为 user） | — | ✔（成为新任务的召集人） | ✔，层数、下级数、档位不得放宽 |
+| list `scope: "mine"` | ✔（召集人为 user 的任务） | ✔ | ✔ | 仅直接下级 |
 | list `scope: "all"` | ✔ 全部 | 只返回摘要 | 只返回摘要 | ✘ |
-| 读详情、结果 | ✔ | ✔ | ✘ | 只能读自己所属任务的状态 |
-| steer、stop、cleanup | ✔ | ✔ | ✘ | ✘ |
+| 读详情、结果 | ✔ | ✔，包含自己任务树 | ✘ | 直接下级；另可读自己所属任务的状态 |
+| steer、cleanup | ✔ | 仅直接下级 | ✘ | 仅直接下级 |
+| stop | ✔，整个目标子树 | ✔，整个目标子树 | ✘ | 仅直接下级及随其停止的整棵子树 |
 | recover（召集人为 agent:main 且可达） | ✘ | ✔ | ✘ | ✘ |
 | recover（召集人为 user，或已转给用户） | 确认 | ✘（显示“已转给用户”） | ✘ | ✘ |
 | 接管（召集人改为 user） | 确认 | ✘ | ✘ | ✘ |
@@ -243,11 +266,11 @@ daemon 启动时、以及在线检测到状态变化时，检查以下情况，�
 
 | 操作 | host:* | 召集人 | 提问者（agent:child） |
 | --- | --- | --- | --- |
-| ask | ✘ | ✘ | ✔ |
+| ask | ✘ | ✔，主代理发给用户 | ✔，发给直接上级 |
 | 列表、读取 | ✔ 全部 | 发给自己的 | 自己提的 |
 | answer（`open`，召集人为 agent:main） | 确认 | ✔ | ✘ |
 | answer、cancel（`escalated`，或召集人为 user） | 确认 | ✘ | ✘ |
-| escalate | ✘ | ✔ | ✘ |
+| escalate | ✘ | ✔，主代理转给用户 | 作为直接召集人时逐级向上转交 |
 | cancel（`open`，召集人为 agent:main） | ✘ | ✔ | ✔（自己提的） |
 
 ### board
@@ -317,10 +340,77 @@ daemon 启动时、以及在线检测到状态变化时，检查以下情况，�
 ## 其他降低冒充成本的措施
 
 - **受保护目录**：所有档位的文件类工具（`read`、`grep`、`find`、`ls`、`edit`、`write`）的路径校验都拒绝 `AGORA_HOME/secret` 及其下的路径，以及配置项 `protectedPaths` 列出的目录。`bash` 和 `powershell` 只有工具级限制（是否提供），不检查命令内容，也不做路径隔离。规则见 [architecture.md](architecture.md#路径校验)。
+- **Git 对象与执行入口**：`agora_git` 和 worktree 管理共用下文的 [Git 安全调用层](#git-安全调用层)。提交类型、路径、配置、隐式下载和子进程继承必须同时受限；只禁用 diff 或 filter 不能覆盖这些边界。路径规范化、字面 pathspec 与 cwd 限定见 [architecture.md](architecture.md#agora_git-的加固)。
 - **不给路径提示**：daemon 拉起子进程时从环境变量里去掉 `AGORA_HOME`（以及 `PI_PANE_HOME`），只传 `AGORA_URL` 和 `AGORA_LAUNCH_TICKET`；任务书、工具结果和错误信息里不出现密钥目录的路径。
 - **网络边界**：daemon 只监听 `127.0.0.1`；浏览器不直接连 daemon，daemon 拒绝带 `Origin` 头的请求。
 
 这些措施只提高门槛，`bash` 仍然可以读 `secret/` 下的文件，读到的也只是主 Agent 级凭证。
+
+## Git 安全调用层
+
+`packages/protocol/src/git.ts` 是 Git 的唯一进程入口。`gitRead` 只接受 `status`、`diff`、`log`、`show` 及固定的参数白名单；`gitExec` 供 daemon 内部使用，参数不能来自工具调用方。worktree 管理使用 `rev-parse`、`worktree add --no-checkout`、`reset --hard`、`ls-files --stage -z`、`worktree remove`；配置探测使用 `config --null`。流式索引检查与缓冲执行器共用安全前缀、环境和 filter 探测，逐条只保留 7 字节的 mode，不受查询输出的 1 MiB 限制。
+
+安全层先从任务 cwd 的真实路径向上查找最近的 `.git` 文件或目录，独立确定仓库根，再将加固 `rev-parse --show-toplevel` 的真实路径与其比较（Windows 不区分大小写）。结果不一致时返回 `EAGORA_GIT_WORKTREE_MISMATCH`，不执行配置探测、查询、索引检查或 worktree 操作；无法找到布局时返回 `EAGORA_GIT_WORKTREE_LAYOUT`。gitfile 和 `commondir` 的 linked worktree 可以使用；`core.worktree` 包括 `extensions.worktreeConfig` 下的 `config.worktree` 也必须指向同一仓库根。清理同时核验主仓库与目标 worktree，不将主仓库根强制传播给内部子 Git。
+
+每次启动 Git 都移除继承的所有大小写 `GIT_*` 变量，以及 `SSH_ASKPASS`、`EDITOR`、`VISUAL`，禁止系统和用户配置，使用非交互、无 pager、无可选锁的环境。仓库和条件 include 仍会读取；不能依赖环境清理来覆盖仓库配置。固定 `-c` 通过 Git 的命令作用域传播到内部子 Git；Windows 的 `core.unsetenvvars` 固定为空，禁止它删除这些安全变量。
+
+网络防线同时使用 `protocol.allow=never` 和空 `GIT_ALLOW_PROTOCOL`。前者只是默认值，**不能覆盖仓库显式的 `protocol.<name>.allow=always`**；后者是优先于配置的空白名单，连本地 `file` 传输也不允许。`GIT_NO_LAZY_FETCH=1` 是支持该变量版本的附加防线，不是 Git 2.34 的前提。缺失对象直接失败，不尝试补齐。真实回归单独移除 `GIT_NO_LAZY_FETCH`，验证空协议白名单仍能阻止 SSH/helper；Git 2.34.1 的 [transport.c](https://github.com/git/git/blob/v2.34.1/transport.c) 与 [promisor-remote.c](https://github.com/git/git/blob/v2.34.1/promisor-remote.c) 具有相同的协议检查和子 fetch 边界，因此不需要按版本拒绝整个 partial-clone 仓库。
+
+### 入口清单
+
+以下 33 项按 [git-config](https://git-scm.com/docs/git-config)、[Git 环境变量](https://git-scm.com/docs/git#_environment_variables)、[git-log](https://git-scm.com/docs/git-log)、[gitdiffcore](https://git-scm.com/docs/gitdiffcore) 和实际调用范围分类。“不可达”表示这些选项或子命令没有暴露给 `agora_git`，不能据此扩展 `gitExec` 的调用范围。测试缩写对应下方文件；同一行的同类配置共享调用边界，不表示逐个运行过所有可选 GUI、邮件或签名工具。
+
+| 编号 | 入口 | 在 agora 中的触发条件与关闭方式 | 证明 |
+| --- | --- | --- | --- |
+| 01 | `core.sshCommand`、`GIT_SSH`、`GIT_SSH_COMMAND`、`GIT_SSH_VARIANT` | 缺失对象可引发 SSH。禁止全部传输；固定 `core.sshCommand=false`，清除继承变量。 | S 的 promisor SSH 正负控；E 的两个 SSH 环境正负控。 |
+| 02 | `core.gitProxy`、`GIT_PROXY_COMMAND` | `git://` 传输可调用代理。禁止全部传输，固定 `core.gitProxy=false`，清除变量。 | E 的 proxy 正负控。 |
+| 03 | `credential.helper`、`credential.<url>.*`、`core.askPass`、`GIT_ASKPASS`、`SSH_ASKPASS` | 传输认证可启动程序。禁止传输，重置 helper 列表和 askpass，关闭交互和终端提示，清除环境注入。 | E 的 credential、core/env askpass 正负控。 |
+| 04 | remote helper、`<transport>::`、`remote.*.vcs` | lazy fetch 可启动 `git-remote-*`。空协议白名单优先于所有 `protocol.*.allow`。 | S 的 helper lazy-fetch；E 的 helper 正负控。 |
+| 05 | `ext::`、`remote.*.uploadpack/receivepack` | ext 或远端程序由传输进入。禁止全部协议，也不提供 fetch/push。 | E 的 ext 正负控和 file 传输拒绝。 |
+| 06 | `core.pager`、`pager.*`、`GIT_PAGER`、`PAGER` | 查询输出到终端可启动 pager。固定 `--no-pager` 和环境 pager，不由仓库选择。 | A 的 argv；E 的真实 PTY 正负控，Windows 明确跳过 PTY。 |
+| 07 | `core.editor`、`sequence.editor`、`GIT_EDITOR`、`GIT_SEQUENCE_EDITOR`、`EDITOR`、`VISUAL` | commit/rebase 才需要编辑器，查询和 worktree 操作不需要。固定配置为 `false`，清除环境；拒绝相应子命令。 | E 的 commit/rebase 编辑器正控、读取负控及命令拒绝。 |
+| 08 | `gpg.program`、`gpg.*.program`、`gpg.ssh.defaultKeyCommand` | 签名验证或生成可能执行程序。log/show 固定 `--no-show-signature`，`log.showSignature=false`；不提供签名命令。 | A 的带签名 commit 验证器正负控；E 的 SSH 默认签名命令正负控。 |
+| 09 | `diff.external`、`diff.*.command`、`GIT_EXTERNAL_DIFF` | diff 驱动可执行命令。查询固定 `--no-ext-diff` 并清理变量。 | A 的 external 正负控；E 的 external 环境和 driver command 正负控。 |
+| 10 | `diff.*.textconv` | log/show/diff 可对 blob 启动转换器。固定 `--no-textconv`。 | A 的真实 textconv 正负控。 |
+| 11 | `filter.*.clean/smudge/process/required` | status/diff/reset/检出及 remove 的内部 status 都可能触发。每次探测有效 driver，覆盖三个命令为空及 required=false。 | A 的 clean/smudge/process；C 的内部 status 正负控。 |
+| 12 | `core.fsmonitor` | status、diff、索引刷新可启动 hook 或 fsmonitor。固定为空。 | A 的 fsmonitor；C 的条件配置正负控。 |
+| 13 | `core.hooksPath` 与 hooks | worktree add/reset 及潜在维护可能进入 hooks。固定 hooksPath 为无 hooks 的 `/dev/null`。 | A 的 post-checkout 正负控。 |
+| 14 | `include.path`、`includeIf.*.path` | 配置读取会加载 include，但不将配置值返回给 Agent。固定覆盖始终后置；filter 合并 cwd 和目标上下文，新 worktree 建立后先探测再检出。 | A/C 的 onbranch、gitdir 条件 filter、fsmonitor、hooks 正负控。 |
+| 15 | `uploadpack.packObjectsHook` | 仅 upload-pack 的打包阶段进入，当前命令不可达，全部传输也被拒绝。 | E 的真实 upload-pack hook 正控、子命令拒绝与查询负控。 |
+| 16 | `merge.*.driver`、`merge.*.recursive` | merge 操作才调用；不提供 merge、checkout -m 或 reset --merge，只用 reset --hard。 | E 的冲突 merge driver 正控与 status/diff 负控。 |
+| 17 | `alias.*`、`help.autoCorrect` | 固定内建子命令不被 alias 替换；未知子命令在启动 Git 前拒绝，不能进入纠错或 shell alias。 | E 的 shell alias 正控、内建 log 不被替换与拒绝负控。 |
+| 18 | `core.alternateRefsCommand` | `log --alternate-refs` 等才进入，选项不在白名单。普通对象 alternate 的存在不授权查询额外 refs。 | E 的 alternate command 正控、选项拒绝及 log 负控。 |
+| 19 | `gc.recentObjectsHook`、`gc.auto`、`maintenance.*` | gc/repack 可调用对象保留 hook；当前命令不请求这些操作，并固定 gc.auto=0、maintenance.auto=false。 | E 的 cruft/recent hook 正控、子命令拒绝和读取负控；Git <2.42 明确跳过尚不存在的 recentObjectsHook 正控。 |
+| 20 | `trailer.*.command/cmd` | interpret-trailers 插入 trailer 时可执行，查询的受限 format 不提供执行入口。 | E 的 trailer command 正控、子命令拒绝及读取负控。 |
+| 21 | `difftool.*.cmd/path`、`mergetool.*.cmd/path`、`interactive.diffFilter` | 属于 difftool、mergetool、交互 add，均不可达；普通 diff 不调用这些程序。 | E 的 difftool 程序正控、diff 负控及辅助命令拒绝。 |
+| 22 | `browser.*.cmd/path`、`web.browser`、`help.browser`、`man.*.cmd/path`、`man.viewer`、`guitool.*.cmd`、`gui.*`、`instaweb.*` | help/web--browse/gui/instaweb 不可达，错误不自动打开帮助。 | E 的 browser 程序正控、查询负控及辅助命令拒绝；不依赖 GUI 的实际安装。 |
+| 23 | `sendemail.*Cmd`、`sendemail.smtpServer`、`imap.tunnel`、`tar.<format>.command`、`add.interactive.useBuiltin` | 邮件、IMAP、archive 与交互 add 的外部程序入口均不可达，不属于查询/检出/清理调用。 | E 的 archive、IMAP tunnel、sendmail 程序正控及查询拒绝；可选 send-email 未安装时说明原因跳过正控。 |
+| 24 | `extensions.partialClone`、`remote.*.promisor`、`remote.*.partialclonefilter` | 任意对象读取及 reset 都可能 lazy fetch 子 Git。空协议白名单为跨版本主防线；同时设置 GIT_NO_LAZY_FETCH。 | S 的缺 blob 查询、引用解引用、手动及受管 worktree reset 正负控，包含不使用 NO_LAZY_FETCH 的检查。 |
+| 25 | 子模块递归、`submodule.*.update`、`fetch.recurseSubmodules`、`protocol.*.allow` | 固定 submodule.recurse=false、diff.submodule=short、diff.ignoreSubmodules=all、status.submoduleSummary=false；status 忽略子模块。含 gitlink 的 worktree 包括 discard 都拒绝自动清理，避免内部子 Git 进入未经探测的子仓库。 | C 的子模块 clean 正控、查询/reset 零执行与清理拒绝；I 的流式 gitlink 检查。 |
+| 26 | `core.notesRef`、`notes.displayRef`、`GIT_NOTES_*`、`format.pretty` | notes blob 不受 pathspec 限制。log/show 固定 --no-notes，清理环境；默认 format.pretty 固定 medium，避免 `%N` 另行要求 notes。 | S 的两个 ref 配置和自定义默认格式正负控；P 经工具权限层读取 public 路径，note 指向实际 protectedPaths 文件的 blob。 |
+| 27 | `show <blob>`、tree、指向非提交对象的 tag、`rev:path` | 对象直出不受 pathspec 保护。每个修订/范围端点先解析为 commit OID，再用固定 OID 查询；语法禁止冒号和任意选项。 | P 的 blob/tree/tag/范围正负控；A 的参数拒绝。 |
+| 28 | `refs/replace`、`GIT_REPLACE_REF_BASE` | 对象替换会改变类型/历史及提交内容。固定 GIT_NO_REPLACE_OBJECTS=1、core.useReplaceRefs=false，清除替换 ref 基址。 | S 的 replace commit 正负控。 |
+| 29 | grafts、shallow、`GIT_GRAFT_FILE`、`GIT_SHALLOW_FILE` | grafts 会注入祖先，固定 graft 文件为空设备。仓库 shallow 只截断历史，不能增加 pathspec 外 patch；清理自定义 shallow 环境。 | S 的 graft 祖先内容正负控及 shallow 路径边界检查。 |
+| 30 | `mailmap.blob`、`mailmap.file`、`.mailmap`、`log.mailmap` | 作者映射可以输出任意 blob/file 中的姓名。清空两个配置，固定 log.mailmap=false，log/show 再固定 --no-mailmap。 | S 的受保护映射 blob/file 正负控。 |
+| 31 | `log.follow`、rename/copy 检测、魔术 pathspec | follow 会越过重命名前的路径。固定 log.follow=false、diff.renames=false、status.renames=false，不接受 --follow/-M/-C；使用 --literal-pathspecs 和 -- 分隔。 | S 的重命名正负控；P 的 glob/cwd 正负控；A 的选项及 pathspec 拒绝。 |
+| 32 | `GIT_EXEC_PATH`、`GIT_CONFIG_*`、`GIT_DIR/WORK_TREE/INDEX_FILE/OBJECT_DIRECTORY/ALTERNATE_OBJECT_DIRECTORIES`、trace 环境及 Windows `core.unsetenvvars` | 继承变量可换 helper、配置、仓库或输出目标，全部 GIT_* 先清理再固定安全值。core.unsetenvvars 固定为空，避免内部子 Git 丢掉空协议白名单或命令配置。 | A 的环境/argv 断言；S 的 Windows 删除限制变量正控和固定配置负控。 |
+| 33 | 仓库 `core.worktree`、`extensions.worktreeConfig` 与 `config.worktree` | 配置可将通过路径权限检查的相对路径重定向到另一工作树。每个配置上下文先由文件系统确定最近仓库根，再核验 Git 的真实工作树根，不一致时拒绝。查询、配置探测、流式索引、创建、检出和清理共用核验，清理也核验目标。 | L 的普通 Git 受保护标记正控、真实 agora_git 拒绝负控、子目录与 linked worktree 正常查询，以及 config.worktree 的检出/清理拒绝和合法非 force 清理。 |
+
+测试文件与运行约束：
+
+- **A**：[git-1b.test.mjs](../test/git-1b.test.mjs)，覆盖安全 argv、环境、转换器、签名、hooks 和条件配置。
+- **C**：[git-contexts-review.test.mjs](../test/git-contexts-review.test.mjs)，覆盖清理上下文和子模块。
+- **P**：[git-paths-review.test.mjs](../test/git-paths-review.test.mjs)，经真实 `agora_git` 权限路径检查验证对象与 pathspec。
+- **S**：[git-security-review.test.mjs](../test/git-security-review.test.mjs)，覆盖 notes、replace、grafts、mailmap、rename 和 lazy fetch。
+- **E**：[git-execution-review.test.mjs](../test/git-execution-review.test.mjs)，覆盖传输、凭据、环境、不可达命令入口和 TTY pager。
+- **I**：[git-index-review.test.mjs](../test/git-index-review.test.mjs)，覆盖超过 1 MiB 的实际干净索引清理及 gitlink 拒绝。
+- **L**：[git-worktree-layout-review.test.mjs](../test/git-worktree-layout-review.test.mjs)，覆盖仓库布局重定向和合法工作树上下文。
+
+CI 的 `git-minimum` job 在 Ubuntu 22.04 容器中安装发行版 Git 2.34.1 与 Node 24，运行上述全部 Git 安全测试（含布局正负控）；三平台完整测试同时覆盖 runner 自带 Git。最低版本不支持的可选执行入口按功能说明跳过，布局核验和传输防线不跳过。
+
+正控使用普通 Git 和短命探针记录 PID，确认执行后检查进程退出；负控要求探针文件无新增记录。受保护对象正控必须看到标记内容，负控不得包含标记。测试输出记录 Git 版本；仅平台或功能不适用的用例带原因跳过，不能因正控未执行而跳过安全断言。辅助命令族的边界由代表性真实执行正控及同族命令拒绝共同证明，不依赖机器安装 GUI、邮件或签名软件。
+
+含 gitlink 的 worktree 须手动验收和清理。安全层不是操作系统沙箱，也不跟踪 blob 内容的来源：允许路径本身已有的敏感内容仍属于该路径的查询结果；不能用这些措施保证同用户的 implement shell 或恶意 Git 元数据完全隔离。
 
 ## 剩余风险
 

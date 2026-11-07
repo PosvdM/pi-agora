@@ -10,6 +10,31 @@ permissions:
   contents: read
 
 jobs:
+  git-minimum:
+    name: Git 2.34.1 安全验收
+    runs-on: ubuntu-latest
+    container:
+      image: ubuntu:22.04
+      # PID 1 需要回收 Git 正控探针的孤儿进程，避免退出进程保留为 zombie。
+      options: --init
+    timeout-minutes: 20
+    steps:
+      - name: 安装 Git 2.34.1 和测试工具
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends git ca-certificates python3 openssh-client build-essential
+          git --version
+          git --version | grep -E '^git version 2\.34\.1$'
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Git 安全测试（含工作树布局正负控）
+        run: node --test --test-concurrency=1 test/git-1b.test.mjs test/git-contexts-review.test.mjs test/git-execution-review.test.mjs test/git-index-review.test.mjs test/git-paths-review.test.mjs test/git-security-review.test.mjs test/git-worktree-layout-review.test.mjs
+
   test:
     name: test (${{ matrix.os }}, ${{ matrix.containment }})
     strategy:
@@ -25,6 +50,7 @@ jobs:
     timeout-minutes: 25
     env:
       HOSTKIT_TEST_CONTAINMENT: ${{ matrix.containment }}
+      AGORA_DRIVER_DIAGNOSTICS_DIR: test-artifacts/driver
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -47,6 +73,11 @@ jobs:
           echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus" >> "$GITHUB_ENV"
           if [ "${{ matrix.containment }}" = auto ]; then echo "HOSTKIT_TEST_REQUIRE_CGROUP=1" >> "$GITHUB_ENV"; fi
       - run: npm test
+      - name: macOS 忽略 abort 的 provider 真实停止重复二十五次
+        if: runner.os == 'macOS'
+        env:
+          AGORA_STOP_PROVIDER_REPEATS: '25'
+        run: node --test --test-name-pattern "忽略 abort 的 provider" test/driver.test.mjs
       - name: Windows 进程退出可见性重复十次
         if: runner.os == 'Windows'
         shell: pwsh
@@ -56,3 +87,10 @@ jobs:
             node --test --test-name-pattern "shell 与脱离进程组" test/driver.test.mjs
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
+      - name: 保存 driver 停止诊断
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: driver-diagnostics-${{ matrix.os }}-${{ matrix.containment }}
+          path: test-artifacts/driver/
+          if-no-files-found: warn

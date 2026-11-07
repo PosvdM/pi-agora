@@ -1,6 +1,6 @@
 # 集成协议
 
-> 本文描述完整集成设计。切片 1a 的实际端点和测试入口见 [development.md](development.md)，pane、archive 和其他领域接口按后续切片提供。
+> 本文描述完整集成设计。切片 1b 的实际任务、提问、最终就绪和 CLI 通路见 [development.md](development.md)。用户级确认为 1c 目标，存档 / 会话视图为 1d，pane 和其他领域接口按后续切片提供；下表列出的设计端点不表示全部已开放。
 
 本文定义 pi-agora 自己对外的接口，以及 agora 如何接入 pi-pane：
 
@@ -86,6 +86,20 @@ pi-hostkit        ◄── daemon、extension（pi-pane 服务端也依赖它�
   | 426 | `protocol_unsupported` |
   | 503 | `draining`（daemon 正在排空，拒绝新任务） |
 
+### 1b 通路与边界
+
+1b 的任务接口支持 list、status、result、steer、stop、cleanup、recover；recover 的 mode 为 resume / reopen / replace / abandon。任务返回 parentTaskId、depth、maxDepth 和 maxChildren，waiting_children 映射为 waiting。默认深度为两层，maxDepth 从新任务自身起计，拒绝使用 depth_exceeded、depth_limit_exceeded、children_exceeded、child_limit_exceeded、profile_upgrade 等错误码。
+
+cleanup 在有未提交改动且未指定 `discard` 时返回 `409 worktree_dirty`。含 gitlink（子模块）的 worktree 返回 `409 worktree_submodules`，包括指定 `discard` 的请求；需调用方手动验收和清理，不能以 `discard` 绕过 Git 子仓库配置的安全边界。
+
+提问返回 targetId（当前接收方）、route（逐级转交链）和 revision；答复始终送给 askerId。主代理也能 ask，直接面向 user。1b 的 host:cli 可直接答复任意提问，answeredVia.confirmedBy 为 none；不存在设备挑战或用户级签名，不发送 Agora-Act-As 请求头。完整用户级协议按下节目标在 1c 接入。
+
+子会话 inbox 只向最终就绪、未停止的 run 返回通知。run 未持有推理名额时只返回静默通知；需要推理的通知必须等 run 获得名额后领取。父任务处于 waiting_children 时，下级终态通知不受 notify: silent 限制：daemon 为其排队或重新拉起，并在通知 payload 中设置 triggerTurn: true，扩展据此真正启动回合。静默投递不领取名额，启动恢复扫描也不因纯静默 outbox 唤醒任务。
+
+### 主会话重连
+
+主会话在 daemon 重启后重新发现、握手并认领原 principal；换 client 的窗口内，工具请求可能返回 401 或连接错误，不会自动跨 client 重发；如需工具请求无感跨过重连，须另行确定身份、幂等和总期限策略，属于后续范围。
+
 ### 幂等
 
 `Idempotency-Key` 标识的是**一次操作**，不是一份响应快照：
@@ -96,6 +110,14 @@ pi-hostkit        ◄── daemon、extension（pi-pane 服务端也依赖它�
 - **参数不同**：同一 key、请求指纹不同，返回 `409 idempotency_mismatch`，不执行，也不返回原操作的结果。
 - **后台完成**：用户级操作在待确认被签名、执行之后，daemon 把操作记录更新为最终结果；之后用同一 key 查询得到的就是这个结果。待确认被拒绝或过期时，操作记录的最终结果为失败（`confirmation_cancelled`、`confirmation_expired`）。
 - **pane 插件侧**：把 `ActionInvocation.idempotencyKey` 原样作为该头的值，每次 `invoke` 都把请求转给 daemon，不在插件里缓存中间结果；按 daemon 返回的当前状态映射 `ActionResult`（见“动作”）。`needsInput` 之后的再次提交使用 pi-pane 生成的 `<原 key>/<n>`，是另一次操作。与 pane 协议的约定一致：同一 key 只执行一次，还在处理时返回 `pending`，结束后返回最终结果。
+
+### 任务额度与用量字段
+
+`POST /v1/tasks` 接受可选的 `skills: string[]`，省略时按权限档位配置默认值，未配置时为空；显式数组覆盖默认值，下级只能取上级名单的子集。错误为 `400 skill_not_found`（未找到、歧义或不可访问）和 `403 skill_upgrade`（越出上级名单）。名字格式遵守 pi skill 规范：至多 64 字符，小写字母、数字和单个连接号，不以连接号开头或结尾。
+
+`GET /v1/tasks/:id` 与 `/result` 返回 `usage`（任务累计）和 `treeUsage`（含全部后代），result 还返回 `generationUsage`；各 token 字段和上下文大小语义见 [tasks.md](tasks.md#用量与上下文)。result.usage 保留旧会话统计字段。额度暂停状态为 `quota_paused`，`quotaResumeAt` 是可空的 ISO 8601 UTC 时间。
+
+额度暂停通过现有 `POST /v1/tasks/:id/recover`、`{ "mode": "resume" }` 恢复，不增加代数；重置时间未到返回 `409 quota_not_reset`，旧运行未确认退出返回 `409 stop_incomplete`。通知 `task:quota_ready` 的 payload.tasks 带暂停任务的 taskId、generation、resumeAt 和 contextTokens；没有可识别时间时发送 `task:quota_unknown`。不增加专用恢复端点，父任务恢复不隐式恢复下级。CLI 和 pane 的专用用量展示阶段见 [roadmap.md](roadmap.md)。
 
 ### 端点
 
@@ -108,6 +130,7 @@ pi-hostkit        ◄── daemon、extension（pi-pane 服务端也依赖它�
 | | `POST /v1/auth/launch` | 协作会话用 launch ticket 换 token | 协作会话里的扩展 |
 | | `POST /v1/auth/refresh` | 续期 token | 全部 |
 | 运行 | `POST /v1/runs/:runId/ready` | 协作会话报告就绪（活动工具、模型等），见 [architecture.md](architecture.md#受管扩展的就绪检查) | 协作会话里的扩展 |
+| | `GET /v1/runs/:runId/authorized` | 查询 RPC 二次核对后的最终授权；子会话工具执行必须等待 ready | 协作会话扩展 |
 | | `POST /v1/runs/:runId/fatal` | 权限检查发生内部故障时报告 fatal，停止自己的 run；不接受控制其他 run | 协作会话里的扩展 |
 | 主会话 | `POST /v1/principals/register`、`/reclaim` | 注册、恢复后认领 principal | 主会话扩展 |
 | | `POST /v1/lease/renew`、`/release` | 每 30 秒续控制租约及连接 token；关闭或切换主会话时释放租约 | 主会话扩展 |
@@ -122,12 +145,12 @@ pi-hostkit        ◄── daemon、extension（pi-pane 服务端也依赖它�
 | 安全警告 | `GET /v1/security/alerts` | 当前的安全警告（`alertId`、类型、`revision`、内容、状态） | CLI、pane 插件 |
 | | `POST /v1/security/alerts/:alertId/acknowledge` | 带 `revision` 发起确认知悉，返回 `202` 和待确认；签名走 `/v1/confirmations/:id/sign`。只适用于 `devices-reset` | pane 插件 |
 | 配置 | `GET /v1/settings`、`PUT /v1/settings/:key` | 如 `userConfirmation`、`meetingLimitDefaults`、`agentLimitCap`；关闭保护、调高上限配置是用户级，开启保护、调低随时可以 | CLI |
-| 任务 | `POST /v1/tasks` | spawn | 主会话扩展、CLI、pane 插件 |
+| 任务 | `POST /v1/tasks` | spawn；maxDepth / maxChildren 逐层收紧，按 principal 与任务树授权 | 主 / 子会话扩展、CLI、pane 插件 |
 | | `GET /v1/tasks`、`GET /v1/tasks/:id`、`GET /v1/tasks/:id/result?generation=` | 列表、当前详情、指定代结果 | 同上 |
 | | `POST /v1/tasks/:id/steer`、`/stop`、`/cleanup`、`/recover`、`/takeover` | 返工、停止、清理 worktree、中断后的处理、接管 | 同上 |
 | 提问 | `POST /v1/requests` | 提问 | 协作会话扩展 |
-| | `GET /v1/requests` | 按状态和接收方查询；`?for=me` | 全部 |
-| | `POST /v1/requests/:id/answer`、`/escalate`、`/cancel` | 答复、转给用户、取消 | 召集人、`host:*` |
+| | `GET /v1/requests`、`GET /v1/requests/:id` | 当前身份可见提问，支持重复 state 参数及 limit / cursor 分页 | 全部 |
+| | `POST /v1/requests/:id/answer`、`/escalate`、`/cancel` | 答复、逐级转交、取消；保留原 requestId，答案回原提问者 | 直接接收方、提问者取消、host:cli 答复 |
 | board | `GET /v1/boards/:id`、`GET /v1/boards/:id/entries?afterSeq=` | 元数据、公开条目 | 成员、`host:*` |
 | | `POST /v1/boards/:id/entries` | 发条目（`sealed` 仅会议密封阶段） | 成员、召集人、`host:*`（作者为 user，用户级） |
 | | `POST /v1/boards` | 新建独立 board（非会议） | 主会话扩展、`host:*` |
@@ -268,7 +291,7 @@ agora:root:user-tasks            〔用户任务〕   用户通过 CLI 或 pi-pa
 
 | 节点 | `kind` | `parentId` | `title` | `badge` |
 | --- | --- | --- | --- | --- |
-| 任务会话 | session | `pane:session:<召集人的 piSessionId>`；召集人是 user 时为 `agora:root:user-tasks` | 任务标题 | `子代理` |
+| 任务会话 | session | 直接召集人的节点：主会话为 `pane:session:<piSessionId>`，子任务为 `agora:session:<父任务当前会话 ID>`；user 为 `agora:root:user-tasks` | 任务标题 | `子代理` |
 | 会议 | group | 召集人主会话；召集人是 user 时为 `agora:root:user-meetings` | 议题 | `会议` |
 | 参会者 | session | 会议节点 | `<seat 名>（<模型简称>，<角色>）` | `参会` |
 | 书记 | session | 会议节点 | `书记（<模型简称>）` | `书记` |
@@ -294,7 +317,8 @@ agora:root:user-tasks            〔用户任务〕   用户通过 CLI 或 pi-pa
 | --- | --- |
 | 任务 `created`（排队等名额或进程尚未就绪） | `waiting` |
 | 任务 `running` | `running` |
-| 任务 `waiting_decision` | `waiting` |
+| 任务 `waiting_decision`、`waiting_children` | `waiting` |
+| 任务 `quota_paused` | `paused` |
 | 任务 `completed` | `done` |
 | 任务 `failed` | `failed` |
 | 任务 `stopped` | `stopped` |
@@ -313,6 +337,7 @@ agora:root:user-tasks            〔用户任务〕   用户通过 CLI 或 pi-pa
 | 运行中的任务 | `open`、`subscribe`、`send`、`abort`、`action:agora.task.steer`、`action:agora.task.stop` | `open` |
 | 已完成、失败的任务 | `open`、`send`、`action:agora.task.steer`（返工）、`action:agora.task.cleanup` | `open` |
 | 中断的任务 | `open`、`action:agora.task.recover` | `open` |
+| 额度暂停的任务 | `open`、`action:agora.task.recover`（resume）、`action:agora.task.stop` | `open` |
 | 参会者、书记 | `open`、`subscribe` | `open` |
 | 会议 | `action:agora.meeting.interject`、`action:agora.meeting.decide`、`action:agora.meeting.limits`、`action:agora.meeting.stop` | 无 |
 | board | 无（点击 resource 节点时 pi-pane 打开适用的 `agora.board` 面板；`open` 只用于 session 节点） | 无 |

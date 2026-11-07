@@ -64,7 +64,7 @@ test("真实 pi 1.5.0 主会话派出只读子代理，收到持久通知后自�
     const childRequests = (await readFile(f.env.FAKE_REQUEST_LOG, "utf8")).trim().split("\n").map(JSON.parse).filter((entry) => entry.kind === "request");
     assert.ok(childRequests.length >= 2);
     const tools = childRequests[0].tools.map((tool) => tool.name).sort();
-    assert.deepEqual(tools, ["find", "grep", "ls", "read"]);
+    assert.deepEqual(tools, ["agora_request", "agora_task", "find", "grep", "ls", "read"]);
   } finally {
     if (main) { await main.rpc.send({ type: "clear_queue" }, { timeoutMs: 1000 }).catch(() => {}); await main.stop({ abortTimeoutMs: 1000, graceMs: 500, termGraceMs: 500 }); }
     if (daemon) await daemon.close({ force: true, timeoutMs: 1000 });

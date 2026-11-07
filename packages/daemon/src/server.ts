@@ -5,11 +5,12 @@ import { Auth, type Connection } from "./auth.js";
 import { AgoraError, invalid, object, optionalBoolean, stableJson } from "./errors.js";
 import { Store, id, type SessionRow } from "./store.js";
 import { TaskManager } from "./tasks.js";
+import { Requests } from "./requests.js";
 
 export const VERSION = "0.1.0";
 export const PROTOCOL_RANGE = { min: 1, max: 1 };
 export interface ServerContext {
-  store: Store; auth: Auth; tasks: TaskManager; instanceId: string;
+  store: Store; auth: Auth; tasks: TaskManager; requests: Requests; instanceId: string;
   close(options?: { force?: boolean; timeoutMs?: number }): Promise<void>;
   closing: AbortSignal;
 }
@@ -79,7 +80,7 @@ export function createHttpServer(context: ServerContext) {
       let result: Reply;
       const idempotent = method === "POST" && conn?.principalId && !authRoute && !url.pathname.endsWith("/ready") && !url.pathname.endsWith("/fatal") && !url.pathname.startsWith("/v1/lease/");
       if (key !== undefined && idempotent) {
-        if (conn!.type === "agent:main") context.auth.requireMain(conn!);
+        context.auth.requireAgent(conn!);
         if (typeof key !== "string" || !key.length || key.length > 256) invalid("幂等键无效");
         context.store.run("DELETE FROM operations WHERE created_at<?", Date.now() - 86_400_000);
         const fingerprint = createHash("sha256").update(stableJson([method, url.pathname + url.search, body])).digest("hex");
@@ -96,6 +97,7 @@ export function createHttpServer(context: ServerContext) {
       reply(response, result.status, result.body);
     } catch (error) { const result = asError(error); reply(response, result.status, result.body); }
   });
+  server.once('close', () => context.requests.close());
   server.requestTimeout = 35_000;
   server.headersTimeout = 10_000;
   server.keepAliveTimeout = 1000;
@@ -117,28 +119,42 @@ async function route(context: ServerContext, method: string, url: URL, conn: Con
   if (method === "POST" && pathname === "/v1/principals/reclaim") return ok(await auth.reclaim(conn, body));
   if (method === "POST" && pathname === "/v1/lease/renew") { const result = auth.renew(conn); auth.refresh(conn); return ok(result); }
   if (method === "POST" && pathname === "/v1/lease/release") return ok(auth.release(conn));
-  const run = pathname.match(/^\/v1\/runs\/([^/]+)\/(ready|fatal)$/);
+  const run = pathname.match(/^\/v1\/runs\/([^/]+)\/(ready|fatal|authorized)$/);
+  if (method === "GET" && run?.[2] === "authorized") return ok(tasks.authorized(conn, run[1]!));
   if (method === "POST" && run) return ok(run[2] === "ready" ? await tasks.ready(conn, body, run[1]!) : tasks.fatal(conn, run[1]!));
   if (pathname === "/v1/tasks") {
     if (method === "POST") return { status: 201, body: await tasks.spawn(conn, body) };
     if (method === "GET") return ok(tasks.list(conn, url.searchParams.get("scope") ?? "mine", positive(url.searchParams.get("limit"), 50, 200), positive(url.searchParams.get("cursor"), 0, Number.MAX_SAFE_INTEGER, true), url.searchParams.getAll("status")));
   }
-  const task = pathname.match(/^\/v1\/tasks\/([^/]+)(?:\/(result|stop))?$/);
+  const task = pathname.match(/^\/v1\/tasks\/([^/]+)(?:\/(result|stop|steer|cleanup|recover))?$/);
   if (task) {
     if (method === "GET" && !task[2]) return ok(tasks.status(conn, task[1]!));
     if (method === "GET" && task[2] === "result") return ok(tasks.result(conn, task[1]!, url.searchParams.has("generation") ? positive(url.searchParams.get("generation"), 1, Number.MAX_SAFE_INTEGER) : undefined));
     if (method === "POST" && task[2] === "stop") return ok(await tasks.stop(conn, task[1]!, body));
+    if (method === "POST" && task[2] === "steer") return ok(await tasks.steer(conn, task[1]!, body));
+    if (method === "POST" && task[2] === "cleanup") return ok(await tasks.cleanup(conn, task[1]!, body));
+    if (method === "POST" && task[2] === "recover") return ok(await tasks.recover(conn, task[1]!, body));
+  }
+  if (pathname === "/v1/requests") {
+    if (method === "POST") return { status: 201, body: context.requests.ask(conn, body) };
+    if (method === "GET") return ok(context.requests.list(conn, url.searchParams.getAll("state"), positive(url.searchParams.get("limit"), 50, 200), positive(url.searchParams.get("cursor"), 0, Number.MAX_SAFE_INTEGER, true)));
+  }
+  const question = pathname.match(/^\/v1\/requests\/([^/]+)(?:\/(answer|escalate|cancel))?$/);
+  if (question) {
+    if (method === "GET" && !question[2]) return ok(context.requests.detail(conn, question[1]!));
+    if (method === "POST" && question[2]) return ok(context.requests.update(conn, question[1]!, question[2], body));
   }
   if (pathname === "/v1/inbox" && method === "GET") {
+    if (!tasks.inboxAllowed(conn)) return ok({ items: [] });
     const recipient = auth.inboxRecipient(conn);
     const wait = positive(url.searchParams.get("wait"), 0, 25, true);
     const deadline = Date.now() + wait * 1000;
-    let rows = store.takeInbox(recipient);
+    let rows = store.takeInbox(recipient, undefined, tasks.inboxSilentOnly(conn));
     while (!rows.length && Date.now() < deadline && !context.closing.aborted && !response.destroyed) {
       await delay(Math.min(200, Math.max(1, deadline - Date.now())), undefined, { signal: context.closing }).catch(() => {});
       if (!context.closing.aborted && !response.destroyed) {
         auth.inboxRecipient(conn);
-        rows = store.takeInbox(recipient);
+        rows = tasks.inboxAllowed(conn) ? store.takeInbox(recipient, undefined, tasks.inboxSilentOnly(conn)) : [];
       }
     }
     return ok({ items: rows.map(row => ({ noticeId: row.id, dedupeKey: row.dedupe_key, kind: row.kind, payload: JSON.parse(row.payload), createdAt: row.created_at })) });

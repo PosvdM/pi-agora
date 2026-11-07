@@ -9,7 +9,7 @@ test("协议选择交集最高版本，不兼容时拒绝", () => {
   assert.throws(() => negotiateProtocol({ min: 2, max: 3 }), /协议版本不兼容/);
   assert.throws(() => negotiateProtocol({ min: 1, max: Number.NaN }), /协议版本不兼容/);
   assert.deepEqual(spawnTaskSchema.required, ["model", "profile", "prompt"]);
-  assert.deepEqual(agoraTaskSchema.properties.action.enum, ["spawn", "status", "result", "stop"]);
+  assert.deepEqual(agoraTaskSchema.properties.action.enum, ["spawn", "list", "status", "result", "steer", "stop", "cleanup", "recover"]);
 });
 
 test("客户端地址只接受不带凭证的 IPv4 loopback HTTP", () => {

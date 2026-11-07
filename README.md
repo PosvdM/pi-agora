@@ -2,7 +2,7 @@
 
 pi-agora 是 [pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) 编码智能体的协作引擎。主代理用它把任务派给子代理、召开多模型会议，所有协作会话的完整对话都会永久保存。
 
-> **当前状态：切片 1a（最小任务闭环）。** 提供 daemon、pi 扩展和 CLI，支持派出只读子代理、查询状态与结果、停止任务，以及持久化完成通知。完整任务动作、worktree、review / implement、提问、存档读取、board、会议和 pi-pane 插件仍在后续切片中；下方“功能”描述完整设计目标。
+> **当前状态：切片 1b（任务核心）。** 提供 daemon、pi 扩展和 CLI，支持多层子代理、三个权限档位、worktree、返工、提问与逐级转交、恢复和可靠通知；提供 skill 白名单、逐请求用量和任务树汇总、额度暂停及到期恢复通知。用户设备确认、可选扩展 / MCP 白名单、存档读取、board、会议和 pi-pane 插件属于后续范围；下方“功能”描述完整设计目标。
 
 ## 使用
 
@@ -19,7 +19,13 @@ npm run build
 pi -e ./packages/extension/dist/index.js
 ```
 
-向主代理提出任务，并要求使用 `agora_task` 的 `spawn`，指定完整模型名（`provider/id`）、`profile: "explore"` 和任务书。可用动作是 `spawn`、`status`、`result`、`stop`；子代理不能再派子代理。只读档位提供 `read`、`grep`、`find`、`ls`，文件访问限定在任务工作目录内，并拒绝凭证目录；这属于工具层权限，不是操作系统沙箱。
+向主代理提出任务，并要求使用 `agora_task` 的 `spawn`，指定完整模型名（`provider/id`）、权限档位和任务书。动作包括 `spawn`、`list`、`status`、`result`、`steer`、`stop`、`cleanup` 和 `recover`。子代理也能派出下级，默认最多两层（子代理、孙代理），整棵任务树共用并发上限。下级的档位和子树限制不能放宽，只能管理自己直接派出的任务；主代理能查看、停止整棵树，但只能返工直接下级。
+
+`explore` 提供只读文件工具和协作工具，`review` 另有加固的 `agora_git`，`implement` 提供文件修改和 shell 工具。只读档位的文件访问限定在允许根内；所有档位的文件工具都拒绝凭证目录。shell 不承诺路径隔离，这属于工具层权限，不是操作系统沙箱。
+
+派活时使用范围明确的任务书，直接附必要接口和结论，并行前先定接口。子代理默认不加载 skill；可用 `skills: ["skill-name"]` 按名字指定用户全局 skill，名单不能超出上级的名单。项目 skill 不参与自动加载，名单内 skill 对文件工具只读放行。配置和边界见 [docs/security.md](docs/security.md#skill-白名单)。
+
+`agora_task status` 和 `result` 返回单任务与任务树的 token 用量及最近报告的上下文大小。模型服务返回可识别的额度用完错误时，任务进入 `quota_paused`，不算失败、不占推理名额；到服务返回的重置时间后通知直接上级决定续跑或改派。`AGORA_HOME/config.json` 可设 `quotaRecovery: "auto"` 到期自动续跑；恢复父任务不会自动恢复下级。详细规则见 [docs/tasks.md](docs/tasks.md#额度暂停)。
 
 扩展会自动启动后台 daemon。CLI 也可手动启动和查看：
 
@@ -28,16 +34,18 @@ node packages/cli/dist/main.js daemon start
 node packages/cli/dist/main.js status
 node packages/cli/dist/main.js ls
 node packages/cli/dist/main.js show <任务或会话 ID>
+node packages/cli/dist/main.js pending
+node packages/cli/dist/main.js answer <提问 ID> --answers '<答复 JSON 数组>'
 node packages/cli/dist/main.js shutdown
 ```
 
 可用 `npm link --workspace @pi-agora/cli` 注册 `agora` 命令。默认数据目录为 `~/.pi/agora`；设置 `AGORA_HOME` 或给 CLI 传 `--home <目录>` 可改用其他本地目录。关闭主会话不会停止 daemon 或正在运行的子代理；恢复原主会话后会补收尚未确认的通知。通知只有在主会话文件中找到完整记录后才确认。
 
-`shutdown` 排空运行中的任务；`--timeout <秒>` 默认 600，超时后保留 daemon，需用户显式重试 `shutdown --force`。强制关闭会中断任务并清理受管进程。停止报告会说明覆盖范围：Windows Job Object、Linux cgroup，或 macOS / Linux 的进程快照；快照的空残留列表不能证明整棵进程树均已退出。1a 不提供中断任务的 resume 动作。
+`shutdown` 排空运行中的任务；`--timeout <秒>` 默认 600，超时后保留 daemon，需用户显式重试 `shutdown --force`。强制关闭会中断任务并清理受管进程。停止报告会说明覆盖范围：Windows Job Object、Linux cgroup，或 macOS / Linux 的进程快照；快照的空残留列表不能证明整棵进程树均已退出。中断任务可选择 `resume`、`reopen`、`replace` 或 `abandon`；恢复要求旧写者已经确认退出，不自动重放有副作用的工具。
 
 ## 功能
 
-- **子代理**：按模型（Claude、GPT、Gemini 等）和权限档位（`explore` / `review` / `implement`）派任务；可在独立 git worktree 里工作；完成后自动叫醒主代理；用 steer 返工；查看列表、取结果、停止；子代理可以向主代理提问，主代理答复或转给用户。
+- **子代理**：按模型和权限档位（`explore` / `review` / `implement`）多层派活；可在独立 git worktree 里工作；下级完成后叫醒直接上级，用 steer 返工；查看列表、取结果、停止子树；提问可逐级转交到主代理和用户。
 - **共享桌面（board）**：多个会话共用的结构化记录，条目只追加，有类型、引用和替代关系。会议、并行开发的接口约定、跨任务的提问都可以放在上面。
 - **会议**：主代理或用户召开，参会者各自独立上下文，通过 board 讨论。默认“定方案”流程：密封独立方案 → 交叉质疑 → 指定合并人合并 → 其他人核对 → 迭代到全员认可同一版。书记写纪要，主代理只拿回纪要和定稿方案。
 - **全量对话存档**：子代理、参会者、书记的对话都保存，结束、取消、崩溃都不删，以后可以查看。
@@ -74,7 +82,7 @@ pi-pane 不认识“子代理”“会议”这些概念。pi-agora 提供一个
 - 只有 `pane-plugin` 依赖 pi-pane 的插件接口包，其余包都不依赖 pi-pane。
 - 两者共用平台相关的包 [pi-hostkit](https://github.com/PosvdM/pi-hostkit)（定位 pi、RPC 传输、进程树终止、锁、路径规范化）。它是独立仓库，权威设计见其 [docs/design.md](https://github.com/PosvdM/pi-hostkit/blob/main/docs/design.md)。
 
-完整设计不依赖 pi-pane：主 Agent 级功能通过 pi 扩展和 `agora` CLI 提供，用户级操作由已配对浏览器确认。1a 只提供上方“使用”中列出的功能，用户确认和离线安全设置属于后续切片，见 [docs/security.md](docs/security.md#只用终端)。
+完整设计不依赖 pi-pane：Agent 功能通过 pi 扩展和 `agora` CLI 提供，用户级操作由已配对浏览器确认。**切片 1b 的转交和 CLI 答复通路尚无设备确认，daemon 无法区分用户与同一系统用户下的 Agent。** 用户确认和离线安全设置在 1c 实现，见 [docs/security.md](docs/security.md)。
 
 ## 组成
 
@@ -103,7 +111,7 @@ npm test         # 构建后用 node --test 验证，真实 pi 测试要求 1.5.
 
 | 文档 | 内容 |
 | --- | --- |
-| [docs/development.md](docs/development.md) | 1a 实现范围、源码结构、构建、CLI、测试映射和限制 |
+| [docs/development.md](docs/development.md) | 1b 实现范围、配置、源码结构、构建、CLI、测试映射和限制 |
 | [docs/architecture.md](docs/architecture.md) | 总体架构、进程模型、受管扩展就绪检查、控制队列、daemon 生命周期、存储、权限档位与路径校验、worktree、崩溃与恢复、资源、平台注意事项 |
 | [docs/security.md](docs/security.md) | 安全模型：principal、主 Agent 级与用户级权限、用户确认、设备配对、只用终端、资源级访问控制、审计、剩余风险 |
 | [docs/tasks.md](docs/tasks.md) | 任务（子代理）：工具接口、状态机、返工与送达追踪、可靠通知、提问与转交、召集人离线 |
