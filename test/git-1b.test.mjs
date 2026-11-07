@@ -52,7 +52,7 @@ test('1b git argv：固定安全前缀、filter 覆盖和 -- 分隔，不依赖 
   const signal = new AbortController().signal;
   mock.method(childProcess, 'execFile', (file, args, options, callback) => {
     calls.push({ file, args, options });
-    callback(null, args.includes('--get-regexp') ? 'filter.trap.clean\nunsafe\0filter.trap.required\ntrue\0' : 'output');
+    callback(null, args.includes('--get-regexp') ? 'filter.trap.clean\nunsafe\0filter.trap.required\ntrue\0' : args.includes('--verify') ? `${'a'.repeat(40)}\n` : 'output');
   });
   syncBuiltinESMExports();
   try {
@@ -66,7 +66,12 @@ test('1b git argv：固定安全前缀、filter 覆盖和 -- 分隔，不依赖 
       calls.length = 0;
       assert.equal(await gitRead('/repo', command, options, refs, paths, signal), 'output');
       assert.deepEqual(calls[0].args, [...prefix, 'config', '--null', '--get-regexp', '^filter\\.']);
-      assert.deepEqual(calls[1].args, [...prefix, ...filters, '--literal-pathspecs', ...expected]);
+      const oid = 'a'.repeat(40);
+      const resolved = expected.map(arg => arg === 'HEAD' ? oid : arg === 'HEAD~1..HEAD' ? `${oid}..${oid}` : arg);
+      assert.deepEqual(calls.at(-1).args, [...prefix, ...filters, '--literal-pathspecs', ...resolved]);
+      const endpoints = refs.flatMap(ref => ref.split('..'));
+      assert.deepEqual(calls.filter(call => call.args.includes('--verify')).map(call => call.args),
+        [...new Set(endpoints)].map(ref => [...prefix, ...filters, 'rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`]));
       for (const call of calls) {
         assert.equal(call.file, 'git');
         assert.equal(call.options.signal, signal);
@@ -80,6 +85,32 @@ test('1b git argv：固定安全前缀、filter 覆盖和 -- 分隔，不依赖 
     await gitExec('/repo', ['rev-parse', '--show-toplevel'], signal);
     assert.deepEqual(calls[0].args, [...prefix, 'config', '--null', '--get-regexp', '^filter\\.']);
     assert.deepEqual(calls[1].args, [...prefix, ...filters, 'rev-parse', '--show-toplevel']);
+  } finally {
+    mock.restoreAll();
+    syncBuiltinESMExports();
+  }
+});
+
+test('N1：只接受完整提交 OID，解析失败不执行读取命令', async () => {
+  const calls = [];
+  let output = '';
+  mock.method(childProcess, 'execFile', (file, args, options, callback) => {
+    calls.push(args);
+    callback(null, args.includes('--get-regexp') ? '' : args.includes('--verify') ? output : 'read');
+  });
+  syncBuiltinESMExports();
+  try {
+    for (const invalid of ['', 'a'.repeat(39), 'a'.repeat(41), 'a'.repeat(63), 'z'.repeat(40), `${'a'.repeat(40)}\n${'b'.repeat(40)}`]) {
+      calls.length = 0; output = invalid;
+      await assert.rejects(gitRead('/repo', 'show', [], ['HEAD']), /提交对象无效/);
+      assert.equal(calls.some(args => args.includes('show')), false);
+    }
+    for (const length of [40, 64]) {
+      calls.length = 0; output = `${'a'.repeat(length)}\n`;
+      assert.equal(await gitRead('/repo', 'show', [], ['HEAD']), 'read');
+      assert.ok(calls.at(-1).includes('a'.repeat(length)));
+      assert.equal(calls.at(-1).includes('HEAD'), false);
+    }
   } finally {
     mock.restoreAll();
     syncBuiltinESMExports();

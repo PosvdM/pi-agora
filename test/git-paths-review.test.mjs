@@ -43,6 +43,33 @@ test('F1：真实 Git 的 glob 按字面处理，省略路径只读 cwd，安全
   await handlers.get('session_start')({}, ctx);
   const tool = registered.find(tool => tool.name === 'agora_git');
   const run = async (params, cwd = repo) => (await tool.execute('git', params, undefined, undefined, { ...ctx, cwd })).details.output;
+  // 非提交对象会忽略路径限制，必须在安全调用层解析并拒绝。
+  const blob = raw(['rev-parse', 'HEAD:secret/key.txt']).trim();
+  const tree = raw(['rev-parse', 'HEAD:secret']).trim();
+  raw(['tag', 'blob-tag', blob]); raw(['tag', 'tree-tag', tree]);
+  raw(['-c', 'tag.gpgsign=false', 'tag', '-a', '-m', 'blob', 'annotated-blob', blob]);
+  raw(['-c', 'tag.gpgsign=false', 'tag', '-a', '-m', 'tree', 'annotated-tree', tree]);
+  raw(['-c', 'tag.gpgsign=false', 'tag', '-a', '-m', 'commit', 'commit-tag', 'HEAD']);
+  for (const ref of [blob, 'blob-tag', 'annotated-blob']) {
+    assert.match(raw(['show', ref, '--', 'public/file.txt']), /PROTECTED-CONTENT/);
+  }
+  for (const ref of [tree, 'tree-tag', 'annotated-tree']) {
+    assert.match(raw(['show', ref, '--', 'public/file.txt']), /key\.txt/);
+  }
+  for (const ref of [blob, tree, 'blob-tag', 'tree-tag', 'annotated-blob', 'annotated-tree', 'HEAD^{tree}']) {
+    await assert.rejects(run({ command: 'show', refs: [ref], paths: ['public/file.txt'] }));
+    for (const command of ['diff', 'log', 'show']) {
+      for (const range of [`HEAD..${ref}`, `${ref}...HEAD`, `..${ref}`, `${ref}...`]) {
+        await assert.rejects(gitRead(repo, command, [], [range], ['public/file.txt']));
+      }
+    }
+  }
+  assert.match(await run({ command: 'show', refs: ['commit-tag'], paths: ['public/file.txt'] }), /SAFE-CONTENT/);
+  for (const command of ['diff', 'log', 'show']) {
+    for (const range of ['HEAD..HEAD', 'HEAD...HEAD', '..HEAD', 'HEAD..', '...HEAD', 'HEAD...', '..', '...']) {
+      assert.equal(typeof await gitRead(repo, command, [], [range], ['public/file.txt']), 'string');
+    }
+  }
   // 未加固 Git 的 glob 正控必须能读取受保护内容。
   assert.match(raw(['show', 'HEAD', '--', '[s]ecret/*']), /PROTECTED-CONTENT/);
   for (const command of ['show', 'log']) {

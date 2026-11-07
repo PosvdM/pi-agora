@@ -26,11 +26,32 @@ export async function gitRead(cwd: string, command: string, options: string[] = 
     if (!allowed) throw new Error('git 选项不在允许列表中');
   }
   if (command === 'status' && refs.length || command === 'show' && refs.length !== 1 || refs.length > (command === 'diff' ? 2 : 1)) throw new Error('git 提交参数无效');
-  if (refs.some(ref => !/^[A-Za-z0-9_][A-Za-z0-9_./~^{}-]*$/.test(ref) || ref.includes('@{') || ref.includes('.../') || ref.includes(':'))) throw new Error('git 提交或范围无效');
+  const endpoints = refs.map(ref => {
+    const parts = ref.split(/(\.\.\.?)/);
+    if (parts.length !== 1 && parts.length !== 3) throw new Error('git 提交或范围无效');
+    const values = parts.length === 3 ? [parts[0] || 'HEAD', parts[2] || 'HEAD'] : [ref];
+    if (values.some(value => !/^[A-Za-z0-9_][A-Za-z0-9_./~^{}-]*$/.test(value) || value.includes('@{') || value.includes('..') || value.includes(':'))) throw new Error('git 提交或范围无效');
+    return { values, separator: parts.length === 3 ? parts[1]! : '' };
+  });
   if (paths.some(p => p.startsWith(':'))) throw new Error('不允许 git pathspec 魔术参数');
+  const commits = new Map<string, string>();
+  const resolved: string[] = [];
+  for (const { values, separator } of endpoints) {
+    const oids: string[] = [];
+    for (const ref of values) {
+      let oid = commits.get(ref);
+      if (!oid) {
+        oid = (await gitExec(cwd, ['rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`], signal)).trim();
+        if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(oid)) throw new Error('git 提交对象无效');
+        commits.set(ref, oid);
+      }
+      oids.push(oid);
+    }
+    resolved.push(oids.join(separator));
+  }
   const args = command === 'status'
     ? ['status', '--porcelain=v1', '--ignore-submodules=all', '--untracked-files=normal']
-    : [command, '--no-ext-diff', '--no-textconv', '--no-color', ...(command === 'log' || command === 'show' ? ['--no-show-signature'] : []), ...(command === 'log' ? ['-n50'] : []), ...options, ...refs];
+    : [command, '--no-ext-diff', '--no-textconv', '--no-color', ...(command === 'log' || command === 'show' ? ['--no-show-signature'] : []), ...(command === 'log' ? ['-n50'] : []), ...options, ...resolved];
   return gitExec(cwd, ['--literal-pathspecs', ...args, '--', ...(paths.length ? paths : ['.'])], signal);
 }
 export async function gitExec(cwd: string, args: string[], signal?: AbortSignal): Promise<string> {
