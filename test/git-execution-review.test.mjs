@@ -12,6 +12,17 @@ async function noExecution(f, action) {
   assert.deepEqual(await f.markers(), []);
 }
 
+test('Git 安全夹具：复制环境中的 Path 与 PATH 合并后仍能启动真实 Git', async t => {
+  const source = { ...process.env };
+  const keys = Object.keys(source).filter(key => key.toLowerCase() === 'path');
+  const inherited = source[keys[0]];
+  for (const key of keys) delete source[key];
+  source.Path = inherited;
+  const f = await fixture(t, source);
+  assert.equal(f.env.Path, undefined); assert.ok(f.env.PATH.includes(inherited));
+  assert.match(f.raw(['--version']), /git version/); assert.deepEqual(await f.markers(), []);
+});
+
 test('Git 传输：SSH 环境、remote helper、ext、file、凭据及 askpass 的正负控', { timeout: 120_000 }, async t => {
   const f = await fixture(t), ssh = await f.program('ssh-probe', 'ssh-env');
   const oldPath = process.env.PATH; process.env.PATH = f.env.PATH;

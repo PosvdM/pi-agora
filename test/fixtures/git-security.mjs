@@ -7,15 +7,19 @@ import { tmpdir } from 'node:os';
 import { gitEnvironment } from '../../packages/protocol/dist/git.js';
 
 export const quote = value => `'${value.replaceAll('\\', '/').replaceAll("'", "'\\''")}'`;
-export async function fixture(t) {
+export async function fixture(t, source = process.env) {
   const root = await mkdtemp(path.join(tmpdir(), 'agora-git-security-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const cwd = path.join(root, 'repo'), bin = path.join(root, 'bin');
   await mkdir(path.join(cwd, 'public'), { recursive: true }); await mkdir(bin);
-  const env = gitEnvironment();
+  const env = gitEnvironment(source);
   for (const key of ['GIT_ALLOW_PROTOCOL', 'GIT_NO_LAZY_FETCH', 'GIT_NO_REPLACE_OBJECTS', 'GIT_GRAFT_FILE', 'GIT_EXTERNAL_DIFF', 'GIT_PAGER']) delete env[key];
   delete env.PAGER;
-  env.PATH = `${bin}${path.delimiter}${env.PATH}`;
+  // Windows 的复制环境是普通对象，Path 与 PATH 必须合并后再传给 spawn。
+  const pathKeys = Object.keys(env).filter(key => key.toLowerCase() === 'path');
+  const inheritedPath = env[pathKeys[0]] ?? '';
+  for (const key of pathKeys) delete env[key];
+  env.PATH = `${bin}${path.delimiter}${inheritedPath}`;
   const raw = (args, input, extraEnv = {}, directory = cwd) => execFileSync('git', args, {
     cwd: directory, env: { ...env, ...extraEnv }, input, timeout: 15_000, maxBuffer: 8 * 1024 * 1024,
     windowsHide: true, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
