@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { AgoraConnectionError, AgoraHttpError, agoraHome, connectHost, connectLaunch, hmacProof, agoraTaskSchema, gitRead } from '@pi-agora/protocol';
 import { canonicalPath, isWithin } from 'pi-hostkit/paths';
@@ -353,13 +353,15 @@ export default function agoraExtension(pi: PiExtensionApi): void {
     async execute(_id, params, signal, _update, ctx) {
       const r = runtime; if (r?.authorizing) await r.authorizing;
       if (!r?.ready || !current(r) || !r.policy || !['review', 'implement'].includes(r.policy.profile)) throw new Error('当前档位不能使用 agora_git');
+      const paths: string[] = [];
       for (const item of params.paths?.length ? params.paths : [ctx.cwd]) {
         const target = await canonicalPath(item, ctx.cwd, 'read');
         const root = await canonicalPath(ctx.cwd, ctx.cwd, 'write');
         const protectedPaths = await Promise.all(r.policy.protectedPaths.map(p => canonicalPath(p, ctx.cwd, 'write')));
         if (!isWithin(root, target) || protectedPaths.some(p => isWithin(p, target) || isWithin(target, p))) throw new Error('git 路径越界或包含受保护目录');
+        paths.push(relative(root, target).split('\\').join('/') || '.');
       }
-      const output = await gitRead(ctx.cwd, params.command, params.options, params.refs, params.paths, signal);
+      const output = await gitRead(ctx.cwd, params.command, params.options, params.refs, paths, signal);
       return { content: [{ type: 'text', text: output }], details: { output } };
     },
   });

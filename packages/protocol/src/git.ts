@@ -44,5 +44,5 @@ export async function gitRead(cwd: string, command: string, options: string[] = 
   const args = command === 'status'
     ? ['status', '--porcelain=v1', '--ignore-submodules=all', '--untracked-files=normal']
     : [command, '--no-ext-diff', '--no-textconv', '--no-color', ...(command === 'log' || command === 'show' ? ['--no-show-signature'] : []), ...(command === 'log' ? ['-n50'] : []), ...options, ...refs];
-  return gitExec(cwd, [...filters, ...args, '--', ...paths], signal);
+  return gitExec(cwd, ['--literal-pathspecs', ...filters, ...args, '--', ...(paths.length ? paths : ['.'])], signal);
 }

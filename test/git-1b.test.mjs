@@ -59,13 +59,13 @@ test('1b git argv：固定安全前缀、filter 覆盖和 -- 分隔，不依赖 
     for (const [command, options, refs, paths, expected] of [
       ['status', [], [], ['-leading.txt'], ['status', '--porcelain=v1', '--ignore-submodules=all', '--untracked-files=normal', '--', '-leading.txt']],
       ['diff', ['--cached', '-U3'], ['HEAD'], ['file.txt'], ['diff', '--no-ext-diff', '--no-textconv', '--no-color', '--cached', '-U3', 'HEAD', '--', 'file.txt']],
-      ['log', ['-p', '-n2'], ['HEAD~1..HEAD'], [], ['log', '--no-ext-diff', '--no-textconv', '--no-color', '--no-show-signature', '-n50', '-p', '-n2', 'HEAD~1..HEAD', '--']],
-      ['show', ['--stat'], ['HEAD'], [], ['show', '--no-ext-diff', '--no-textconv', '--no-color', '--no-show-signature', '--stat', 'HEAD', '--']],
+      ['log', ['-p', '-n2'], ['HEAD~1..HEAD'], [], ['log', '--no-ext-diff', '--no-textconv', '--no-color', '--no-show-signature', '-n50', '-p', '-n2', 'HEAD~1..HEAD', '--', '.']],
+      ['show', ['--stat'], ['HEAD'], [], ['show', '--no-ext-diff', '--no-textconv', '--no-color', '--no-show-signature', '--stat', 'HEAD', '--', '.']],
     ]) {
       calls.length = 0;
       assert.equal(await gitRead('/repo', command, options, refs, paths, signal), 'output');
       assert.deepEqual(calls[0].args, [...prefix, 'config', '--null', '--get-regexp', '^filter\\.']);
-      assert.deepEqual(calls[1].args, [...prefix, ...filters, ...expected]);
+      assert.deepEqual(calls[1].args, [...prefix, '--literal-pathspecs', ...filters, ...expected]);
       for (const call of calls) {
         assert.equal(call.file, 'git');
         assert.equal(call.options.signal, signal);
@@ -136,7 +136,7 @@ test('1b git environment：移除所有大小写的 GIT_* 注入并固定非交�
 test('1b 真实 Git：textconv/external/fsmonitor/pager/required filters/gpg 配置不执行', { timeout: 90_000 }, async t => {
   const f = await fixture(t);
   t.diagnostic(f.raw(['--version']).trim());
-  const signed = `tree ${f.raw(['rev-parse', 'HEAD^{tree}']).trim()}\nparent ${f.raw(['rev-parse', 'HEAD']).trim()}\nauthor Safety <safety@example.invalid> 1700000000 +0000\ncommitter Safety <safety@example.invalid> 1700000000 +0000\ngpgsig -----BEGIN PGP SIGNATURE-----\n \n dGVzdA==\n -----END PGP SIGNATURE-----\n\nSigned fixture\n`;
+  const signed = `tree ${f.raw(['rev-parse', 'HEAD^{tree}']).trim()}\nparent ${f.raw(['rev-parse', 'HEAD~1']).trim()}\nauthor Safety <safety@example.invalid> 1700000000 +0000\ncommitter Safety <safety@example.invalid> 1700000000 +0000\ngpgsig -----BEGIN PGP SIGNATURE-----\n \n dGVzdA==\n -----END PGP SIGNATURE-----\n\nSigned fixture\n`;
   const signedOid = f.raw(['hash-object', '-t', 'commit', '-w', '--stdin'], signed).trim();
   f.raw(['update-ref', 'refs/heads/signed', signedOid]);
   const gpgProgram = path.join(f.root, 'gpg-probe.sh');
@@ -177,7 +177,7 @@ test('1b 真实 Git：textconv/external/fsmonitor/pager/required filters/gpg 配
     ['diff', ['--name-only'], ['HEAD~1', 'HEAD'], ['file.txt'], /file\.txt/],
     ['log', ['-p', '-n2'], ['HEAD'], [], /committed/],
     ['show', ['-p'], ['HEAD'], [], /committed/],
-    ['log', ['-p'], ['signed'], [], /Signed fixture/],
+    ['log', ['-p'], ['signed'], [], /committed/],
     ['show', ['-p'], ['signed'], [], /Signed fixture/],
   ];
   for (const [command, options, refs, paths, expected] of reads) {
