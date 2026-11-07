@@ -291,10 +291,10 @@ export class TaskManager {
     if (conn.type === "agent:child") throw new AgoraError(403, "forbidden", "协作会话只能读取自己的任务状态");
     const gen = generation ?? task.generation;
     if (!Number.isSafeInteger(gen) || gen < 1) invalid("代数无效");
-    const row = this.store.get<{ status: string; result_text: string | null; usage: string | null }>("SELECT status,result_text,usage FROM task_generations WHERE task_id=? AND generation=?", taskId, gen);
+    const row = this.store.get<{ status: string; result_text: string | null; usage: string | null; agora_session_id: string | null }>("SELECT status,result_text,usage,agora_session_id FROM task_generations WHERE task_id=? AND generation=?", taskId, gen);
     if (!row) throw new AgoraError(404, "not_found", "任务代数不存在");
     if (["completed", "failed", "interrupted"].includes(row.status)) this.store.run("UPDATE outbox SET processed_at=COALESCE(processed_at,?) WHERE id IN (SELECT id FROM outbox WHERE recipient_id=? AND dedupe_key LIKE ? AND processed_at IS NULL LIMIT 200)", now(), task.convener_id, `task:${taskId}:${gen}:%`);
-    return { taskId, agoraSessionId: task.agora_session_id, generation: gen, status: row.status, resultText: row.result_text, usage: row.usage ? JSON.parse(row.usage) : null };
+    return { taskId, agoraSessionId: row.agora_session_id ?? task.agora_session_id, generation: gen, status: row.status, resultText: row.result_text, usage: row.usage ? JSON.parse(row.usage) : null };
   }
   list(conn: Connection, scope: string, limit: number, cursor: number, statuses: string[] = []) {
     this.auth.requireMain(conn);

@@ -146,6 +146,26 @@ test('stop清理终态的空闲进程，但不把完成结果改成取消', asyn
   assert.equal((await main.request('GET', `/v1/tasks/${task.taskId}/result`)).resultText, '只读测试结果');
 });
 
+test('任务当前会话切换后，历史result仍定位所属代数的会话', async t => {
+  const f = await setup(t), main = await f.client();
+  const task = await f.spawn(main);
+  await until(() => f.driver.handles[0]?.commands.includes('prompt'));
+  f.driver.handles[0].emit({ type: 'agent_settled', aborted: false });
+  await until(() => f.daemon.store.task(task.taskId).status === 'completed');
+  await main.request('POST', `/v1/tasks/${task.taskId}/stop`, {});
+  const currentId = 'replacement-session';
+  const at = new Date().toISOString();
+  f.daemon.store.transaction(() => {
+    f.daemon.store.run("INSERT INTO principals(id,type,label,created_at) VALUES('replacement-child','agent:child','替换会话',?)", at);
+    f.daemon.store.run("INSERT INTO agora_sessions(id,task_id,principal_id,inherits_from,inherit_reason,session_file,profile,model,thinking,cwd,status,created_at) VALUES(?,?,'replacement-child',?,'replace',?,'explore',?,'high',?,'completed',?)", currentId, task.taskId, task.agoraSessionId, join(f.home, 'replacement.jsonl'), MODEL, f.home, at);
+    f.daemon.store.run('UPDATE tasks SET agora_session_id=?,generation=2 WHERE id=?', currentId, task.taskId);
+    f.daemon.store.run("INSERT INTO task_generations(task_id,generation,status,result_text,agora_session_id) VALUES(?,2,'completed','替换结果',?)", task.taskId, currentId);
+  });
+  assert.equal((await main.request('GET', `/v1/tasks/${task.taskId}`)).agoraSessionId, currentId);
+  assert.equal((await main.request('GET', `/v1/tasks/${task.taskId}/result?generation=1`)).agoraSessionId, task.agoraSessionId);
+  assert.equal((await main.request('GET', `/v1/tasks/${task.taskId}/result?generation=2`)).agoraSessionId, currentId);
+});
+
 test('HTTP 边界拒绝 Origin、错误协议、匿名、伪造用户身份与未实现权限', async t => {
   const f = await setup(t), cli = await f.client('host:cli');
   assert.equal((await http(f.daemon.url, undefined, 'GET', '/v1/health', undefined, { Origin: 'https://untrusted.example' })).status, 403);

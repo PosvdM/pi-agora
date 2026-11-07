@@ -122,7 +122,7 @@ pi 的 `queue_update` 事件只给出排队消息的文本（依据：`docs/json
 
 界面上分开显示这几种状态。标注会被模型看到，这是为了可靠追踪付出的小代价。
 
-每一代的结果单独保存在 `task_generations`（task_id、generation、started_at、settled_at、status、result_text、usage）。旧一代的结果不会被新一代覆盖。
+每一代的结果单独保存在 `task_generations`（task_id、generation、started_at、settled_at、status、result_text、usage）。旧一代的结果不会被新一代覆盖。`task_generations.agora_session_id` 记录该代所属会话；`tasks.agora_session_id` 只表示任务的当前会话。读取历史 result 时，会话标识取该代记录，不能用当前会话替代。
 
 ## 完成通知与 outbox
 
