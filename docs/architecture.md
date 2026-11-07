@@ -130,6 +130,7 @@ node <pi>/dist/bundle/cli.js --mode rpc
 1. 扩展加载后立即用 launch ticket 换连接 token（ticket 绑定 runId，见 [security.md](security.md#协作会话)）。
 2. 就绪等待：MCP 工具注册是异步的，在 `session_start` 时可能尚未完成。扩展必须等 MCP 工具注册完成（或等到超时按 fail closed 处理），生成工具清单前按平台过滤（macOS 和 Linux 上不列 `powershell`），再向 daemon 报告就绪：`POST /v1/runs/:runId/ready`，带完整的 `pi.getActiveTools()` 结果、当前模型和 thinking 级别、扩展版本（依据：`dist/core/extensions/types.d.ts` 的 `getActiveTools`、`getThinkingLevel`）。
 3. daemon 核对：活动工具集合与档位白名单完全一致；模型和 thinking 与 `LaunchSpec` 一致；扩展版本与 daemon 兼容。HTTP 就绪响应确认这些上报字段，扩展收到响应后结束 `session_start`。daemon 随后通过 RPC `get_available_models` 和 `get_state` 核对模型、thinking 和会话文件；全部通过后 run 才进入 `ready`，daemon 才发送任务书或会议消息。pi 1.5.0 在 `session_start` 结束后才开始读取 RPC 输入，因此 HTTP 就绪处理器不能等待 RPC 核对，否则会互相等待。
+   1a 中扩展收到 HTTP 就绪响应后，会把本地 `r.ready` 置为 true；这早于 daemon 的 RPC 二次核对。此间 daemon 尚未放行任务书，生产子会话也只加载 agora 扩展，没有自主触发工具的其他扩展。以后开放能自行发送消息或触发工具的额外扩展前，必须让工具授权等待 daemon 最终核对通过，不能把 HTTP 报告已接受当作最终授权。
 4. 就绪前，扩展的 `tool_call` 钩子拒绝一切工具调用。钩子内部必须显式用 `try/catch` 包住，出异常时自行记录 fatal 诊断并返回 `{ block: true }` 拒绝调用，不依赖 pi 对抛出异常的处理方式（实测裸钩子抛错时 pi 不发 RPC `extension_error`，进程不会自行退出；安全策略必须 fail closed 自行闭环）。
 5. 就绪超时（`readyTimeoutMs`，默认 30000）、核对失败、或运行期间收到来自 agora 扩展的 `extension_error` 事件（依据：`docs/json.md`），daemon 立即停止该 run，记录诊断；任务进入 `failed`（首次启动）或 `interrupted`（恢复时），并通知召集人。
 
@@ -159,6 +160,7 @@ node <pi>/dist/bundle/cli.js --mode rpc
 同一会话可能同时收到多个控制请求（召集人 steer、用户停止、通知投递、会议调度、空闲回收），daemon 按以下规则串行化：
 
 - **每个任务、每个会话一个串行控制队列**。改变会话或任务状态的操作（发送 prompt/steer、停止、恢复、回收、注入通知）都排进队列，一次执行一个。
+- **停止线性化**：stop 在任务控制队列内重新核对租约、expectedGeneration 和 expectedRevision，随后才修改停止标志和定时器；过期或越权请求不留下停止副作用。不会为了提前中断队列而跳过最终条件核对。
 - **条件迁移**：每次状态迁移都带 `expectedGeneration` 和 `expectedRevision`，在 SQLite 里用条件更新执行；条件不满足时返回 `409 conflict`，调用方重新读取状态后再决定。
 - **停止中**：停止或 `interrupt` 返工开始后，会话进入内部的 `stopping` 控制状态（对外仍显示原状态，`statusDetail` 为“停止中”）。这期间 outbox 通知、board 投递、会议调度都不会唤醒该会话，直到停止完成或新一代开始。
 - **不依赖 pi 队列存活**：`clear_queue` 会清掉 pi 队列里排队的所有消息，包括扩展注入的自定义消息（依据：`docs/rpc-commands.md` 的 `clear_queue`、`dist/core/agent-session.js` 的 `sendCustomMessage`）。所以通知以 outbox 为准，只有在会话文件里找到对应记录后才算送达（见 [tasks.md](tasks.md#完成通知与-outbox)）；被清掉的通知会在下次投递时重发。
@@ -361,8 +363,9 @@ daemon 被强杀时，Windows 上 Job Object 关闭，受管进程随之终止�
 1. 扫描 `process_runs` 中没有 `exited_at` 的记录，用 pi-hostkit 的 `isSameProcess` 按 pid + 创建时间判断进程是否还在。
 2. 仍在运行的旧进程（属于上一个 `daemon_instance_id`）：新 daemon 不接管它的 RPC 管道（管道已随旧 daemon 断开），用 `stopByIdentity` 停止整棵进程树并确认退出，写诊断。
 3. 旧 run 确认退出之后，对应会话按“会话崩溃”处理，标为 `interrupted`。在此之前，任何对同一会话文件的 resume 都被拒绝。
-4. outbox 里未确认的通知重新投递，接收方按 `dedupe_key` 去重。
-5. board 投递位置只在接收方确认后推进，重启后从已确认位置重发，宁可重复不漏读。
+4. 所有没有确认退出的持久化 run 都属于后续 stop / shutdown 的清理范围，包括启动恢复失败、没有 DriverHandle 的旧 run。已知身份按身份安全重试清理；身份或清理仍不明时返回 `stop_incomplete`，不把任务标成 stopped，也不报告 daemon 已关闭。数据库中 `exited_at IS NULL` 是统一的待清理清单，不以运行时 Map 是否存在判断退出。未知写者仍不得自动使用 `assumeNoWriter`。
+5. outbox 里未确认的通知重新投递，接收方按 `dedupe_key` 去重。
+6. board 投递位置只在接收方确认后推进，重启后从已确认位置重发，宁可重复不漏读。
 
 ## 资源与回收
 

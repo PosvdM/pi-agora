@@ -4,7 +4,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { AgoraError } from "./errors.js";
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 export const schemaMigrations: readonly string[] = [String.raw`
 CREATE TABLE principals (
   id TEXT PRIMARY KEY, type TEXT NOT NULL, label TEXT NOT NULL DEFAULT '',
@@ -59,6 +59,20 @@ CREATE TABLE changes (
   object_id TEXT NOT NULL, tombstone INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
 );
 INSERT INTO settings VALUES ('epoch', lower(hex(randomblob(16))));
+`, String.raw`
+CREATE TABLE agora_sessions_v2 (
+  id TEXT PRIMARY KEY, task_id TEXT, principal_id TEXT NOT NULL UNIQUE,
+  kind TEXT NOT NULL DEFAULT 'task', convener_id TEXT, parent_principal_id TEXT, meeting_id TEXT,
+  inherits_from TEXT, inherit_reason TEXT, control_state TEXT, archive_state TEXT NOT NULL DEFAULT 'live', ended_at TEXT,
+  session_file TEXT NOT NULL UNIQUE, pi_session_id TEXT, profile TEXT NOT NULL,
+  model TEXT NOT NULL, thinking TEXT NOT NULL, cwd TEXT NOT NULL,
+  status TEXT NOT NULL, revision INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL
+);
+INSERT INTO agora_sessions_v2 SELECT * FROM agora_sessions;
+DROP TABLE agora_sessions;
+ALTER TABLE agora_sessions_v2 RENAME TO agora_sessions;
+ALTER TABLE task_generations ADD COLUMN agora_session_id TEXT REFERENCES agora_sessions(id);
+UPDATE task_generations SET agora_session_id=(SELECT agora_session_id FROM tasks WHERE tasks.id=task_generations.task_id);
 `];
 
 export interface PrincipalRow {
@@ -180,14 +194,21 @@ export async function openStore(home: string): Promise<Store> {
     if (!Number.isInteger(version) || version < 0 || version > SCHEMA_VERSION) throw new Error("数据库版本不兼容，请使用匹配版本的 daemon");
     if (version < SCHEMA_VERSION) {
       if (existed) await consistentBackup(db, path.join(home, "backups", `agora-${version}-${Date.now()}-${randomUUID()}.db`));
-      db.exec("BEGIN IMMEDIATE");
+      // 重建被引用的会话表时关闭外键执行，提交前核验全部引用。
+      db.exec("PRAGMA foreign_keys=OFF; BEGIN IMMEDIATE");
       try {
         db.exec("CREATE TABLE IF NOT EXISTS schema_version(version INTEGER NOT NULL,migrated_at TEXT NOT NULL)");
-        for (let next = version; next < SCHEMA_VERSION; next++) db.exec(schemaMigrations[next]!);
+        for (let next = version; next < SCHEMA_VERSION; next++) {
+          const sessionObjects = next === 1 ? db.prepare("SELECT sql FROM sqlite_master WHERE tbl_name='agora_sessions' AND type IN ('index','trigger') AND sql IS NOT NULL").all() as { sql: string }[] : [];
+          db.exec(schemaMigrations[next]!);
+          for (const object of sessionObjects) db.exec(object.sql);
+        }
+        if (db.prepare("PRAGMA foreign_key_check").all().length) throw new Error("数据库迁移外键检查失败");
         db.prepare("DELETE FROM schema_version").run();
         db.prepare("INSERT INTO schema_version VALUES(?,?)").run(SCHEMA_VERSION, now());
         db.exec("COMMIT");
       } catch (error) { db.exec("ROLLBACK"); throw error; }
+      finally { db.exec("PRAGMA foreign_keys=ON"); }
     }
     db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;");
     return new Store(db, home);

@@ -6,6 +6,18 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 
+export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_RANGE = { min: 1, max: 1 } as const;
+export interface ProtocolRange { min: number; max: number }
+
+export function negotiateProtocol(remote: ProtocolRange, local: ProtocolRange = PROTOCOL_RANGE): number {
+  const valid = (range: ProtocolRange) => Number.isSafeInteger(range.min) && Number.isSafeInteger(range.max) && range.min >= 1 && range.min <= range.max;
+  if (!valid(remote) || !valid(local) || Math.max(local.min, remote.min) > Math.min(local.max, remote.max)) {
+    throw new Error('协议版本不兼容，请运行 agora shutdown 后启动兼容版本');
+  }
+  return Math.min(local.max, remote.max);
+}
+
 export type HostRole = 'agent:main' | 'host:cli' | 'host:pane';
 export interface RequestOptions { signal?: AbortSignal; idempotencyKey?: string; timeoutMs?: number }
 export interface AgoraClient {
@@ -53,7 +65,7 @@ function nonempty(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
 }
 async function jsonRequest<T>(url: string, method: string, path: string, body: unknown,
-  token: string | undefined, options: RequestOptions, closed?: AbortSignal): Promise<T> {
+  token: string | undefined, options: RequestOptions, closed?: AbortSignal, protocolVersion: number | null = PROTOCOL_VERSION): Promise<T> {
   assertActive(options.signal);
   if (!path.startsWith('/v1/') || path.includes('#') || path.includes('\\') || path.startsWith('//')) {
     throw new Error('agora 请求路径无效');
@@ -65,7 +77,7 @@ async function jsonRequest<T>(url: string, method: string, path: string, body: u
   try {
     response = await fetch(target, {
       method, redirect: 'error', signal: AbortSignal.any(signals),
-      headers: { 'Agora-Protocol': '1', ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      headers: { ...(protocolVersion === null ? {} : { 'Agora-Protocol': String(protocolVersion) }), ...(token ? { Authorization: `Bearer ${token}` } : {}),
         ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
         ...(options.idempotencyKey ? { 'Idempotency-Key': options.idempotencyKey } : {}) },
       body: body === undefined ? undefined : JSON.stringify(body),
@@ -89,17 +101,28 @@ async function jsonRequest<T>(url: string, method: string, path: string, body: u
   return data as T;
 }
 
-export function createClient(options: { url: string; token: string; connectionId?: string; instanceId?: string; expiresAt?: string }): AgoraClient {
+async function connectionProtocol(url: string, options: RequestOptions, expectedInstanceId?: string): Promise<{ protocolVersion: number; instanceId: string }> {
+  const health = await jsonRequest<unknown>(url, 'GET', '/v1/health', undefined, undefined, options, undefined, null);
+  if (!record(health) || !nonempty(health.daemonVersion) || !nonempty(health.instanceId) || !record(health.protocol) ||
+      typeof health.protocol.min !== 'number' || typeof health.protocol.max !== 'number') throw new Error('agora 健康检查响应无效');
+  if (expectedInstanceId !== undefined && health.instanceId !== expectedInstanceId) {
+    throw new Error('agora 后台身份核验失败，已拒绝发送凭证');
+  }
+  return { protocolVersion: negotiateProtocol({ min: health.protocol.min, max: health.protocol.max }), instanceId: health.instanceId };
+}
+
+export function createClient(options: { url: string; token: string; connectionId?: string; instanceId?: string; expiresAt?: string; protocolVersion?: number }): AgoraClient {
   const url = loopbackUrl(options.url);
+  const protocolVersion = options.protocolVersion ?? PROTOCOL_VERSION;
   const closed = new AbortController();
   let token = options.token;
   let expiresAt = options.expiresAt ?? '';
   return {
     url, get token() { return token; }, connectionId: options.connectionId ?? '',
     instanceId: options.instanceId ?? '', get expiresAt() { return expiresAt; },
-    request: (method, path, body, requestOptions = {}) => jsonRequest(url, method, path, body, token, requestOptions, closed.signal),
+    request: (method, path, body, requestOptions = {}) => jsonRequest(url, method, path, body, token, requestOptions, closed.signal, protocolVersion),
     async refresh() {
-      const next = await jsonRequest<{ token: string; expiresAt: string }>(url, 'POST', '/v1/auth/refresh', {}, token, {}, closed.signal);
+      const next = await jsonRequest<{ token: string; expiresAt: string }>(url, 'POST', '/v1/auth/refresh', {}, token, {}, closed.signal, protocolVersion);
       if (!record(next) || !nonempty(next.token) || !nonempty(next.expiresAt) || !Number.isFinite(Date.parse(next.expiresAt))) {
         throw new Error('agora 凭证续期响应无效');
       }
@@ -176,8 +199,9 @@ async function authenticateHost(home: string, discovery: Discovery, options: Con
   if (key.length !== 32) throw new Error('agora 主机凭证无效');
   const clientNonce = randomBytes(32).toString('base64url');
   const requestOptions = { signal: options.signal, timeoutMs: Math.max(1, Math.min(5000, (deadline ?? Date.now() + 5000) - Date.now())) };
+  const { protocolVersion } = await connectionProtocol(url, requestOptions, discovery.instanceId);
   const challenge = await jsonRequest<{ challengeId: string; serverNonce: string; instanceId: string; serverProof: string }>(
-    url, 'POST', '/v1/auth/challenge', { clientNonce }, undefined, requestOptions);
+    url, 'POST', '/v1/auth/challenge', { clientNonce }, undefined, requestOptions, undefined, protocolVersion);
   if (!record(challenge) || !nonempty(challenge.challengeId) || !nonempty(challenge.serverNonce) ||
       !nonempty(challenge.instanceId) || !nonempty(challenge.serverProof)) throw new Error('agora 握手响应无效');
   const expected = Buffer.from(hmacProof(key, ['server', clientNonce, challenge.instanceId]), 'base64url');
@@ -187,15 +211,18 @@ async function authenticateHost(home: string, discovery: Discovery, options: Con
   }
   const auth = await jsonRequest<{ token: string; connectionId: string; expiresAt: string }>(url, 'POST', '/v1/auth/token', {
     challengeId: challenge.challengeId, clientProof: hmacProof(key, ['client', challenge.serverNonce, challenge.instanceId]), as: options.as,
-  }, undefined, requestOptions);
+  }, undefined, requestOptions, undefined, protocolVersion);
   if (!record(auth) || !nonempty(auth.token) || !nonempty(auth.connectionId) || !nonempty(auth.expiresAt) ||
       !Number.isFinite(Date.parse(auth.expiresAt))) throw new Error('agora 登录响应无效');
-  return createClient({ url, ...auth, instanceId: challenge.instanceId });
+  return createClient({ url, token: auth.token, connectionId: auth.connectionId, expiresAt: auth.expiresAt,
+    instanceId: challenge.instanceId, protocolVersion });
 }
 
 export async function connectLaunch<T>(url: string, ticket: string): Promise<{ client: AgoraClient; launch: T }> {
   url = loopbackUrl(url);
-  const launch = await jsonRequest<T & { token: string }>(url, 'POST', '/v1/auth/launch', { ticket }, undefined, { timeoutMs: 10000 });
+  const options = { timeoutMs: 10000 };
+  const { protocolVersion, instanceId } = await connectionProtocol(url, options);
+  const launch = await jsonRequest<T & { token: string }>(url, 'POST', '/v1/auth/launch', { ticket }, undefined, options, undefined, protocolVersion);
   if (!record(launch) || !nonempty(launch.token)) throw new Error('agora 子会话登录响应无效');
-  return { client: createClient({ url, token: launch.token }), launch };
+  return { client: createClient({ url, token: launch.token, protocolVersion, instanceId }), launch };
 }

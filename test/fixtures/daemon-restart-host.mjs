@@ -5,9 +5,19 @@ const driver = new RpcSubprocessDriver({ home: config.home, piPath: config.piPat
   extensionPath: config.extensionPath, extraExtensions: [config.providerPath, config.blockerPath],
   env: process.env, containment: config.containment,
   stopOptions: { abortTimeoutMs: 150, graceMs: 150, termGraceMs: 150 } });
+let failRecovery = config.failRecovery === true;
+const recover = driver.recoverOldRun.bind(driver);
+driver.recoverOldRun = async (...args) => {
+  if (failRecovery) throw new Error('受控故障：旧写者尚未清理');
+  return recover(...args);
+};
 try {
   const daemon = await startDaemon({ home: config.home, driver });
   process.on('message', async message => {
+    if (message?.type === 'allowRecovery') {
+      failRecovery = false;
+      process.send?.({ type: 'recoveryAllowed' });
+    }
     if (message?.type === 'forgetIdentity') {
       daemon.store.run('UPDATE process_runs SET identity=NULL,pid=NULL,process_start_time=NULL WHERE exited_at IS NULL');
       process.send?.({ type: 'identityForgotten' });

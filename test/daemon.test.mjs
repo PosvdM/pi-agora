@@ -101,6 +101,36 @@ async function setup(t, options = {}) {
   return { home, driver, daemon, client, async spawn(conn, extra = {}, key) { return conn.request('POST', '/v1/tasks', { ...spawnBody, cwd: home, ...extra }, key ? { idempotencyKey: key } : undefined); } };
 }
 
+test('settle屏障之后的过期stop在队列内返回conflict，且不修改运行标志', async t => {
+  const f = await setup(t), main = await f.client();
+  const task = await f.spawn(main);
+  await until(() => f.driver.handles[0]?.commands.includes('prompt'));
+  const handle = f.driver.handles[0];
+  const before = f.daemon.store.task(task.taskId);
+  let release, entered;
+  const barrier = new Promise(resolve => { release = resolve; });
+  const started = new Promise(resolve => { entered = resolve; });
+  const send = handle.send.bind(handle);
+  handle.send = async command => {
+    if (command.type === 'get_last_assistant_text') { entered(); await barrier; }
+    return send(command);
+  };
+  handle.emit({ type: 'agent_settled', aborted: false });
+  await started;
+  // 直接进入任务控制队列，避免用时间等待推测 HTTP 是否已入队。
+  const conn = f.daemon.auth.authenticate(`Bearer ${main.token}`);
+  const stop = f.daemon.tasks.stop(conn, task.taskId, { expectedGeneration: before.generation, expectedRevision: before.revision });
+  const conflict = assert.rejects(stop, error => error.code === 'conflict');
+  release();
+  await conflict;
+  assert.equal(f.daemon.store.task(task.taskId).status, 'completed');
+  assert.equal(handle.stopped, false);
+  const runtime = f.daemon.tasks.runtimes.get(task.taskId);
+  assert.equal(runtime.stopped, false);
+  assert.ok(runtime.idleTimer);
+  assert.equal(f.daemon.store.session(task.agoraSessionId).control_state, null);
+});
+
 test('HTTP 边界拒绝 Origin、错误协议、匿名、伪造用户身份与未实现权限', async t => {
   const f = await setup(t), cli = await f.client('host:cli');
   assert.equal((await http(f.daemon.url, undefined, 'GET', '/v1/health', undefined, { Origin: 'https://untrusted.example' })).status, 403);
@@ -322,9 +352,12 @@ test('child fatal 立即撤销token并停止run；cleanupConfirmed=false保留�
   assert.equal(run.state, 'stopping');
   assert.ok(run.cleanup_error);
   assert.equal(f.daemon.tasks.runtimes.size, 1, '未确认退出的handle不能丢失');
-  await main.request('POST', `/v1/tasks/${task.taskId}/stop`, {});
+  handle.stop = async () => { throw new Error('受控清理失败，不能发出成功退出事件'); };
+  await assert.rejects(main.request('POST', `/v1/tasks/${task.taskId}/stop`, {}), error => error.code === 'stop_incomplete');
+  assert.equal(f.daemon.tasks.runtimes.size, 1, '失败的清理结果不能被stop覆盖');
+  handle.exit(true);
   await f.daemon.tasks.flush();
-  assert.equal(f.daemon.tasks.runtimes.size, 0, '已确认退出的handle释放引用');
+  assert.equal(f.daemon.tasks.runtimes.size, 0, '独立确认退出后才释放handle引用');
   assert.ok(f.daemon.store.get('SELECT exited_at FROM process_runs WHERE id=?', handle.spec.runId).exited_at);
   const next = await f.spawn(main);
   await until(() => f.driver.handles[1]?.commands.includes('prompt'));
@@ -354,14 +387,15 @@ test('driver.start 抛错但未返回handle时保留退出待查run和聚合诊�
   const driver = new MockDriver();
   const next = await startDaemon({ home: f.home, driver });
   try {
-    assert.equal(driver.recovered.length, 1);
-    assert.equal(driver.recovered[0].identity.runId, run.id);
+    assert.equal(f.driver.recovered.length, 1, 'shutdown重试无handle的持久化运行');
+    assert.equal(f.driver.recovered[0].identity.runId, run.id);
+    assert.equal(driver.recovered.length, 0, '关闭前已安全清理的run无需重复恢复');
     assert.ok(next.store.get('SELECT exited_at FROM process_runs WHERE id=?', run.id).exited_at);
     assert.equal(driver.handles.length, 0);
   } finally { await next.close(); }
 });
 
-test('重启扫描失败保留未退出run；未完成幂等操作变成固定失败而非再次执行', async t => {
+test('重启扫描失败的持久run阻止stop/shutdown虚假成功，并允许安全重试', async t => {
   const f = await setup(t), main = await f.client();
   const task = await f.spawn(main, {}, 'crash-operation');
   await until(() => f.driver.handles[0]?.commands.includes('prompt'));
@@ -390,12 +424,17 @@ test('重启扫描失败保留未退出run；未完成幂等操作变成固定�
       // 主会话恢复后使用同principal的原幂等键才命中原操作；此处直接验证存储的固定结果。
       assert.equal(JSON.parse(next.store.get("SELECT result FROM operations WHERE key='crash-operation'").result).error.code, 'operation_interrupted');
       assert.equal((await cli.request('GET', `/v1/tasks/${task.taskId}`)).status, 'interrupted');
+      await assert.rejects(cli.request('POST', `/v1/tasks/${task.taskId}/stop`, {}), error => error.code === 'stop_incomplete');
+      assert.equal(next.store.task(task.taskId).status, 'interrupted');
+      await assert.rejects(next.close({ force: true }), error => error.code === 'stop_incomplete');
+      assert.equal(next.store.get('SELECT exited_at FROM process_runs WHERE id=?', runId).exited_at, null);
+      assert.ok(failedDriver.recovered.length >= 3, 'stop/shutdown 都须重试持久化旧run');
     } finally { cli.close(); }
-  } finally { await next.close(); }
+  } finally { failedDriver.options.failRecovery = false; await next.close({ force: true }); }
   const recoveredDriver = new MockDriver();
   resumed = await startDaemon({ home: f.home, driver: recoveredDriver });
   try {
-    assert.equal(recoveredDriver.recovered.length, 1, '失败run在下次启动继续扫描');
+    assert.equal(recoveredDriver.recovered.length, 0, '关闭重试已确认清理的run不再扫描');
     assert.ok(resumed.store.get('SELECT exited_at FROM process_runs WHERE id=?', runId).exited_at);
     assert.equal(recoveredDriver.handles.length, 0);
   } finally { await resumed.close(); }

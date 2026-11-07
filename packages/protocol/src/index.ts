@@ -1,8 +1,7 @@
+import type { ProtocolRange } from "./client.js";
 export * from "./client.js";
 
 export const VERSION = "0.1.0";
-export const PROTOCOL_VERSION = 1;
-export const PROTOCOL_RANGE = { min: 1, max: 1 } as const;
 export const EXPLORE_TOOLS = ["read", "grep", "find", "ls"] as const;
 
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
@@ -11,7 +10,6 @@ export type TaskStatus = "created" | "running" | "waiting_decision" | "completed
 export type PrincipalType = "user" | "host:cli" | "host:pane" | "agent:main" | "agent:child";
 export type SessionKind = "task" | "meeting-seat" | "secretary";
 
-export interface ProtocolRange { min: number; max: number }
 export interface Health {
   daemonVersion: string;
   instanceId: string;
@@ -108,12 +106,3 @@ export const agoraTaskSchema = {
     ...spawnTaskSchema.properties,
   },
 } as const;
-
-export function negotiateProtocol(remote: ProtocolRange, local: ProtocolRange = PROTOCOL_RANGE): number {
-  const min = Math.max(local.min, remote.min);
-  const max = Math.min(local.max, remote.max);
-  if (!Number.isInteger(min) || !Number.isInteger(max) || min > max) {
-    throw new Error("协议版本不兼容，请运行 agora shutdown 后启动兼容版本");
-  }
-  return max;
-}

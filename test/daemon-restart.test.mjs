@@ -115,3 +115,44 @@ for (const forgetIdentity of [false, true]) test(`真实 daemon 强杀并重启�
     await f.cleanup();
   }
 });
+
+test('真实旧pi在重启清理失败后，stop/shutdown保持未确认直到安全重试成功', { timeout: 90_000 }, async () => {
+  const f = await piFixture({ turns: [{ ignoreAbort: true, segments: [{ type: 'text', text: '受控流开始' }, { type: 'hang' }] }] });
+  const home = join(f.root, 'agora');
+  const config = { home, piPath: f.install.packageDir, extensionPath, providerPath, blockerPath, containment };
+  let first, second, client, nextClient, identity;
+  try {
+    first = start(config, f.env);
+    await message(first, 'ready');
+    client = await connectHost({ home, as: 'host:cli', autoStart: false });
+    const task = await client.request('POST', '/v1/tasks', { model: 'p0-fake/scripted', thinking: 'off', profile: 'explore', prompt: '不可自动重放', cwd: f.cwd });
+    await until(() => stat(join(f.root, 'daemon-rpc-blocked')).then(() => true, () => false), 25_000);
+    const run = query(home, 'SELECT * FROM process_runs WHERE agora_session_id=?', task.agoraSessionId)[0];
+    identity = JSON.parse(run.identity);
+    first.kill('SIGKILL'); await first.done;
+    second = start({ ...config, failRecovery: true }, f.env);
+    await message(second, 'ready');
+    nextClient = await connectHost({ home, as: 'host:cli', autoStart: false });
+    if (process.platform === 'win32') await until(async () => await isSameProcess(identity) === 'gone');
+    else assert.equal(await isSameProcess(identity), 'alive');
+    await assert.rejects(nextClient.request('POST', `/v1/tasks/${task.taskId}/stop`, {}), error => error.code === 'stop_incomplete');
+    assert.equal((await nextClient.request('GET', `/v1/tasks/${task.taskId}`)).status, 'interrupted');
+    await assert.rejects(nextClient.request('POST', '/v1/admin/shutdown', { force: true, timeoutMs: 1000 }), error => error.code === 'stop_incomplete');
+    assert.equal((await nextClient.request('GET', '/v1/status')).draining, true, '停止不完整时daemon仍提供诊断，不报告关闭成功');
+    assert.equal(query(home, 'SELECT exited_at FROM process_runs WHERE id=?', run.id)[0].exited_at, null);
+    assert.equal(query(home, 'SELECT COUNT(*) AS n FROM process_runs')[0].n, 1, '原会话不能被自动重新打开');
+    if (process.platform !== 'win32') assert.equal(await isSameProcess(identity), 'alive', '失败的stop/shutdown不能伪称旧pi已退出');
+    const allowed = message(second, 'recoveryAllowed'); second.send({ type: 'allowRecovery' }); await allowed;
+    const stopped = await nextClient.request('POST', `/v1/tasks/${task.taskId}/stop`, {});
+    assert.equal(stopped.status, 'stopped');
+    assert.ok(stopped.stopReport);
+    assert.equal(await isSameProcess(identity), 'gone');
+    assert.ok(query(home, 'SELECT exited_at FROM process_runs WHERE id=?', run.id)[0].exited_at);
+    const closed = message(second, 'closed'); second.send({ type: 'close' }); await closed; await second.done;
+  } finally {
+    client?.close(); nextClient?.close();
+    for (const child of [first, second]) if (child && child.exitCode === null && child.signalCode === null) { child.kill('SIGKILL'); await child.done; }
+    if (identity && await isSameProcess(identity) !== 'gone') await stopByIdentity(identity, FAST_STOP);
+    await f.cleanup();
+  }
+});

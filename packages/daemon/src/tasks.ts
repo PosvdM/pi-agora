@@ -98,7 +98,7 @@ export class TaskManager {
       this.store.run("INSERT INTO principals(id,type,label,cwd,created_at) VALUES(?,?,?,?,?)", principalId, "agent:child", title, cwd, at);
       this.store.run("INSERT INTO agora_sessions(id,task_id,principal_id,convener_id,parent_principal_id,session_file,profile,model,thinking,cwd,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", sessionId, taskId, principalId, convenerId, conn.principalId!, sessionFile, "explore", model, thinking, cwd, "created", at);
       this.store.run("INSERT INTO tasks(id,agora_session_id,convener_id,requested_by,title,prompt,model,thinking,profile,cwd,notify,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)", taskId, sessionId, convenerId, conn.principalId!, title, prompt, model, thinking, "explore", cwd, notify, "created", at, at);
-      this.store.run("INSERT INTO task_generations(task_id,generation,status) VALUES(?,1,'created')", taskId);
+      this.store.run("INSERT INTO task_generations(task_id,generation,status,agora_session_id) VALUES(?,1,'created',?)", taskId, sessionId);
       this.store.change("task", taskId);
     });
     this.pending.push(taskId);
@@ -313,33 +313,48 @@ export class TaskManager {
     return { items, nextCursor };
   }
   async stop(conn: Connection, taskId: string, body: Record<string, unknown>) {
-    const current = this.store.task(taskId);
-    this.access(conn, current, true);
-    if (body.expectedGeneration !== undefined && body.expectedGeneration !== current.generation || body.expectedRevision !== undefined && body.expectedRevision !== current.revision) throw new AgoraError(409, "conflict", "任务状态已变化，请重新读取");
-    const runtime = this.runtimes.get(taskId);
-    if (runtime) { runtime.stopped = true; runtime.terminal = "stopped"; runtime.rejectReady(new Error("任务已停止")); if (runtime.idleTimer) clearTimeout(runtime.idleTimer); }
     return this.control(taskId, async () => {
+      // 权限、版本与停止副作用共用队列内的线性化点。
       const task = this.store.task(taskId);
       this.access(conn, task, true);
-      if (task.status === "stopped") return { ...taskSummary(task), stopReport: null };
+      if (body.expectedGeneration !== undefined && body.expectedGeneration !== task.generation || body.expectedRevision !== undefined && body.expectedRevision !== task.revision) throw new AgoraError(409, "conflict", "任务状态已变化，请重新读取");
+      const runtime = this.runtimes.get(taskId);
+      if (runtime) { runtime.stopped = true; runtime.terminal = "stopped"; runtime.rejectReady(new Error("任务已停止")); if (runtime.idleTimer) clearTimeout(runtime.idleTimer); }
       let report;
       this.store.run("UPDATE tasks SET status_detail='停止中' WHERE id=?", taskId);
       this.store.run("UPDATE agora_sessions SET control_state='stopping' WHERE id=?", task.agora_session_id);
-      if (runtime?.handle) report = await runtime.handle.stop();
+      if (runtime?.handle) {
+        try {
+          report = await runtime.handle.stop();
+          const exit = await runtime.handle.exited;
+          if (!exit.cleanupConfirmed) throw new Error("写者退出未确认");
+          await this.exited(runtime, exit);
+        } catch { throw new AgoraError(409, "stop_incomplete", "进程尚未确认退出，保留现场"); }
+      }
+      const recoveryReports = await this.recoverPreviousRuns(taskId, false);
+      report ??= recoveryReports.at(-1);
+      if (this.unconfirmedRun(taskId)) throw new AgoraError(409, "stop_incomplete", "旧运行尚未确认退出，不能将任务标为停止");
+      if (task.status === "stopped") return { ...taskSummary(task), stopReport: report ?? null };
       this.store.run("UPDATE agora_sessions SET control_state=NULL WHERE id=?", task.agora_session_id);
       this.auth.revokeRun(runtime?.runId ?? "");
       if (runtime) this.releaseSlot(runtime);
       return { ...taskSummary(this.store.transition(this.store.task(taskId), "stopped")), stopReport: report ?? null };
     });
   }
-  async recoverPreviousRuns(): Promise<void> {
+  private unconfirmedRun(taskId?: string): boolean {
+    return !!this.store.get("SELECT r.id FROM process_runs r JOIN agora_sessions s ON s.id=r.agora_session_id WHERE r.exited_at IS NULL AND (? IS NULL OR s.task_id=?) LIMIT 1", taskId ?? null, taskId ?? null);
+  }
+  async recoverPreviousRuns(taskId?: string, startup = true): Promise<StopReport[]> {
+    const allReports: StopReport[] = [];
     let cursor = "";
     while (true) {
-      const runs = this.store.all<RunRow>("SELECT * FROM process_runs WHERE exited_at IS NULL AND id>? ORDER BY id LIMIT 200", cursor);
+      const runs = this.store.all<RunRow>("SELECT r.* FROM process_runs r JOIN agora_sessions s ON s.id=r.agora_session_id WHERE r.exited_at IS NULL AND r.id>? AND (? IS NULL OR s.task_id=?) ORDER BY r.id LIMIT 200", cursor, taskId ?? null, taskId ?? null);
       if (!runs.length) break;
       for (const run of runs) {
         cursor = run.id;
         const session = this.store.session(run.agora_session_id);
+        // 有 handle 的失败停止仍由原 driver 持锁，不能绕过其清理确认。
+        if ([...this.runtimes.values()].some(runtime => runtime.runId === run.id && runtime.handle)) continue;
         let clean = false;
         let recoveryError: unknown;
         let identity: ProcessIdentity | undefined;
@@ -350,6 +365,7 @@ export class TaskManager {
             reports.push(await this.driver.recoverOldRun(identity, session.session_file));
           }
           else {
+            if (this.recoveryLocks.has(session.id)) throw new Error("旧写者清理不明，保留原写锁");
             const lock = await acquireSessionWriterLock(session.session_file, { app: "pi-agora", identity: currentProcessIdentity(this.options.instanceId) });
             if (!isSessionWriterLock(lock)) throw new Error("旧会话仍被锁定");
             const recovered = await lock.recoverPreviousWriter();
@@ -368,8 +384,9 @@ export class TaskManager {
           if (report && !reports.includes(report)) reports.push(report);
           this.store.run("UPDATE process_runs SET cleanup_error=? WHERE id=?", JSON.stringify({ message: "旧进程尚未确认退出，禁止恢复", diagnostic: recoveryError }), run.id);
         }
+        allReports.push(...reports);
         const diagnostic = {
-          reason: "daemon 重启清理旧运行", runId: run.id, agoraSessionId: session.id,
+          reason: startup ? "daemon 重启清理旧运行" : "停止时重试清理持久化运行", runId: run.id, agoraSessionId: session.id,
           previousDaemonInstanceId: run.daemon_instance_id, daemonInstanceId: this.options.instanceId,
           identity: identity ?? null, cleanupConfirmed: clean,
           stopReports: reports, error: recoveryError,
@@ -390,6 +407,7 @@ export class TaskManager {
         if (["created", "running"].includes(task.status)) this.store.transition(task, "interrupted", clean ? "daemon 重启，旧运行已停止；任务不会自动重放" : "旧进程尚未确认退出，禁止恢复", run.id);
       }
     }
+    if (!startup) return allReports;
     this.store.run("UPDATE outbox SET visible_after=0 WHERE acked_at IS NULL");
     // 启动前已排队但尚未创建 run 的任务仍保留排队状态。
     let rowid = 0;
@@ -398,6 +416,7 @@ export class TaskManager {
       if (!rows.length) break;
       for (const row of rows) { rowid = row.cursor; this.pending.push(row.id); }
     }
+    return allReports;
   }
   async flush(): Promise<void> {
     while (this.controls.size) await Promise.allSettled([...this.controls.values()]);
@@ -423,13 +442,20 @@ export class TaskManager {
       work.push(this.control(runtime.taskId, async () => {
         const task = this.store.task(runtime.taskId);
         if (["created", "running"].includes(task.status)) this.store.transition(task, "interrupted", "daemon 强制关闭，任务不会自动重放", runtime.runId);
-        if (runtime.handle) await runtime.handle.stop();
+        if (runtime.handle) {
+          await runtime.handle.stop();
+          const exit = await runtime.handle.exited;
+          if (!exit.cleanupConfirmed) throw new Error("写者退出未确认");
+          await this.exited(runtime, exit);
+        }
         this.auth.revokeRun(runtime.runId);
         this.releaseSlot(runtime);
       }));
     }
     const results = await Promise.allSettled(work);
     await this.flush();
-    if (this.recoveryLocks.size || results.some(result => result.status === "rejected")) throw new AgoraError(409, "stop_incomplete", "部分进程尚未确认退出，daemon 保持运行");
+    // 数据库是所有未确认运行的统一清单，包括上次 daemon 留下且没有 handle 的运行。
+    await this.recoverPreviousRuns(undefined, false);
+    if (this.unconfirmedRun() || this.recoveryLocks.size || results.some(result => result.status === "rejected")) throw new AgoraError(409, "stop_incomplete", "部分进程尚未确认退出，daemon 保持运行");
   }
 }
