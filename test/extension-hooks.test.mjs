@@ -74,7 +74,7 @@ test('主会话初始化幂等，租约绑定并正确分发四个任务动作',
     assert.equal(call.path, route);
     if (action === 'spawn') assert.equal(call.body.originToolCall.toolCallId, 'call-spawn');
   }
-  await assert.rejects(tool.execute('bad', { action: 'spawn', profile: 'implement', model: 'fake/model', prompt: '越权' }, undefined, undefined, f.ctx), /explore/);
+  await assert.rejects(tool.execute('bad', { action: 'spawn', profile: 'invalid', model: 'fake/model', prompt: '越权' }, undefined, undefined, f.ctx), /有效权限档位/);
 });
 
 test('daemon重启后重新发现握手并凭恢复证明认领原principal', async t => {
@@ -112,7 +112,7 @@ test('child就绪前拒绝全部工具，启动凭证不进入工具结果及会
   const f = await setup(t, { managed: true });
   const hook = f.handlers.get('tool_call');
   assert.equal((await hook({ toolName: 'read', input: { path: 'public.txt' } }, f.ctx)).block, true);
-  assert.equal(f.registered.length, 0);
+  assert.deepEqual(f.registered.map(t => t.name), ['agora_task', 'agora_request', 'agora_git']);
   await f.handlers.get('session_start')({}, f.ctx);
   assert.equal(f.wire.state.readyCount, 1);
   const report = f.wire.calls.find(c => c.path.endsWith('/ready')).body;

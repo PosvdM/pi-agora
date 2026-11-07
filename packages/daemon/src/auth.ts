@@ -6,7 +6,7 @@ import { AgoraError, text, optionalBoolean } from "./errors.js";
 import { Store, id, now, type PrincipalRow } from "./store.js";
 
 export interface RunPolicy {
-  profile: "explore"; allowedRoots: string[]; protectedPaths: string[];
+  profile: "explore" | "review" | "implement"; allowedRoots: string[]; protectedPaths: string[];
   tools: string[]; model: string; thinking: string; extensionVersion: string;
 }
 export interface Connection {
@@ -93,6 +93,12 @@ export class Auth {
     return conn;
   }
   refresh(conn: Connection) { conn.expiresAt = Date.now() + TOKEN_MS; return this.response(conn); }
+  requireAgent(conn: Connection): PrincipalRow | undefined {
+    if (conn.type !== "agent:child") return this.requireMain(conn);
+    const run = this.store.get<{ state: string }>("SELECT state FROM process_runs WHERE id=? AND exited_at IS NULL", conn.runId ?? "");
+    if (!run || run.state !== "ready") throw new AgoraError(403, "run_not_ready", "协作会话尚未通过最终就绪核对");
+    return this.store.principal(conn.principalId!);
+  }
   requireMain(conn: Connection): PrincipalRow | undefined {
     if (conn.type === "agent:child") throw new AgoraError(403, "forbidden", "协作会话不能执行此操作");
     if (conn.type !== "agent:main") return undefined;

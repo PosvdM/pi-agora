@@ -29,8 +29,8 @@ test('新库使用 WAL/FULL，schema 与后续领域字段完整，重复打开�
   let store = await openStore(home);
   assert.equal(store.get('PRAGMA journal_mode').journal_mode, 'wal');
   assert.equal(store.get('PRAGMA synchronous').synchronous, 2);
-  assert.equal(SCHEMA_VERSION, 2);
-  assert.equal(store.get('SELECT version FROM schema_version').version, 2);
+  assert.equal(SCHEMA_VERSION, 3);
+  assert.equal(store.get('SELECT version FROM schema_version').version, 3);
   assert.equal(store.get('PRAGMA foreign_keys').foreign_keys, 1);
   assert.ok(store.all('PRAGMA foreign_key_list(task_generations)').some(fk => fk.from === 'agora_session_id' && fk.table === 'agora_sessions'));
   assert.equal(store.all('PRAGMA table_info(task_generations)').find(column => column.name === 'agora_session_id').notnull, 0);
@@ -91,8 +91,8 @@ test('真实 v1 升级保留数据、外键和索引，回填每代会话且备�
   old.close();
   const store = await openStore(home);
   t.after(() => store.close());
-  assert.equal(store.get('SELECT version FROM schema_version').version, 2);
-  for (const table of tables) assert.deepEqual(store.all(`SELECT * FROM ${table}`), data[table], table);
+  assert.equal(store.get('SELECT version FROM schema_version').version, 3);
+  for (const table of tables) assert.deepEqual(store.all(`SELECT ${Object.keys(data[table][0]).join(',')} FROM ${table}`), data[table], table);
   assert.deepEqual(store.all('SELECT * FROM task_generations ORDER BY generation'), generations.map(row => Object.assign(Object.create(null), row, { agora_session_id: 'session' })));
   for (const index of ['session_status', 'tasks_convener', 'runs_session', 'outbox_recipient']) assert.ok(store.get("SELECT name FROM sqlite_master WHERE type='index' AND name=?", index));
   assert.equal(store.get('PRAGMA foreign_keys').foreign_keys, 1);

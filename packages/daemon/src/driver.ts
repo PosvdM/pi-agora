@@ -1,5 +1,6 @@
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import {
   acquireSessionWriterLock, comparisonKey, currentProcessIdentity, isSameProcess,
   isSessionWriterLock, locatePi, realPathOrPending, stopByIdentity,
@@ -16,7 +17,8 @@ export interface LaunchSpec {
   cwd: string;
   model: string;
   thinking: string;
-  profile: "explore";
+  profile: "explore" | "review" | "implement";
+  tools?: string[];
   sessionFile: string;
   env: Record<string, string>;
 }
@@ -153,7 +155,7 @@ export class RpcSubprocessDriver implements SessionDriver {
     finally { this.recoveryOperations.delete(operationKey); }
   }
   async start(spec: LaunchSpec): Promise<DriverHandle> {
-    if (spec.profile !== "explore") throw failure("EAGORA_PROFILE", "此切片只支持 explore 档位");
+    if (!["explore", "review", "implement"].includes(spec.profile)) throw failure("EAGORA_PROFILE", "权限档位无效");
     for (const id of [spec.agoraSessionId, spec.runId, spec.instanceId]) {
       if (!/^[A-Za-z0-9_-]{1,128}$/.test(id)) throw failure("EINVAL", "会话和运行标识格式无效");
     }
@@ -186,7 +188,7 @@ export class RpcSubprocessDriver implements SessionDriver {
     }
     const argv = [pi.cliEntry, "--mode", "rpc", "--session-dir", path.dirname(spec.sessionFile),
       "--session", spec.sessionFile, "--model", spec.model, "--thinking", spec.thinking,
-      "--tools", "read,grep,find,ls,agora_*", "-ne", "-ns", "-np", "--no-approve",
+      "--tools", spec.tools?.join(",") ?? "read,grep,find,ls,agora_*", "-ne", "--no-mcp", "-ns", "-np", "--no-approve",
       "-e", this.options.extensionPath];
     for (const extension of this.options.extraExtensions ?? []) argv.push("-e", extension);
     const env = { ...this.options.env, ...spec.env };
@@ -220,12 +222,27 @@ async function verifyStopped(identity: ProcessIdentity, report: StopReport): Pro
     const code = problem === "停止报告缺少有效的覆盖范围" ? "EAGORA_STOP_COVERAGE" : "EAGORA_STOP_INCOMPLETE";
     throw Object.assign(failure(code, `${problem}，保留会话写锁`), { identity, stopReport: report });
   }
-  try {
-    if (await isSameProcess(identity) === "gone") return;
-  } catch (cause) {
-    throw Object.assign(failure("EAGORA_STOP_INCOMPLETE", "无法核对写者身份，保留会话写锁"), { cause, identity, stopReport: report });
+  const timeoutMs = process.platform === "win32" ? 2_000 : 0;
+  const deadline = performance.now() + timeoutMs;
+  let status: Awaited<ReturnType<typeof isSameProcess>> | "unknown" = "unknown";
+  let cause: unknown;
+  let attempts = 0;
+  // Windows 的退出可见性可能滞后；这里只查询，不重复发送停止信号。
+  for (;;) {
+    attempts++;
+    cause = undefined;
+    try {
+      status = await isSameProcess(identity);
+      if (status === "gone") return;
+    } catch (error) { status = "unknown"; cause = error; }
+    const remaining = deadline - performance.now();
+    if (remaining <= 0) break;
+    await delay(Math.min(50, remaining));
+    if (performance.now() >= deadline) break;
   }
-  throw Object.assign(failure("EAGORA_STOP_INCOMPLETE", "写者尚未确认退出，保留会话写锁"), { identity, stopReport: report });
+  const detail = cause ? `无法核对写者身份：${String(cause)}` : `写者身份状态：${status}`;
+  throw Object.assign(failure("EAGORA_STOP_INCOMPLETE", `${detail}，${timeoutMs ? `${timeoutMs}ms 查询期限内` : ""}尚未确认退出，保留会话写锁`),
+    { cause, identity, stopReport: report, status, attempts, timeoutMs });
 }
 
 class RpcDriverHandle implements DriverHandle {
@@ -241,11 +258,13 @@ class RpcDriverHandle implements DriverHandle {
   private ready = false;
   private stopping = false;
   private stopPromise?: Promise<StopReport>;
+  private processStopPromise?: Promise<StopReport>;
   private finishPromise?: Promise<DriverExit>;
   private exitResult?: DriverExit;
   private exitInfo = { code: null as number | null, signal: null as string | null };
   private reason = "停止";
   private error?: string;
+  private stopError?: string;
   private report?: StopReport;
   private cleanupConfirmed = false;
   private lastCompleted?: RpcEvent;
@@ -346,39 +365,51 @@ class RpcDriverHandle implements DriverHandle {
     return { identity: this.identity, reason: this.reason, ...this.exitInfo, cleanupConfirmed: this.cleanupConfirmed,
       events: structuredClone(this.events), activeTools, lastCompletedAction: this.lastCompleted,
       possibleSideEffects: activeTools.filter((tool) => !["read", "grep", "find", "ls"].includes(tool.toolName)),
-      stderr: this.proc.stderrTail(), stopReport: this.report, error: this.error,
+      stderr: this.proc.stderrTail(), stopReport: this.report, error: [this.error, this.stopError].filter(Boolean).join("; ") || undefined,
       warnings: this.report?.coverage === "snapshot_visible" ? ["停止仅覆盖快照见过的进程，空残留列表不能证明整棵进程树均已退出"] : [] };
   }
   stop(opts?: StopOptions): Promise<StopReport> {
     if (this.stopPromise) return this.stopPromise;
     try { checkStopOptions(opts); } catch (error) { return Promise.reject(error); }
     this.stopping = true;
-    this.interruptedTools = [...this.tools.values()].map((tool) => ({ ...tool }));
+    this.interruptedTools ??= [...this.tools.values()].map((tool) => ({ ...tool }));
     clearTimeout(this.readyTimer); clearInterval(this.heartbeatTimer);
-    this.stopPromise = this.performStop(opts);
+    this.stopPromise = this.performStop(opts).catch((error) => {
+      this.stopPromise = undefined;
+      throw error;
+    });
     return this.stopPromise;
   }
-  private async performStop(opts?: StopOptions): Promise<StopReport> {
+  private async stopProcess(opts?: StopOptions): Promise<StopReport> {
+    for (const [id, timer] of this.pendingUi) {
+      clearTimeout(timer);
+      try { this.proc.rpc.respondUi({ id, cancelled: true }); } catch { /* 传输关闭后继续清理进程。 */ }
+    }
+    this.pendingUi.clear();
+    let updateError: unknown;
+    try { await this.lock.update({ state: "stopping" }); }
+    catch (error) { updateError = error; }
     try {
-      for (const [id, timer] of this.pendingUi) {
-        clearTimeout(timer);
-        try { this.proc.rpc.respondUi({ id, cancelled: true }); } catch { /* 传输关闭后继续清理进程。 */ }
-      }
-      this.pendingUi.clear();
-      let updateError: unknown;
-      try { await this.lock.update({ state: "stopping" }); }
-      catch (error) { updateError = error; }
-      try { await this.proc.rpc.send({ type: "clear_queue" }, { timeoutMs: 2_000 }); }
-      catch (error) { this.receive({ type: "driver_clear_queue_failed", error: String(error) }); }
-      this.report = await this.proc.stop(opts ?? this.options.stopOptions);
-      await verifyStopped(this.identity, this.report);
+      const response = await this.proc.rpc.send({ type: "clear_queue" }, { timeoutMs: 2_000 });
+      this.receive({ type: "driver_queue_cleared", data: response.data });
+    } catch (error) { this.receive({ type: "driver_clear_queue_failed", error: String(error) }); }
+    this.report = await this.proc.stop(opts ?? this.options.stopOptions);
+    if (updateError) throw updateError;
+    return this.report;
+  }
+  private async performStop(opts?: StopOptions): Promise<StopReport> {
+    this.finishPromise = undefined;
+    try {
+      // 保留首次停止的报告及失败；显式重试只复查身份和锁释放。
+      const report = await (this.processStopPromise ??= this.stopProcess(opts));
+      await verifyStopped(this.identity, report);
       this.exitInfo = await this.proc.exited;
-      if (updateError) throw updateError;
       await this.lock.release();
       this.cleanupConfirmed = true;
-      return this.report;
+      this.stopError = undefined;
+      return report;
     } catch (error) {
-      this.error = this.error ? `${this.error}; ${String(error)}` : String(error);
+      this.stopError = String(error);
       throw error;
     } finally {
       await this.finish();
@@ -386,7 +417,11 @@ class RpcDriverHandle implements DriverHandle {
   }
   private finish(): Promise<DriverExit> {
     this.finishPromise ??= (async () => {
-      const result: DriverExit = { identity: this.identity, ...this.exitInfo, reason: this.reason, cleanupConfirmed: this.cleanupConfirmed, stopReport: this.report, error: this.error };
+      const firstExit = !this.exitResult;
+      const snapshot: DriverExit = { identity: this.identity, ...this.exitInfo, reason: this.reason, cleanupConfirmed: this.cleanupConfirmed,
+        stopReport: this.report, error: [this.error, this.stopError].filter(Boolean).join("; ") || undefined };
+      // exited 只能兑现一次；就地刷新同一对象，供控制队列中的后续 stop 读取。
+      const result = this.exitResult ? Object.assign(this.exitResult, snapshot) : snapshot;
       const directory = path.join(this.options.home, "sessions", this.spec.agoraSessionId);
       const target = path.join(directory, `${this.spec.runId}.diagnostics.json`);
       try {
@@ -396,11 +431,13 @@ class RpcDriverHandle implements DriverHandle {
         await rename(temporary, target);
         result.diagnosticsPath = target;
       } catch (error) { result.error = `${result.error ?? ""} 退出诊断写入失败：${String(error)}`.trim(); }
-      for (const off of this.unsubscribe) off();
       this.exitResult = result;
-      this.resolveExit(result);
-      emit(this.exitListeners, result);
-      this.exitListeners.clear(); this.listeners.clear();
+      if (firstExit) {
+        for (const off of this.unsubscribe) off();
+        this.resolveExit(result);
+        emit(this.exitListeners, result);
+        this.exitListeners.clear(); this.listeners.clear();
+      }
       return result;
     })();
     return this.finishPromise;

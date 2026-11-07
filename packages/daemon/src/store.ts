@@ -4,7 +4,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { AgoraError } from "./errors.js";
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 export const schemaMigrations: readonly string[] = [String.raw`
 CREATE TABLE principals (
   id TEXT PRIMARY KEY, type TEXT NOT NULL, label TEXT NOT NULL DEFAULT '',
@@ -73,6 +73,31 @@ DROP TABLE agora_sessions;
 ALTER TABLE agora_sessions_v2 RENAME TO agora_sessions;
 ALTER TABLE task_generations ADD COLUMN agora_session_id TEXT REFERENCES agora_sessions(id);
 UPDATE task_generations SET agora_session_id=(SELECT agora_session_id FROM tasks WHERE tasks.id=task_generations.task_id);
+`, String.raw`
+ALTER TABLE tasks ADD COLUMN parent_task_id TEXT REFERENCES tasks(id);
+ALTER TABLE tasks ADD COLUMN depth INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE tasks ADD COLUMN depth_limit INTEGER NOT NULL DEFAULT 2;
+ALTER TABLE tasks ADD COLUMN child_limit INTEGER;
+ALTER TABLE tasks ADD COLUMN recovery_attempts INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE tasks ADD COLUMN pending_message TEXT;
+CREATE INDEX tasks_parent ON tasks(parent_task_id);
+CREATE TABLE steer_messages (
+  id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES tasks(id), generation INTEGER NOT NULL,
+  message TEXT NOT NULL, state TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE INDEX steers_task ON steer_messages(task_id,generation);
+CREATE TABLE requests (
+  id TEXT PRIMARY KEY, asker_id TEXT NOT NULL, target_id TEXT NOT NULL, task_id TEXT,
+  questions TEXT NOT NULL, context TEXT, state TEXT NOT NULL DEFAULT 'open',
+  route TEXT NOT NULL DEFAULT '[]', answers TEXT, answered_by TEXT,
+  expires_at TEXT, revision INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE INDEX requests_target ON requests(target_id,state);
+CREATE INDEX requests_task ON requests(task_id,state);
+CREATE TABLE worktrees (
+  task_id TEXT PRIMARY KEY REFERENCES tasks(id), repo_root TEXT NOT NULL, base_commit TEXT NOT NULL,
+  branch TEXT NOT NULL, path TEXT NOT NULL UNIQUE, owner_id TEXT NOT NULL, state TEXT NOT NULL
+);
 `];
 
 export interface PrincipalRow {
@@ -86,11 +111,14 @@ export interface TaskRow {
   title: string; prompt: string; model: string; thinking: string; profile: string;
   cwd: string; notify: string; status: string; generation: number; revision: number;
   status_detail: string | null; created_at: string; updated_at: string;
+  parent_task_id: string | null; depth: number; depth_limit: number; child_limit: number | null;
+  recovery_attempts: number; pending_message: string | null;
 }
 export interface SessionRow {
   id: string; task_id: string; principal_id: string; session_file: string;
   pi_session_id: string | null; profile: string; model: string; thinking: string;
   cwd: string; status: string; revision: number; created_at: string;
+  convener_id: string; parent_principal_id: string; control_state: string | null;
 }
 export interface RunRow {
   id: string; agora_session_id: string; daemon_instance_id: string;
@@ -152,7 +180,7 @@ export class Store {
       if (["completed", "failed", "stopped", "interrupted"].includes(status)) this.run("UPDATE agora_sessions SET ended_at=? WHERE id=?", at, task.agora_session_id);
       this.run("UPDATE task_generations SET status=?,result_text=COALESCE(?,result_text),settled_at=CASE WHEN ? IN ('completed','failed','stopped','interrupted') THEN ? ELSE settled_at END,started_at=CASE WHEN ?='running' THEN COALESCE(started_at,?) ELSE started_at END WHERE task_id=? AND generation=?", status, resultText ?? null, status, at, status, at, task.id, task.generation);
       if (usage !== undefined) this.run("UPDATE task_generations SET usage=? WHERE task_id=? AND generation=?", JSON.stringify(usage), task.id, task.generation);
-      if (["completed", "failed", "interrupted"].includes(status)) {
+      if (["completed", "failed", "interrupted", "stopped"].includes(status)) {
         this.notice(task.convener_id, `task:${task.id}:${task.generation}:${status}${status === "interrupted" ? `:${runId ?? "unknown"}` : ""}`, `task:${status}`, {
           taskId: task.id, agoraSessionId: task.agora_session_id, nodeId: `agora:session:${task.agora_session_id}`,
           generation: task.generation, status, title: task.title, summary: (resultText ?? "").slice(0, 2000), notify: task.notify,
