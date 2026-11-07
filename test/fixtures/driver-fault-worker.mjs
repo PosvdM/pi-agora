@@ -44,6 +44,7 @@ function fakeLock() {
         stderrTail() { return "故障测试 stderr"; },
         async stop() {
           state.calls.push("stop");
+          state.abortCount = (state.abortCount ?? 0) + 1;
           if (state.stopBarrier) await state.stopBarrier.promise;
           if (state.stopError) throw state.stopError;
           if (!state.noExit) state.processExit.resolve({ code: 0, signal: null });
@@ -239,11 +240,60 @@ test("停止重试：清理成功只清除 stop 错误，保留 RPC 故障与中
   assert.equal(handle.diagnostics().possibleSideEffects[0].toolName, "write");
 });
 
-for (const key of ["updateError", "stopError"]) test(`停止重试：${key} 的首次停止失败保持缓存`, async () => {
-  const original = state[key] = new Error(`受控 ${key}`);
+test("停止重试：stopping 写入失败后沿用首次报告，不重放清队列、abort 或底层停止", async () => {
+  const original = state.updateError = new Error("受控 stopping 写入失败");
+  const firstReport = state.report;
+  const handle = await driver.start(spec);
+  let notifications = 0;
+  handle.onExit(() => { notifications++; });
+  const stopping = handle.stop();
+  assert.equal(handle.stop(), stopping);
+  await assert.rejects(stopping, original);
+  const exit = await handle.exited;
+  assert.equal(exit.cleanupConfirmed, false);
+  assert.equal(exit.stopReport, firstReport);
+  assert.equal(handle.diagnostics().stopReport, firstReport);
+  assert.equal(state.lockHeld, true);
+  assert.equal(state.calls.includes("release"), false);
+  assert.equal(state.calls.includes("isSameProcess"), false);
+  const failedData = JSON.parse(await readFile(exit.diagnosticsPath, "utf8"));
+  assert.equal(failedData.cleanupConfirmed, false);
+  assert.deepEqual(failedData.stopReport, firstReport);
+  assert.match(failedData.error, /stopping 写入失败/);
+
+  state.updateError = undefined;
+  state.report = report({ coverage: "job_object" });
+  const offset = state.calls.length;
+  const retry = handle.stop();
+  assert.equal(handle.stop(), retry);
+  assert.equal(await retry, firstReport, "重试必须沿用首次报告，而非底层进程的替换报告");
+  assert.deepEqual(state.calls.slice(offset), ["isSameProcess", "release"]);
+  for (const call of ["update:stopping", "clear_queue", "stop"]) {
+    assert.equal(state.calls.filter(value => value === call).length, 1);
+  }
+  assert.equal(state.abortCount, 1, "底层 stop 中的 abort 不能重放");
+  assert.equal(state.lockHeld, false);
+  assert.equal(await handle.exited, exit);
+  assert.equal(exit.cleanupConfirmed, true);
+  assert.equal(exit.stopReport, firstReport);
+  assert.equal(exit.error, undefined);
+  assert.equal(handle.diagnostics().error, undefined);
+  assert.equal(notifications, 1);
+  const data = JSON.parse(await readFile(exit.diagnosticsPath, "utf8"));
+  assert.equal(data.cleanupConfirmed, true);
+  assert.deepEqual(data.stopReport, firstReport);
+  assert.equal(data.error, undefined);
+  const calls = [...state.calls];
+  assert.equal(handle.stop(), retry);
+  await handle.stop();
+  assert.deepEqual(state.calls, calls);
+});
+
+test("停止重试：底层 stop 未返回报告的首次失败保持缓存", async () => {
+  const original = state.stopError = new Error("受控 stopError");
   const handle = await driver.start(spec);
   await assert.rejects(handle.stop(), original);
-  state[key] = undefined;
+  state.stopError = undefined;
   const calls = [...state.calls];
   await assert.rejects(handle.stop(), original);
   assert.deepEqual(state.calls, calls, "重试不能重新发起进程停止或忽略前置失败");

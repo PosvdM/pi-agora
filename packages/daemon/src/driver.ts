@@ -549,8 +549,8 @@ class RpcDriverHandle implements DriverHandle {
   private async performStop(opts?: StopOptions): Promise<StopReport> {
     this.finishPromise = undefined;
     try {
-      // 保留首次停止的报告及失败；显式重试只复查身份和锁释放。
-      const report = await (this.processStopPromise ??= this.stopProcess(opts));
+      // 保留首次停止报告；无报告的停止失败保持缓存，显式重试只复查身份和锁释放。
+      const report = this.report ?? await (this.processStopPromise ??= this.stopProcess(opts));
       await verifyStopped(this.identity, report);
       this.exitInfo = await this.proc.exited;
       await this.lock.release();
