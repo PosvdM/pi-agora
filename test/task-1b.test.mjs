@@ -63,7 +63,7 @@ async function setup(t, options = {}) {
     return c;
   }
   async function spawn(c, extra = {}, key) { return c.request('POST', '/v1/tasks', { model: 'test/model', profile: 'explore', prompt: '核对任务', cwd: home, ...extra }, { idempotencyKey: key ?? randomUUID() }); }
-  async function handle(task) { return until(() => driver.handles.find(h => h.spec.agoraSessionId === task.agoraSessionId && h.ready)); }
+  async function handle(task) { return until(() => driver.handles.findLast(h => h.spec.agoraSessionId === task.agoraSessionId && h.ready && !h.stopCount)); }
   async function settled(task, result) { const h = await handle(task); if (result) h.result = result; h.emit({ type: 'agent_settled', aborted: false }); await daemon.tasks.flush(); return daemon.store.task(task.taskId); }
   return { home, driver, daemon, main, spawn, handle, settled };
 }
@@ -205,14 +205,22 @@ test('无进展看门狗只通知不停止，周期通知去重且工具结束�
 test('中断任务 resume 不增加代数，reopen/replace 保留历史会话与结果，abandon 停止', async t => {
   const f = await setup(t), main = await f.main(), task = await f.spawn(main), h = await f.handle(task);
   h.emit({ type: 'agent_settled', aborted: true }); await f.daemon.tasks.flush();
-  await main.request('POST', `/v1/tasks/${task.taskId}/stop`, {});
-  // 停止动作保留现场后，用受控中断模拟进程恢复入口。
-  f.daemon.store.run("UPDATE tasks SET status='interrupted' WHERE id=?", task.taskId);
+  const resumed = await main.request('POST', `/v1/tasks/${task.taskId}/recover`, { mode: 'resume' });
+  assert.equal(resumed.generation, 1); assert.equal(resumed.agoraSessionId, task.agoraSessionId);
+  const resumedHandle = await until(() => f.driver.handles.findLast(x => x !== h && x.ready));
+  assert.match(resumedHandle.commands.find(c => c.type === 'prompt').message, /不得自动重放/);
+  resumedHandle.emit({ type: 'agent_settled', aborted: true }); await f.daemon.tasks.flush();
   const reopened = await main.request('POST', `/v1/tasks/${task.taskId}/recover`, { mode: 'reopen' });
   assert.equal(reopened.generation, 2); assert.notEqual(reopened.agoraSessionId, task.agoraSessionId);
   const h2 = await f.handle(reopened); assert.match(h2.commands.find(c => c.type === 'prompt').message, /不得自动重放/);
   assert.equal(f.daemon.store.session(reopened.agoraSessionId).inherits_from, task.agoraSessionId);
   assert.equal((await main.request('GET', `/v1/tasks/${task.taskId}/result?generation=1`)).agoraSessionId, task.agoraSessionId);
+  h2.emit({ type: 'agent_settled', aborted: true }); await f.daemon.tasks.flush();
+  const replaced = await main.request('POST', `/v1/tasks/${task.taskId}/recover`, { mode: 'replace', profile: 'review', model: 'test/model' });
+  assert.equal(replaced.generation, 3); assert.equal(replaced.profile, 'review'); await f.handle(replaced);
+  f.daemon.store.run("UPDATE tasks SET status='interrupted' WHERE id=?", task.taskId);
+  const abandoned = await main.request('POST', `/v1/tasks/${task.taskId}/recover`, { mode: 'abandon' });
+  assert.equal(abandoned.status, 'stopped');
 });
 
 test('v2 到 v3 迁移有一致性备份并保留旧任务，新树与提问表在同一迁移事务中创建', async t => {
@@ -226,4 +234,55 @@ test('v2 到 v3 迁移有一致性备份并保留旧任务，新树与提问表�
   store.close(); const backup = (await readdir(join(home, 'backups'))).find(f => f.endsWith('.db'));
   const old = new DatabaseSync(join(home, 'backups', backup), { readOnly: true });
   try { assert.equal(old.prepare('SELECT version FROM schema_version').get().version, 2); assert.equal(old.prepare('SELECT id FROM principals').get().id, 'main'); } finally { old.close(); }
+});
+
+test('interrupt 先清队列再 abort，以新代 prompt 返工且旧 steer 标为 dropped；过期 CAS 不产生副作用', async t => {
+  const f = await setup(t), main = await f.main(), task = await f.spawn(main), h = await f.handle(task);
+  const queued = await main.request('POST', `/v1/tasks/${task.taskId}/steer`, { message: '将被中断' });
+  const before = f.daemon.store.task(task.taskId), count = h.commands.length;
+  await assert.rejects(main.request('POST', `/v1/tasks/${task.taskId}/steer`, { message: '过期返工', interrupt: true, expectedRevision: before.revision - 1 }), e => e.code === 'conflict');
+  assert.equal(h.commands.length, count);
+  const result = await main.request('POST', `/v1/tasks/${task.taskId}/steer`, { message: '中断返工', interrupt: true, expectedRevision: before.revision });
+  assert.equal(result.generation, 2); await until(() => h.commands.filter(c => c.type === 'prompt').length === 2);
+  const names = h.commands.map(c => c.type); assert.ok(names.indexOf('clear_queue') < names.indexOf('abort'));
+  assert.equal(f.daemon.store.get('SELECT state FROM steer_messages WHERE id=?', queued.steerId).state, 'dropped');
+});
+
+test('带期限的提问过期不表示同意；转给用户后不再计时；CLI pending/answer 实际走通', async t => {
+  const f = await setup(t), main = await f.main(), task = await f.spawn(main), h = await f.handle(task);
+  const q = await h.client.request('POST', '/v1/requests', { questions: [{ id: 'q', question: '带期限的问题' }], expiresAt: new Date(Date.now() + 80).toISOString() });
+  await until(() => f.daemon.store.get('SELECT state FROM requests WHERE id=?', q.id).state === 'expired');
+  await assert.rejects(main.request('POST', `/v1/requests/${q.id}/answer`, { answers: [{ id: 'q', selected: [], custom: '迟到同意' }] }), e => e.code === 'already_handled');
+  const q2 = await h.client.request('POST', '/v1/requests', { questions: [{ id: 'q', question: '转给用户' }], expiresAt: new Date(Date.now() + 200).toISOString() });
+  await main.request('POST', `/v1/requests/${q2.id}/escalate`, {}); await delay(220);
+  assert.equal(f.daemon.store.get('SELECT state FROM requests WHERE id=?', q2.id).state, 'escalated');
+  const { runCli } = await import('../packages/cli/dist/index.js');
+  const out = [], errors = [], io = { out: text => out.push(text), error: text => errors.push(text) };
+  assert.equal(await runCli(['pending', '--home', f.home], io), 0);
+  assert.ok(JSON.parse(out.at(-1)).items.some(row => row.id === q2.id));
+  assert.equal(await runCli(['answer', q2.id, '--home', f.home, '--answers', JSON.stringify([{ id: 'q', selected: [], custom: '用户答复' }])], io), 0, errors.join('\n'));
+  assert.equal(JSON.parse(out.at(-1)).state, 'answered');
+});
+
+test('配置文件约束子树与名额，非法配置拒绝启动；v3 迁移失败回滚全部树字段并保留 v2 备份', async t => {
+  const home = await mkdtemp(join(tmpdir(), 'agora-config-')); t.after(() => rm(home, { recursive: true, force: true }));
+  await writeFile(join(home, 'config.json'), JSON.stringify({ maxTaskDepth: 1, maxChildren: 0, maxConcurrentRuns: 1, powershell: false }));
+  const daemon = await startDaemon({ home, driver: new Driver() }); let cli;
+  try {
+    cli = await connectHost({ home, as: 'host:cli', autoStart: false });
+    await assert.rejects(cli.request('POST', '/v1/tasks', { model: 'test/model', profile: 'explore', prompt: '超出配置', cwd: home, maxDepth: 2 }), e => e.code === 'depth_limit_exceeded');
+  } finally { cli?.close(); await daemon.close({ force: true }); }
+  await writeFile(join(home, 'config.json'), '{"maxTaskDepth":0}');
+  await assert.rejects(startDaemon({ home, driver: new Driver() }), /配置/);
+  const migration = await mkdtemp(join(tmpdir(), 'agora-rollback-')); t.after(() => rm(migration, { recursive: true, force: true }));
+  const db = new DatabaseSync(join(migration, 'agora.db')); db.exec(schemaMigrations[0]); db.exec(schemaMigrations[1]);
+  db.exec("CREATE TABLE schema_version(version INTEGER,migrated_at TEXT); INSERT INTO schema_version VALUES(2,'v2'); CREATE TABLE requests(sentinel TEXT); INSERT INTO requests VALUES('原现场');"); db.close();
+  await assert.rejects(openStore(migration), /already exists/);
+  const oldDb = new DatabaseSync(join(migration, 'agora.db'));
+  try {
+    assert.equal(oldDb.prepare('SELECT version FROM schema_version').get().version, 2);
+    assert.equal(oldDb.prepare('SELECT sentinel FROM requests').get().sentinel, '原现场');
+    assert.equal(oldDb.prepare('PRAGMA table_info(tasks)').all().some(c => c.name === 'parent_task_id'), false);
+  } finally { oldDb.close(); }
+  assert.ok((await readdir(join(migration, 'backups'))).some(name => name.endsWith('.db')));
 });

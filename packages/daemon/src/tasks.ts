@@ -169,7 +169,16 @@ export class TaskManager {
           if (runtime.idleTimer) clearTimeout(runtime.idleTimer);
           const task = this.store.task(taskId);
           if (task.status !== "running") this.store.transition(task, "running");
-          if (task.pending_message) { this.store.run("UPDATE tasks SET pending_message=NULL WHERE id=?", taskId); data(await runtime.handle.send({ type: "prompt", message: task.pending_message })); }
+          if (task.pending_message) {
+            this.store.run("UPDATE tasks SET pending_message=NULL WHERE id=?", taskId);
+            try { data(await runtime.handle.send({ type: "prompt", message: task.pending_message })); }
+            catch {
+              runtime.stopped = true;
+              this.store.transition(this.store.task(taskId), "interrupted", "返工送达结果未知，请核对会话后恢复，不能自动重放", runtime.runId);
+              this.releaseSlot(runtime);
+              await runtime.handle.stop(); this.auth.revokeRun(runtime.runId);
+            }
+          }
         } else await this.launch(taskId);
       }).catch(() => {});
     }
@@ -332,10 +341,14 @@ export class TaskManager {
     const status = event.aborted ? "interrupted" : lastError ? "failed" : requests ? "waiting_decision" : children ? "waiting_children" : "completed";
     const result = typeof last.text === "string" ? last.text : "";
     this.store.transition(task, status, result, runtime.runId, usage);
+    if (!["interrupted", "failed"].includes(status)) this.store.run("UPDATE tasks SET recovery_attempts=0 WHERE id=?", task.id);
     this.releaseSlot(runtime);
     if (TERMINAL.includes(status)) this.wake(task.convener_id);
     runtime.idleTimer = setTimeout(() => {
-      void this.control(task.id, async () => { runtime.stopped = true; await handle.stop(); this.auth.revokeRun(runtime.runId); }).catch(() => {});
+      void this.control(task.id, async () => {
+        if (runtime.active || runtime.tools.size || runtime.stopped) return;
+        runtime.stopped = true; await handle.stop(); this.auth.revokeRun(runtime.runId);
+      }).catch(() => {});
     }, this.options.idleReclaimMs ?? 300_000);
     runtime.idleTimer.unref();
   }

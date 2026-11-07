@@ -47,7 +47,7 @@ export async function extensionWire(root) {
       } else if (path === '/v1/auth/launch') {
         if (body.ticket !== 'one-use-ticket') return fail(401, 'bad_ticket');
         tokens.set('child-token', {});
-        result = { token: 'child-token', runId: 'run-one', principalId: 'child-one', policy: {
+        result = { token: 'child-token', expiresAt: new Date(Date.now() + 3600000).toISOString(), runId: 'run-one', principalId: 'child-one', policy: {
           profile: 'explore', tools: ['read', 'grep', 'find', 'ls'], allowedRoots: [root], protectedPaths: [join(root, 'secret')],
           model: state.expectedModel, thinking: 'off', extensionVersion: '0.1.0',
         } };

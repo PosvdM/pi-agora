@@ -97,6 +97,7 @@ export function createHttpServer(context: ServerContext) {
       reply(response, result.status, result.body);
     } catch (error) { const result = asError(error); reply(response, result.status, result.body); }
   });
+  server.once('close', () => context.requests.close());
   server.requestTimeout = 35_000;
   server.headersTimeout = 10_000;
   server.keepAliveTimeout = 1000;

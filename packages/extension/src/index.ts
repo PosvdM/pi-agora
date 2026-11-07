@@ -314,7 +314,7 @@ export default function agoraExtension(pi: PiExtensionApi): void {
       action: { enum: ['ask', 'answer', 'escalate', 'cancel', 'list'] }, requestId: { type: 'string' },
       questions: { type: 'array', minItems: 1, maxItems: 3, items: { type: 'object' } },
       answers: { type: 'array', items: { type: 'object' } }, context: { type: 'string' }, note: { type: 'string' },
-      waitSeconds: { type: 'integer', minimum: 0, maximum: 240 }, expectedRevision: { type: 'integer', minimum: 1 },
+      expiresAt: { type: 'string' }, waitSeconds: { type: 'integer', minimum: 0, maximum: 240 }, expectedRevision: { type: 'integer', minimum: 1 },
       state: { type: 'array', items: { type: 'string' } },
     } },
     async execute(toolCallId, params, signal, _update, ctx) {
@@ -330,7 +330,7 @@ export default function agoraExtension(pi: PiExtensionApi): void {
         result = await r.client.request('GET', '/v1/requests?' + query, undefined, options);
       } else if (params.action === 'ask') {
         if (params.waitSeconds !== undefined && (!Number.isInteger(params.waitSeconds) || params.waitSeconds < 0 || params.waitSeconds > 240)) throw new Error('等待时间必须为 0 到 240 秒');
-        result = await r.client.request('POST', '/v1/requests', { questions: params.questions, context: params.context }, options);
+        result = await r.client.request('POST', '/v1/requests', { questions: params.questions, context: params.context, expiresAt: params.expiresAt }, options);
         const deadline = Date.now() + (params.waitSeconds ?? 240) * 1000;
         while (current(r) && result.state === 'open' && Date.now() < deadline) {
           await delay(Math.min(250, Math.max(1, deadline - Date.now())), undefined, { signal: combined });

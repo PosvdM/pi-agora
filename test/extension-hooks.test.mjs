@@ -47,8 +47,8 @@ async function setup(t, { managed = false, tools = ['read', 'grep', 'find', 'ls'
   };
 }
 async function until(fn, timeoutMs = 5000) {
-  const deadline = Date.now() + timeoutMs;
-  while (!fn()) { if (Date.now() >= deadline) throw new Error('测试等待超时'); await delay(20); }
+  const deadline = performance.now() + timeoutMs;
+  while (!fn()) { if (performance.now() >= deadline) throw new Error('测试等待超时'); await delay(20); }
 }
 
 test('主会话初始化幂等，租约绑定并正确分发四个任务动作', async t => {
@@ -263,6 +263,131 @@ test('fatal诊断、界面或shutdown抛错时tool_call仍返回block', async t 
   f.setThinking('off');
   assert.equal((await f.handlers.get('tool_call')({ toolName: 'read', input: { path: 'public.txt' } }, f.ctx)).block, true);
 });
+
+test('switch遇到旧principal的迟到完成通知时不能注入新会话', { timeout: 10000 }, async t => {
+  const f = await setup(t);
+  const gate = barrier();
+  t.after(() => gate.release());
+  const oldNotice = { noticeId: 'old-notice', dedupeKey: 'task:old:1:completed', kind: 'task:completed',
+    payload: { taskId: 'old-task', generation: 1, content: '旧子代理完成', notify: 'wake' } };
+  f.wire.state.inboxItems = [oldNotice];
+  let blocked = false;
+  f.wire.state.beforeResponse = async (call, result) => {
+    if (!blocked && call.path.startsWith('/v1/inbox?') && result.items.length) {
+      blocked = true;
+      assert.equal(result.items[0].noticeId, oldNotice.noticeId);
+      await gate.wait();
+    }
+  };
+  const sends = [];
+  const nextEntries = [];
+  let activeSession = 'session-one';
+  f.pi.sendMessage = (message, options) => {
+    sends.push({ sessionId: activeSession, message, options });
+    nextEntries.push({ id: `next-notice-${sends.length}`, type: 'custom_message', ...message });
+  };
+  const starting = f.handlers.get('session_start')({}, f.ctx);
+  await gate.entering;
+  assert.equal(f.handlers.get('session_before_switch')({}, f.ctx), undefined);
+  await f.handlers.get('session_shutdown')({ reason: 'switch' }, f.ctx);
+  await starting;
+  activeSession = 'session-two';
+  const nextCtx = { ...f.ctx, sessionManager: {
+    getSessionId: () => activeSession, getSessionFile: () => join(f.root, 'next.jsonl'),
+    getEntries: () => nextEntries, getBranch: () => nextEntries,
+  } };
+  f.pi.appendEntry = (customType, data) => nextEntries.push({ id: `next-${nextEntries.length}`, type: 'custom', customType, data });
+  f.wire.state.registerPrincipalId = 'principal-two';
+  f.wire.state.inboxItems = [{ ...oldNotice, noticeId: 'next-notice', dedupeKey: 'task:next:1:completed',
+    payload: { taskId: 'next-task', generation: 1, content: '新会话任务完成', notify: 'wake' } }];
+  await f.handlers.get('session_start')({}, nextCtx);
+  assert.equal(nextEntries.find(e => e.customType === 'agora-principal').data.principalId, 'principal-two');
+  gate.release();
+  await f.handlers.get('agent_settled')({}, nextCtx);
+  assert.deepEqual(sends.map(s => [s.sessionId, s.message.details.noticeId]), [['session-two', 'next-notice']]);
+  assert.equal(nextEntries.some(e => e.details?.noticeId === oldNotice.noticeId), false);
+  assert.equal(f.wire.calls.some(c => c.path === '/v1/inbox/ack' && c.body.noticeId === oldNotice.noticeId), false);
+});
+
+function refreshClock(t) {
+  const timers = [];
+  const interval = globalThis.setInterval;
+  t.mock.method(globalThis, 'setInterval', (callback, ms, ...args) => {
+    if (ms === 30000) timers.push(callback);
+    return interval(callback, ms, ...args);
+  });
+  let now = Date.now();
+  t.mock.method(Date, 'now', () => now);
+  return { timers, advance(ms) { now += ms; } };
+}
+
+for (const failure of ['transport', 'authentication']) {
+  test(`managed refresh：${failure === 'transport' ? '三次传输失败不fatal，下次定时检查可续期' : '认证拒绝不重试且fatal'}`, { timeout: 10000 }, async t => {
+    const clock = refreshClock(t);
+    const f = await setup(t, { managed: true });
+    await writeFile(join(f.root, 'public.txt'), '公开文件');
+    await f.handlers.get('session_start')({}, f.ctx);
+    const read = () => f.handlers.get('tool_call')({ toolName: 'read', input: { path: 'public.txt' } }, f.ctx);
+    assert.equal(await read(), undefined);
+    assert.equal(clock.timers.length, 1, 'managed只有refresh定时器');
+    const tick = clock.timers[0];
+    tick();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(f.wire.state.refreshCount, 0, '距过期超过30分钟时不续期');
+    clock.advance(31 * 60 * 1000);
+    const fetch = globalThis.fetch;
+    const attempts = [], bodies = [];
+    t.mock.method(globalThis, 'fetch', (...args) => {
+      const request = fetch(...args);
+      if (!String(args[0]).endsWith('/v1/auth/refresh')) return request;
+      const tracked = request.then(response => {
+        const text = response.text.bind(response);
+        response.text = () => { const body = text(); bodies.push(body); return body; };
+        return response;
+      });
+      attempts.push(tracked);
+      return tracked;
+    });
+    const flushRefresh = async () => {
+      await Promise.allSettled(attempts);
+      await Promise.allSettled(bodies);
+      await new Promise(resolve => setImmediate(resolve));
+    };
+    if (failure === 'transport') f.wire.state.refreshTransportFailure = true;
+    else f.wire.state.refreshReject = 'token_expired';
+    tick();
+    await until(() => f.wire.state.refreshCount > 0, 1500).catch(() => {
+      assert.fail('managed到期后必须触发refresh；检查connectLaunch是否将launch.expiresAt传给client');
+    });
+    if (failure === 'authentication') {
+      await until(() => f.shutdown && f.wire.state.fatalCount === 1);
+      assert.equal(f.wire.state.refreshCount, 1);
+      assert.equal((await read()).block, true);
+      assert.equal(f.entries.filter(e => e.customType === 'agora-fatal').length, 1);
+      return;
+    }
+    await until(() => f.wire.state.refreshCount === 3);
+    // 等待第三次真实socket失败被client处理；第四次只能来自后续定时检查。
+    await flushRefresh();
+    assert.equal(attempts.length, 3);
+    assert.equal(f.wire.state.refreshCount, 3);
+    assert.equal(f.shutdown, false);
+    assert.equal(f.wire.state.fatalCount, 0);
+    assert.equal(f.entries.some(e => e.customType === 'agora-fatal'), false);
+    assert.equal(await read(), undefined, '暂时传输失败后工具仍可使用');
+    f.wire.state.refreshTransportFailure = false;
+    tick();
+    await until(() => f.wire.state.refreshCount === 4);
+    await flushRefresh();
+    assert.equal(attempts.length, 4);
+    assert.equal(attempts.length - bodies.length, 3, '前三次传输失败，第四次收到完整响应');
+    tick();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(f.wire.state.refreshCount, 4, '续期成功后expiresAt更新，下一次检查不再续期');
+    assert.equal(f.shutdown, false);
+    assert.equal(await read(), undefined);
+  });
+}
 
 test('child路径解析异常由钩子自己捕获并阻断', async t => {
   const f = await setup(t, { managed: true });

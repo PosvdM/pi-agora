@@ -79,6 +79,24 @@ export interface ReadyReport {
   thinking: ThinkingLevel;
   extensionVersion: string;
 }
+export interface RequestQuestion {
+  id: string; question: string; header?: string; detail?: string; multiSelect?: boolean;
+  options?: { label: string; description?: string; recommended?: boolean; preview?: string }[];
+  allowCustom?: boolean; dependsOn?: { questionId: string; value?: string | string[] };
+}
+export interface RequestAnswer { id: string; selected: string[]; custom?: string }
+export type RequestState = "open" | "answered" | "escalated" | "cancelled" | "expired";
+export interface AgoraRequest {
+  id: string; askerId: string; targetId: string; taskId?: string | null; questions: RequestQuestion[];
+  context?: string | null; expiresAt?: string | null; state: RequestState; route: string[]; answers?: RequestAnswer[];
+  answeredBy?: string | null; revision: number; createdAt: string; updatedAt: string;
+}
+export type AgoraRequestParams =
+  | { action: "ask"; questions: RequestQuestion[]; context?: string; waitSeconds?: number; expiresAt?: string }
+  | { action: "answer"; requestId: string; answers: RequestAnswer[] }
+  | { action: "escalate" | "cancel"; requestId: string; note?: string }
+  | { action: "list"; state?: RequestState[] };
+
 export interface InboxAck {
   noticeId: string;
   entryId: string;
