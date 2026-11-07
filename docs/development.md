@@ -106,7 +106,8 @@ shutdown 默认排空，超时后保留 daemon；force 中断并清理运行。�
 | `test/driver.test.mjs`、`driver-faults.test.mjs` | 写锁、忽略 abort、shell 后代、覆盖范围、UI、崩溃恢复、故障保锁和停止重试 |
 | `test/auth.test.mjs`、`store.test.mjs` | 握手、ticket 单次消费、租约、WAL、条件迁移、原子 outbox 和备份回滚 |
 | `test/daemon.test.mjs`、`daemon-restart.test.mjs` | HTTP / 幂等、排空、就绪、批量通知及真实旧 pi 清理 |
-| `test/extension-hooks.test.mjs`、`extension.test.mjs` | 生命周期屏障、通知清队列重投、最终授权、路径 fail closed 和磁盘确认 |
+| `test/extension-hooks.test.mjs`、`extension.test.mjs` | switch 的迟到通知屏障、managed 续期故障与恢复、最终授权、路径 fail closed 和磁盘确认 |
+| `test/notification-clear-1b.test.mjs`、`claim-fork-1b.test.mjs` | 真实主 pi 清队列 / abort 后重投、同代只唤醒一次与返工再次唤醒；fork 与原会话并发认领、同 sessionId 并发租约 |
 | `test/extension-client.test.mjs`、`extension-wire.test.mjs` | 双向认证、协议与发现记录故障，Windows 原子发布重试 |
 | `test/cli.test.mjs`、`protocol-cli.test.mjs` | 独立 CLI 进程、单实例复用、参数和协议 |
 

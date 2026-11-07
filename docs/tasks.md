@@ -1,6 +1,6 @@
 # 任务（子代理）
 
-> 本文描述完整任务设计。切片 1a 提供 explore 档位的 spawn、status、result、stop 和可靠通知；其他动作按 [roadmap.md](roadmap.md) 推进。实现与测试见 [development.md](development.md)。
+> 切片 1b 提供完整任务动作、多层委派、三个权限档位、worktree、提问与逐级转交。用户确认、接管、board 和会议相关权限仍是后续设计目标；CLI 答复尚无设备签名。实现与测试见 [development.md](development.md)。
 
 任务是召集人派给一个协作会话（`kind = task`）的一件工作。它覆盖现有“派子代理”的核心用法：按模型和权限档位派任务、worktree 隔离、完成后叫醒召集人、steer 返工、查看列表和结果、停止、子代理提问并由召集人答复或转给用户。
 
@@ -12,12 +12,14 @@ agora 扩展按连接 token 的权限注册工具。子代理功能只注册 `ag
 
 | 工具 | 谁能用 | 用途 |
 | --- | --- | --- |
-| `agora_task` | 主代理（`agent:main`） | 派任务、列表、取结果、返工、停止、清理 worktree |
+| `agora_task` | 主代理及任务子代理（最终就绪后） | 派任务、列表、取结果、返工、停止子树、清理 worktree、恢复 |
 | `agora_request` | 所有 agora 会话 | 子代理提问；召集人答复、转给用户、取消 |
 | `agora_board` | 绑定了 board 的会话 | 读写共享桌面，见 [board.md](board.md) |
 | `agora_meeting` | 主代理；参会者只有 `endorse` | 召开和管理会议，见 [meetings.md](meetings.md) |
 
-MVP 不允许子代理再派子代理：协作会话的 token 没有 `agora_task` 权限。用户通过 CLI 或 pi-pane 也能执行 `agora_task` 的各项操作，这类任务的召集人记为 `user`；其中属于用户级的操作（如处理转给用户的中断任务、接管）需要用户确认，见 [security.md](security.md#权限级别)。
+任务子代理可以继续派出下级。默认层数为 2（子代理、孙代理），每个任务同时存在的未结束下级数默认不限，整棵树共用并发名额。配置、主代理派活和下级派活可以逐层收紧，不能放宽；下级档位不能高于父任务。谁派的谁管理：子代理只能查看、返工、停止和答复自己直接派出的下级；主代理可查看、停止整棵树，但只返工直接下级。CLI 在 1b 可操作任意任务；完整用户确认在 1c。
+
+父任务 settled 时仍有未结束下级，进入 `waiting_children`，不交付最终结果，也不占推理名额。下级完成后叫醒父任务，父进程已回收时重新拉起并投递通知；父任务自行核对并交出最终结果后才完成。停止父任务时逐层停止整棵子树，返回每层 StopReport。
 
 ## `agora_task` 接口
 
@@ -35,13 +37,16 @@ type AgoraTaskParams =
       isolation?: "none" | "worktree"; // 默认 "none"
       boardId?: string;              // 可选，挂到已有 board（调用方须是该 board 的 owner）
       notify?: "wake" | "silent";    // 完成时是否叫醒召集人，默认 "wake"
+      maxDepth?: number;              // 以新任务为第一层的子树层数，不能超过父任务剩余层数
+      maxChildren?: number | null;    // 每个任务同时存在的未结束下级数，null 为不限
     }
   | { action: "list"; status?: TaskStatus[]; scope?: "mine" | "all" }  // 默认 mine
   | { action: "status"; taskId: string }                          // 当前任务详情
   | { action: "result"; taskId: string; generation?: number }        // 默认最新一代
   | { action: "steer"; taskId: string; message: string; interrupt?: boolean }
   | { action: "stop"; taskId: string; reason?: string }
-  | { action: "cleanup"; taskId: string; discard?: boolean };
+  | { action: "cleanup"; taskId: string; discard?: boolean }
+  | { action: "recover"; taskId: string; mode: "resume" | "reopen" | "replace" | "abandon"; model?: string; profile?: "explore" | "review" | "implement" };
 ```
 
 返回值（工具结果的 `details`，同时给模型一段简短文本）：
@@ -52,7 +57,7 @@ type AgoraTaskParams =
   "agoraSessionId": "as_c21e",
   "status": "created",
   "generation": 1,
-  "worktree": { "path": "~/.pi/agora-worktrees/repo-1c9e2a7b/agora-tk_8f3a", "branch": "agora/tk_8f3a", "baseCommit": "4e1c9d0" },
+  "worktree": { "path": "~/.pi/agora-worktrees/repo-1c9e2a7b/agora-tk_8f3a", "branch": "agora/tk_8f3a", "base_commit": "4e1c9d0" },
   "warnings": ["主目录有 3 处未提交改动，不会带入 worktree"]
 }
 ```
@@ -79,7 +84,7 @@ created ──► running ──► completed ───────────�
               │  ▲  └─► failed ──────────────────────────────────┤
               │  │                                               │
               ▼  │ 答复送达                                      │
-        waiting_decision                                         │
+        waiting_decision / waiting_children                      │
               │                                                  │
    任意运行态 ─┼─► stopped（stop）                                │
               └─► interrupted（崩溃 / 强制关闭）── 恢复 ──► running
@@ -91,7 +96,8 @@ created ──► running ──► completed ───────────�
 | `created` | 记录已写入；排队等推理名额，或进程尚未通过就绪检查 |
 | `running` | 任务书或返工消息已被 pi 接受（`prompt` 响应成功或已排队） |
 | `waiting_decision` | 会话 settled 时，该任务还有 `open` 或 `escalated` 状态的提问 |
-| `completed` | 会话 settled、`aborted: false`、没有未决提问 |
+| `waiting_children` | 会话 settled、无未决提问，但仍有未结束下级；释放推理名额 |
+| `completed` | 会话 settled、`aborted: false`、没有未决提问和未结束下级 |
 | `failed` | 会话 settled 且最后一条助手消息是错误（如模型报错、重试耗尽），或 spawn 校验、就绪检查失败 |
 | `stopped` | 召集人或用户调用 stop，或放弃中断的任务 |
 | `interrupted` | 进程崩溃、心跳超时、daemon 强制关闭、恢复时就绪检查失败 |
@@ -107,7 +113,7 @@ created ──► running ──► completed ───────────�
 - 对 `completed` 或 `failed` 的任务 steer：`generation + 1`，状态回到 `running`，用 RPC `prompt` 发送返工消息（会话空闲时）。
 - 对 `running` 的任务 steer：不增加代数，用 RPC `steer` 排队。pi 的 steer 在当前助手回合的工具调用全部执行完后、下一次模型调用前送达，**不会打断正在执行的工具**（依据：`docs/rpc-commands.md` 的 `steer`）。
 - `interrupt: true`：先 `clear_queue`，再 `abort`（带超时），等旧运行结束（`agent_settled`，超时则终止进程树后用 `--session` 重新拉起），再以新一代发送消息。用于工具卡住、普通 steer 迟迟送不到的情况。
-- 对 `waiting_decision` 的任务 steer：视同答复之外的追加指令，按 `running` 处理并唤醒会话。
+- 对 `waiting_decision` 或 `waiting_children` 的任务 steer：按同代追加指令处理，先取得名额再唤醒会话。
 
 ### 送达追踪
 
@@ -128,7 +134,7 @@ pi 的 `queue_update` 事件只给出排队消息的文本（依据：`docs/json
 
 ### 写入
 
-任务进入 `completed`、`failed`、`interrupted`、`waiting_decision`（有新提问）时，daemon 在**同一个 SQLite 事务**里：
+任务进入 `completed`、`failed`、`interrupted` 或 `stopped` 时，daemon 在**同一个 SQLite 事务**里：
 
 1. 更新任务和代数记录；
 2. 向 `outbox` 插入一条通知，`dedupe_key` 唯一。
@@ -192,7 +198,7 @@ interface AgoraRequest {
   questions: RequestQuestion[];  // 1–3 题
   context?: string;
   state: "open" | "answered" | "escalated" | "cancelled" | "expired";
-  escalatedTo?: string;          // 转交时为 user principal
+  route: string[];               // 已经转交过的直接上级 principal
   answers?: RequestAnswer[];
   answeredBy?: string;
   answeredVia?: {                // 答复者是 user 时由 daemon 填写，来自审计记录
@@ -224,7 +230,7 @@ interface RequestAnswer { id: string; selected: string[]; custom?: string }
 
 `RequestQuestion` 的字段与 pane 协议 v1 的 `FormQuestion` 相同（名称、类型和默认值以 pi-pane 仓库的 `docs/plugin-api.md` 为准；`allowCustom` 缺省为 `true`），转给用户时逐字段复制即可渲染；映射方式见 [integration.md](integration.md#表单)。pane 协议以后给 `FormQuestion` 增加的字段，agora 在升级 `paneProtocol` 时再决定是否跟进，未跟进的字段取 pane 的缺省值。daemon 校验 `dependsOn` 指向同一提问中排在前面的题目，`allowCustom: false` 时拒绝带 `custom` 的答复。核心包不引用 pi-pane 的类型，`RequestQuestion` 在 `packages/protocol` 中独立定义。
 
-用户答复（无论来自 CLI 还是 pi-pane）都是用户级操作，需要已配对浏览器签名确认，并写入审计；提问详情和提问者收到的通知里显示 `answeredVia`，如“由用户答复（设备：工作电脑 Chrome，2026-11-05 10:21）”。见 [security.md](security.md#用户确认)。
+完整安全设计中，用户答复（无论来自 CLI 还是 pi-pane）都是用户级操作，需要已配对浏览器签名确认，并写入审计；提问详情和提问者收到的通知里显示 `answeredVia`，如“由用户答复（设备：工作电脑 Chrome，2026-11-05 10:21）”。见 [security.md](security.md#用户确认)。
 
 ### 状态
 
@@ -237,8 +243,8 @@ open ──► answered
   └──► expired
 ```
 
-- **转给用户**（escalate）保留原 `requestId`，用户的答复回到同一个提问，提问者无需区分是谁答的。
-- **取消、过期都不算同意**。提问者收到的结果明确写“未获答复”，任务书要求它停在安全状态，不得自行假设批准。
+- **逐级转交**（escalate）保留原 `requestId`。下级先向直接上级提问，上级答不了时转给自己的召集人，直到主代理再转给用户。`targetId` 表示当前接收方，`route` 保留经过的上级；答复始终送回原提问者。主代理自己的 ask 直接发给用户。
+- **取消、过期都不算同意**。提问者收到的结果明确写“未获答复”，任务书要求它停在安全状态，不得自行假设批准。可选 expiresAt 由 daemon 定时裁定；转给用户后停止计时，工具的 waitSeconds 超时只返回 pending，不使提问过期。
 - 同一提问并发答复时只接受一次（按 `revision` 条件更新），其余返回 `409 already_handled`。
 
 ### `agora_request` 接口
@@ -246,7 +252,7 @@ open ──► answered
 ```ts
 // 草案，P0 后冻结
 type AgoraRequestParams =
-  | { action: "ask"; questions: RequestQuestion[]; context?: string; waitSeconds?: number } // 子代理用，默认等 240 秒
+  | { action: "ask"; questions: RequestQuestion[]; context?: string; waitSeconds?: number; expiresAt?: string } // Agent 用，默认等 240 秒
   | { action: "answer"; requestId: string; answers: RequestAnswer[] }                       // 召集人
   | { action: "escalate"; requestId: string; note?: string }                                 // 召集人转给用户
   | { action: "cancel"; requestId: string }
@@ -281,7 +287,7 @@ type AgoraRequestParams =
 - 对中断的任务选择恢复、重开、换人或放弃；
 - 接管任务：把任务的召集人改为 user，之后的通知都进入“待处理”。
 
-这些都是用户级操作：在 pi-pane 里点击后由浏览器确认；在 CLI 里只生成待确认（见 [security.md](security.md#经-cli-发起)）。
+完整安全设计将这些操作列为用户级：pi-pane 由浏览器确认，CLI 生成待确认（见 [security.md](security.md#经-cli-发起)）。1b 仅提供提问的转交和 CLI 直接答复 / 取消通路，`answeredVia.confirmedBy` 为 `none`；没有设备确认、接管或其他用户级动作，不能把磁盘凭证当作用户身份。
 
 召集人恢复后，补送的通知按产生顺序送达；已被用户处理的事项送达一条“已由用户处理”的说明，不再要求召集人决定。
 

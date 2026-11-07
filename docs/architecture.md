@@ -1,6 +1,6 @@
 # 总体架构
 
-> 本文描述完整架构设计。切片 1a 提供 daemon、只读任务闭环、进程监管和可靠通知；完整状态机、其他档位与领域功能按 [roadmap.md](roadmap.md) 推进。实际源码、构建和测试见 [development.md](development.md)。
+> 本文同时说明已实现的任务核心与后续架构目标。切片 1b 提供多层任务、三个档位、提问和逐级转交；用户级安全、可选扩展 / MCP、存档及其他领域功能按 [roadmap.md](roadmap.md) 推进。当前配置、源码和测试见 [development.md](development.md)。
 
 pi-agora 是 pi 的协作引擎：一个每用户单实例的后台进程（daemon）负责拉起和监管所有协作会话（子代理、参会者、书记），并持久保存任务、提问、共享桌面（board）、会议和全部对话。主代理通过 pi 扩展调用它，用户通过 CLI 或 pi-pane 插件调用它。
 
@@ -106,7 +106,7 @@ node <pi>/dist/bundle/cli.js --mode rpc
   --session <AGORA_HOME>/sessions/<agoraSessionId>/session.jsonl   # 首次启动和重新拉起都用同一路径
   --model <provider/id> --thinking <level>
   --tools <按档位的白名单>
-  -ne -e <agora 扩展路径> [ -e builtin:mcp ]  # 后者仅 implement 且配置了 MCP 白名单
+  -ne --no-mcp -e <agora 扩展路径>  # 1b 生产基线不加载其他扩展或 MCP
   -ns -np
   --no-approve                              # 默认所有档位都加，见下文“项目信任”
 ```
@@ -119,6 +119,8 @@ node <pi>/dist/bundle/cli.js --mode rpc
 
 #### 项目信任
 
+1b 所有档位固定使用 `--no-approve`。下列 `implement.projectTrust: "saved"` 和可选扩展 / MCP 白名单是后续设计目标，当前配置不接受这些字段。pi 1.5.0 没有独立的 MCP 配置参数；受信任项目与用户配置的隔离方式尚未确定，不能只靠工具白名单防止服务器启动。1b 用 `-ne --no-mcp` 关闭相关加载；真实测试同时放置用户和受信任项目 MCP 配置，验证无服务器或自动发现扩展启动。
+
 - explore、review、会议席位和书记固定加 `--no-approve`，不加载需要项目信任的本地配置和资源（依据：`docs/cli.md` 的 `--no-approve`、`docs/security.md` 的 Understand project trust）。
 - implement 默认也加 `--no-approve`；配置 `implement.projectTrust: "saved"` 后不加该参数，改按用户已保存的信任决定（`~/.pi/agent/trust.json`）。RPC 模式不能弹出信任提示，没有保存决定时按 `defaultProjectTrust` 处理（依据：`docs/security.md` 的 Project trust without an interactive prompt）。不加 `--approve`。注意：即使目录里没有需要信任的项目资源，如果 `trust.json` 中记为 false，仍按不信任处理。
 - `AGENTS.md`、`CLAUDE.md` 等上下文文件不受项目信任控制，仍会加载（依据同上）。agora 不加 `-nc`，因为项目约定对子代理有用；任务书提醒子代理把仓库里的指令当作不可信输入。
@@ -130,7 +132,7 @@ node <pi>/dist/bundle/cli.js --mode rpc
 1. 扩展加载后立即用 launch ticket 换连接 token（ticket 绑定 runId，见 [security.md](security.md#协作会话)）。
 2. 就绪等待：MCP 工具注册是异步的，在 `session_start` 时可能尚未完成。扩展必须等 MCP 工具注册完成（或等到超时按 fail closed 处理），生成工具清单前按平台过滤（macOS 和 Linux 上不列 `powershell`），再向 daemon 报告就绪：`POST /v1/runs/:runId/ready`，带完整的 `pi.getActiveTools()` 结果、当前模型和 thinking 级别、扩展版本（依据：`dist/core/extensions/types.d.ts` 的 `getActiveTools`、`getThinkingLevel`）。
 3. daemon 核对：活动工具集合与档位白名单完全一致；模型和 thinking 与 `LaunchSpec` 一致；扩展版本与 daemon 兼容。HTTP 就绪响应确认这些上报字段，扩展收到响应后结束 `session_start`。daemon 随后通过 RPC `get_available_models` 和 `get_state` 核对模型、thinking 和会话文件；全部通过后 run 才进入 `ready`，daemon 才发送任务书或会议消息。pi 1.5.0 在 `session_start` 结束后才开始读取 RPC 输入，因此 HTTP 就绪处理器不能等待 RPC 核对，否则会互相等待。
-   1a 中扩展收到 HTTP 就绪响应后，会把本地 `r.ready` 置为 true；这早于 daemon 的 RPC 二次核对。此间 daemon 尚未放行任务书，生产子会话也只加载 agora 扩展，没有自主触发工具的其他扩展。以后开放能自行发送消息或触发工具的额外扩展前，必须让工具授权等待 daemon 最终核对通过，不能把 HTTP 报告已接受当作最终授权。
+   扩展在 HTTP ready 返回后结束 session_start，但本地工具授权保持关闭；后台异步查询 `GET /v1/runs/:runId/authorized`。只有 daemon 完成 RPC 二次核对并返回最终 ready，才能执行 agora_task、agora_request 和其他工具。初始 prompt 与授权查询存在竞争时，tool_call 和工具执行器等待同一个授权 Promise。HTTP ready 的接受响应不能替代最终授权。
 4. 就绪前，扩展的 `tool_call` 钩子拒绝一切工具调用。钩子内部必须显式用 `try/catch` 包住，出异常时自行记录 fatal 诊断并返回 `{ block: true }` 拒绝调用，不依赖 pi 对抛出异常的处理方式（实测裸钩子抛错时 pi 不发 RPC `extension_error`，进程不会自行退出；安全策略必须 fail closed 自行闭环）。
 5. 就绪超时（`readyTimeoutMs`，默认 30000）、核对失败、或运行期间收到来自 agora 扩展的 `extension_error` 事件（依据：`docs/json.md`），daemon 立即停止该 run，记录诊断；任务进入 `failed`（首次启动）或 `interrupted`（恢复时），并通知召集人。
 
@@ -233,7 +235,7 @@ node <pi>/dist/bundle/cli.js --mode rpc
 | 对话 | pi JSONL | 由 pi 自己写，daemon 不复制到数据库 |
 | 流片段、退出诊断 | `sessions/<id>/` 下的文件 | 见 [archive.md](archive.md) |
 
-数据库 schema v2 通过重建会话表移除 task_id 的唯一限制，并为旧代数回填所属会话。迁移先备份，保留数据、显式索引和触发器，提交前执行 foreign_key_check；失败回滚。首代分配会话时即写入代数到会话的关联。
+数据库 schema v3 保留 v2 的多会话继承与每代所属会话关系，增加 parent_task_id、depth、depth_limit、child_limit、恢复计数和待发送消息，以及 steer_messages、requests、worktrees 表。已有任务按第一层、默认两层回填。迁移先备份，保留数据、显式索引和触发器，提交前执行 foreign_key_check；失败回滚。首代分配会话时即写入代数到会话的关联。
 
 不做通用事件溯源：业务状态用普通表，board 条目追加，状态变更和 outbox 在同一事务里完成。代价是不能重放任意历史时刻的业务状态；需要追溯的信息（board、对话、状态变更时间）都单独保存。
 
@@ -273,7 +275,7 @@ node <pi>/dist/bundle/cli.js --mode rpc
 执行方式：
 
 1. **工具白名单**：`--tools` 用明确的工具名列表，例如 explore 为 `read,grep,find,ls,agora_*`。列明工具名时会替换整个默认选择，`codemode` 不在列表里就不会启用（依据：`docs/cli.md` 的 Tools 一节）。就绪检查再核对一次实际的活动工具集合。
-2. **MCP**：协作会话因 `-ne` 默认没有 MCP。implement 需要 MCP 时显式加 `-e builtin:mcp`，并在 `--tools` 里只列白名单服务器的工具（如 `mcp__radius__*`）。P0 实测表明：MCP 白名单只限制工具能否调用，不限制服务器启动（未列入的服务器仍会被拉起并初始化）。为防止未列入的服务器启动造成副作用或凭证泄露，agora 为每个子代理单独生成一份只含白名单服务器的 MCP 配置文件。生成的 MCP 配置必须使白名单工具的有效 exposure 为 `"direct"`：设置服务器 `exposure: "direct"`，并移除或覆盖与之冲突的 `toolExposure` 配置。pi 默认的 exposure 是 `codemode`（依据：`docs/mcp.md` 的 Control tool exposure 一节），P0 实测在默认 exposure 下白名单内的工具也无法调用。仍不启用 `codemode`。完成异步注册后，核对实际活动工具集合，再发送任务书。
+2. **MCP（后续设计目标）**：1b 固定 `--no-mcp`，不开放可选服务器配置。未来 implement 需要 MCP 时显式加 `-e builtin:mcp`，并在 `--tools` 里只列白名单服务器的工具（如 `mcp__radius__*`）。P0 实测表明：MCP 白名单只限制工具能否调用，不限制服务器启动（未列入的服务器仍会被拉起并初始化）。为防止未列入的服务器启动造成副作用或凭证泄露，agora 为每个子代理单独生成一份只含白名单服务器的 MCP 配置文件。生成的 MCP 配置必须使白名单工具的有效 exposure 为 `"direct"`：设置服务器 `exposure: "direct"`，并移除或覆盖与之冲突的 `toolExposure` 配置。pi 默认的 exposure 是 `codemode`（依据：`docs/mcp.md` 的 Control tool exposure 一节），P0 实测在默认 exposure 下白名单内的工具也无法调用。仍不启用 `codemode`。完成异步注册后，核对实际活动工具集合，再发送任务书。
 3. **路径校验**：比较路径前两端先调用 realpath（解决如 macOS 上系统临时目录 `event.cwd` 在 `/private/var` 与 `/var` 的不一致）。详见下节。
 4. **不依赖工具注解**：`readOnlyHint` 等注解未经验证（依据：`docs/extensions.md`），不作为放行依据。
 5. **恢复不提权**：重新拉起进程时档位从 SQLite 读取，不接受客户端传入。
@@ -304,7 +306,7 @@ P0 测试用例：搜索根是受保护目录的祖先、受保护目录嵌套�
 
   ```text
   git --no-pager --no-optional-locks
-      -c core.fsmonitor=false -c core.pager=cat -c color.ui=never -c log.showSignature=false
+      -c core.fsmonitor= -c core.pager=cat -c color.ui=never -c log.showSignature=false
       [ -c filter.<driver>.clean= -c filter.<driver>.smudge= -c filter.<driver>.process= ]…   # 见下文 filter
   ```
 
@@ -317,9 +319,9 @@ P0 测试用例：搜索根是受保护目录的祖先、受保护目录嵌套�
   | `log` | `<前缀> log --no-ext-diff --no-textconv --no-color --no-show-signature [白名单选项] [<提交范围>] -- [<路径>…]` |
   | `show` | `<前缀> show --no-ext-diff --no-textconv --no-color --no-show-signature [白名单选项] <提交> -- [<路径>…]` |
 
-  `status` 不接受 `--no-color`，颜色由全局的 `-c color.ui=never` 关闭；`--no-optional-locks` 是全局选项，不能放在子命令之后。git 最低支持版本定为 **2.34**（覆盖主流仍维护的 LTS 发行版如 Ubuntu 22.04 自带版本，补测已在 git 2.34.1 与 2.56.0 上通过，见 `experiments/p0/c-tools/RESULTS.md`）。实测差异：git 2.34 会将 `core.fsmonitor=false` 解释为执行名为 `false` 的 hook（执行从 PATH 解析的 false 退出，无害且恶意 fsmonitor 未触发），后续评估统一改用 `-c core.fsmonitor=` 并双版本验证。
-- **环境变量**：在继承的环境上设 `GIT_CONFIG_NOSYSTEM=1`、`GIT_PAGER=cat`、`PAGER=cat`、`GIT_EXTERNAL_DIFF=`（空）、`GIT_TERMINAL_PROMPT=0`，并去掉 `GIT_DIR`、`GIT_WORK_TREE`、`GIT_CONFIG_PARAMETERS`、`GIT_CONFIG_COUNT` 及 `GIT_CONFIG_KEY_*` / `GIT_CONFIG_VALUE_*`。
-- **白名单选项**：模型只能传白名单内的选项（如 `--stat`、`--name-only`、`--name-status`、`-n <数字>`、`--oneline`、`--format=<固定几种>`、`-U<数字>`、`--cached`（仅 `diff`））、提交号和提交范围，以及 `--` 之后的路径。其余一律拒绝，尤其是 `-c`、`--output`、`--exec`、`--git-dir`、`--work-tree`、`-C`、`--ext-diff`、`--textconv`、`--show-signature`、`--config-env`、`--color` 和任何会写文件或改引用的选项。提交号和范围用正则校验（十六进制、分支名字符、`..`、`~n`、`^`），不允许以 `-` 开头，不允许包含 `:`（防止 `<提交>:<路径>` 形式读取任意 blob 时触发 textconv）。
+  `status` 不接受 `--no-color`，颜色由全局的 `-c color.ui=never` 关闭；`--no-optional-locks` 是全局选项，不能放在子命令之后。git 最低支持版本定为 **2.34**（覆盖主流仍维护的 LTS 发行版如 Ubuntu 22.04 自带版本，补测已在 git 2.34.1 与 2.56.0 上通过，见 `experiments/p0/c-tools/RESULTS.md`）。1b 固定使用空值 `core.fsmonitor=`，避免旧版把字符串值解释为 hook。1b 本机测试为 Git 2.53.0.windows.2，2.34.1 与 2.56.0 的记录属于 P0，不代替本轮最低版本实测。
+- **环境变量**：删除继承环境中的全部 `GIT_*`，再设置 `GIT_CONFIG_NOSYSTEM=1`、`GIT_CONFIG_GLOBAL` 为平台空设备、`GIT_PAGER=cat`、`PAGER=cat`、`GIT_EXTERNAL_DIFF=`（空）、`GIT_TERMINAL_PROMPT=0` 和 `GIT_OPTIONAL_LOCKS=0`。
+- **白名单选项**：模型只能传白名单内的选项（如 `--stat`、`--name-only`、`--name-status`、`-n<数字>`、`--oneline`、`--format=<固定几种>`、`-U<数字>`、`--cached`（仅 `diff`））、提交号和提交范围，以及 `--` 之后的路径。其余一律拒绝，尤其是 `-c`、`--output`、`--exec`、`--git-dir`、`--work-tree`、`-C`、`--ext-diff`、`--textconv`、`--show-signature`、`--config-env`、`--color` 和任何会写文件或改引用的选项。提交号和范围用正则校验（十六进制、分支名字符、`..`、`~n`、`^`），不允许以 `-` 开头，不允许包含 `:`（防止 `<提交>:<路径>` 形式读取任意 blob 时触发 textconv）。
 - **路径限定**：`--` 之后的路径用 `canonicalPath` 规范化，必须在任务工作目录内，同时受“受保护目录”规则约束。
 - **filter**：`status` 和对工作区的 `diff` 在文件状态信息过期时可能对工作区文件运行 `filter.<driver>.clean` 或 `process`。每次执行前用 `git config --get-regexp "^filter\."` 读出仓库配置的 filter（读配置不执行代码），对每个 driver 在前缀中用 `-c` 把 `clean`、`smudge`、`process` 覆盖为空。已在 git 2.34.1、2.56.0 的默认非 required filter 配置下验证，覆盖为空未触发恶意程序；不外推到任意版本和 filter 组合。
 
@@ -373,8 +375,14 @@ daemon 被强杀时，Windows 上 Job Object 关闭，受管进程随之终止�
 
 - 每个空闲 pi RPC 进程估算占 100–300 MiB（**估算，未实测**，P0 测量）。长上下文和图片会抬高峰值。
 - 同时推理的协作会话默认最多 4 个（`maxConcurrentRuns`，可配置）。一次运行从发出 `prompt`（或注入触发新一轮的消息）开始占用一个名额，到 `agent_settled` 释放。见下文“名额优先级”。
-- 回收：协作会话 settled、没有进行中的工具调用、没有待回应的扩展 UI 对话框，空闲 5 分钟后停止进程（`idleReclaimMs`，默认 300000）。等待答复（`waiting_decision`）的会话同样可回收，答复到达后重新拉起。已结束的会议成员在纪要完成后立即回收。
+- 回收：协作会话 settled、没有进行中的工具调用，空闲 5 分钟后停止进程（`idleReclaimMs`，默认 300000）；1b 的扩展 UI 默认立即取消。等待答复（`waiting_decision`）或下级（`waiting_children`）的父任务同样可回收，相关通知到达后先排队取得名额，再用原会话重新拉起并注入通知，不重放原任务书。父任务收到下级通知后仍需自行交出最终结果。后续开放 pending UI 时，存在待回应对话框也必须阻止回收。
 - 回收只停进程，**不删除**会话、任务、worktree 或存档。
+
+### 多层任务
+
+默认允许两层任务，每个任务的未结束下级数默认不限；配置、spawn 参数可以逐层收紧。层数和下级数在 daemon 的串行 spawn 队列内检查，档位不能升级。新 worktree 从父任务当前提交创建，不带父目录未提交改动，返回警告；共用目录的 implement 冲突仍被拒绝。
+
+父任务 settled 后若有下级，进入 waiting_children 并释放名额，不把初次回复当作最终结果。下级结束的 outbox 发给直接上级；daemon 为上级安排唤醒，扩展仅在该 run 持有名额时领取通知。停止父任务先封住子树的新派活，再逐层停止并汇总各层 StopReport，任一层不明时保留停止现场。
 
 ### 名额优先级
 

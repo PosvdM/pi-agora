@@ -1,6 +1,6 @@
 # 路线图
 
-> 状态：代码覆盖切片 1a；完整任务核心、存档、pane、board 和会议按后续切片推进。实现与测试入口见 [development.md](development.md)。
+> 状态：代码覆盖切片 1b 的任务核心；用户级安全、存档、pane、board 和会议按后续切片推进。实现与测试入口见 [development.md](development.md)。
 
 ## P0 验证项
 
@@ -12,7 +12,7 @@ P0 验证设计依赖的 pi 行为和平台行为，目标 pi 版本为 1.5.x，
 | 2 | - [x] | 会话落盘：`--session <预先分配的不存在路径>` 新建会话后文件写在该路径；`--session <file>` 重新拉起后上下文完整；`get_entries` 的 `since` 和 `leafId`；`message_end` 之后用 `get_entries since` 取到对应条目 | `get_state.sessionFile` 与磁盘一致；恢复后模型能看到之前的对话；daemon 的会话模型与会话文件一致，无重复或缺失 | **通过**。macOS 实测通过，依据见 [A 组 RESULTS.md](../experiments/p0/a-rpc/RESULTS.md)。Windows/Linux 待测移入公开发布前跨平台测试。 | architecture.md、archive.md、integration.md |
 | 3 | - [x] | 工具与资源限制：`--tools read,grep,find,ls,agora_*` + `-ne -e <agora> -ns -np --no-approve` 时，模型看不到也调不到 `bash`、`codemode`、MCP 工具；项目 `.pi/settings.json` 的 `defaultTools` 不会绕过；implement 加 `-e builtin:mcp` 和 `mcp__<server>__*` 时只声明白名单服务器的工具，未列入的服务器是否仍会连接 | 逐项尝试调用均失败；记录 MCP 服务器的实际连接情况 | **通过**（含受信任项目）。MCP 白名单只限制工具暴露不限制服务器连接，未列入的服务器仍会连接，设计改为由 agora 单独生成只含白名单服务器的 MCP 配置以彻底避免启动。依据见 [C 组 RESULTS.md](../experiments/p0/c-tools/RESULTS.md)。Windows/Linux 待测移入公开发布前跨平台测试。 | architecture.md |
 | 4 | - [x] | 受管扩展 fail closed：agora 扩展加载失败、`tool_call` 钩子抛出异常、launch ticket 过期或被重放、就绪报告的工具集合不符 | 每种情况下任务书都没有发出，任何工具都没有执行，run 被结束并留下诊断 | **通过**（受管原型范围）。五类故障均未发送任务书且进程终止留诊断。依据见 [C 组 RESULTS.md](../experiments/p0/c-tools/RESULTS.md)。Windows/Linux 待测移入公开发布前跨平台测试。 | architecture.md |
-| 5 | - [ ] | 路径校验与命令工具：`tool_call` 钩子能拿到文件类工具的路径参数并拒绝；搜索根是受保护目录的祖先、嵌套的受保护目录、符号链接、junction、校验后切换链接、`write` 新文件、大小写和 Unicode 变体。`powershell` 只在原生 Windows 且配置允许时提供，其他情况下模型看不到也调不到；`bash`、`powershell` 不承诺命令的路径隔离，只验证是否提供 | 越界的文件类工具调用全部被拒；记录链接切换（TOCTOU）的实际表现；`powershell` 的提供与否符合配置 | **部分通过**。macOS 静态文件路径检查全部通过；TOCTOU 为明示剩余风险。pi-hostkit 的路径规则在 Windows、macOS、Linux 的 CI 中与 pi 1.5.0 的内部函数差分比对通过，agora 的 `tool_call` 路径校验尚未实现；Windows 原生 PowerShell 和 junction 仍待测，移入公开发布前跨平台测试。依据见 [C 组 RESULTS.md](../experiments/p0/c-tools/RESULTS.md)、[pi-hostkit 的“验证状态”](https://github.com/PosvdM/pi-hostkit/blob/main/docs/design.md#验证状态)。 | architecture.md、pi-hostkit 设计文档 |
+| 5 | - [ ] | 路径校验与命令工具：`tool_call` 钩子能拿到文件类工具的路径参数并拒绝；搜索根是受保护目录的祖先、嵌套的受保护目录、符号链接、junction、校验后切换链接、`write` 新文件、大小写和 Unicode 变体。`powershell` 只在原生 Windows 且配置允许时提供，其他情况下模型看不到也调不到；`bash`、`powershell` 不承诺命令的路径隔离，只验证是否提供 | 越界的文件类工具调用全部被拒；记录链接切换（TOCTOU）的实际表现；`powershell` 的提供与否符合配置 | **部分通过**。macOS 静态文件路径检查全部通过；TOCTOU 为明示剩余风险。pi-hostkit 的路径规则在 Windows、macOS、Linux 的 CI 中与 pi 1.5.0 的内部函数差分比对通过，1b 的 `tool_call` 路径校验已有三档自动化测试，Windows 真实 directory junction、新文件真实祖先、大小写和 Unicode 路径验证通过；原生 PowerShell 已实际调用并独立读取输出文件。TOCTOU 仍为明示剩余风险，验证入口见 development.md。依据见 [C 组 RESULTS.md](../experiments/p0/c-tools/RESULTS.md)、[pi-hostkit 的“验证状态”](https://github.com/PosvdM/pi-hostkit/blob/main/docs/design.md#验证状态)。 | architecture.md、pi-hostkit 设计文档 |
 | 6 | - [ ] | pi-hostkit：原生部分的形态；进程树终止（含 `bash` 工具的独立进程组、后台进程、父进程先退出、pi 被 SIGKILL 后的孤儿进程）；单实例锁与会话写锁的争抢和强杀后释放、会话写锁的取锁时机（`--session <不存在的路径>`、`session_before_switch` 取消、`session_shutdown` 的 `targetSessionFile`）、跨宿主恢复（pi-pane 被杀后 pi-agora 打开同一会话，及反向）；进程身份与 PID 复用；`icacls`；路径规范化用例。详见 [pi-hostkit 的“验证状态”](https://github.com/PosvdM/pi-hostkit/blob/main/docs/design.md#验证状态)，与 pi-pane 共用 | 三个平台全部按 pi-hostkit 设计文档工作；残留情况有实测记录 | **部分通过**。P0 在 macOS 原型上定下原生形态（N-API 预编译模块），会话事件的取锁时机通过，并发现快照的两种漏杀盲窗（两次快照间 setsid 退出后 SIGKILL pi，以及首次快照前退出的 nohup 后台进程），因此 Linux 有 cgroup v2 时默认开启，macOS 收窄承诺并以 `StopReport.coverage` 标明覆盖范围。pi-hostkit 0.1 已实现，CI 在 Windows、macOS、Linux（cgroup 与快照两种模式）上自动测试通过：锁的争抢与强杀后释放、跨宿主恢复与 fail closed、启动门闩、`bash` 工具及脱离进程组的后台进程的清理、abort 超时后仍完成停止、身份不符时不发信号、密钥权限（Windows 用 DACL，不用 `icacls`）、路径规则差分比对。仍未验证：真实 PID 复用与机器重启、身份检查与发信号之间的竞态、macOS 快照盲窗（未消除）、网络文件系统的拒绝、Linux 没有用户 systemd 时自动退回快照模式；取锁时机所依赖的 pi 会话事件只在 macOS 上验证；bash 启动上报 pgid 仍为 P1 调研项。依据见 [E 组 RESULTS.md](../experiments/p0/e-hostkit/RESULTS.md)。 | pi-hostkit 设计文档 |
 | 7 | - [ ] | 通知送达：`pi.sendMessage(..., { triggerTurn: true, deliverAs: "followUp" })` 在主代理空闲、忙碌、执行工具时的行为；以会话条目确认；`triggerTurn: false` 的静默注入；用户 `clear_queue` 清掉排队中的通知 | 空闲时立即开始新一轮；忙碌时排队；被清掉的通知在 `agent_settled` 后重新注入；同一 `dedupeKey` 在会话里只出现一次 | **部分通过**。受管停止流程采用 `clear_queue` + `abort` 实测通过（通知仅落盘一条）；只发 abort 时排队通知留在队列未落盘、settled 后重投导致重复落盘已确认为第三方 RPC 客户端已知偏差，展示时统一按 `dedupeKey` 去重；Windows/Linux 待测移入公开发布前跨平台测试。依据见 [D 组 RESULTS.md](../experiments/p0/d-notify/RESULTS.md)。 | tasks.md、board.md |
 | 8 | - [x] | 通知故障注入：在扩展的 `message_end` 回调中杀掉 pi；`message_end` 已发出、写入会话文件前杀掉 pi；静默注入后立即杀掉 pi；新会话尚未出现任何对话消息时静默注入通知、再杀掉 pi；ack 请求发出前杀掉 daemon | 每种情况下通知最终恰好在会话里出现一次，outbox 不会在通知写入会话文件之前被确认 | **通过**（限 pi 内部派发和强杀两种情况，恢复后恰好落盘一次）。依据见 [D 组 RESULTS.md](../experiments/p0/d-notify/RESULTS.md)。Windows/Linux 待测移入公开发布前跨平台测试。 | tasks.md |
@@ -46,7 +46,9 @@ pi-agora 和 pi-pane 的 MVP 按同样的三个切片推进，两仓的 roadmap 
 | 步骤 | 范围 |
 | --- | --- |
 | 1a：最小闭环 | 四包工程和三平台 CI；daemon 单实例、握手、主会话注册与恢复、租约、launch ticket、就绪检查、排空、版本和迁移；RPC driver、会话写锁、并发、诊断、旧进程清理、扩展 UI；explore 的 spawn / status / result / stop；outbox 可靠通知；CLI start / shutdown / status / ls / show |
-| 1b–1d | 其余完整动作与状态机、steer、worktree、三个档位、提问、用户确认、配对、存档与其他 CLI；archive 包在 1d 创建 |
+| 1b：任务补全 | 全部任务动作与状态机、generation、steer 追踪、worktree、三档与路径、agora_git、提问及逐级转交、pending / answer、空闲回收、看门狗；多层委派、子树限制与停止、等待下级；请求传输重试与 Windows 停止重试 |
+| 1c：安全 | 子 / 主 Agent 与用户级划分、预算封顶、完整资源访问控制、待确认、设备登记与验签、everPaired、离线命令、安全状态检查和审计；跟进可选扩展 / MCP 白名单及 saved 项目信任的配置隔离 |
+| 1d：存档与收尾 | 全量存档、只读解析器、archive adapter、会话视图、log / tail / verify-archive 和其他 CLI；创建 archive 包 |
 
 下面列出切片 1 的完整目标，不表示这些内容均已实现。
 
@@ -93,23 +95,28 @@ pi-pane 的估算见其 `docs/roadmap.md`（18–26 人日，P0 后重估）；�
 
 ## 必须测试的故障
 
-切片 1：
+切片 1 的故障归属如下。表中的 1a 测试继续在 1b 全量执行；模拟崩溃与截断不等同于真实断电实测。
 
-- 子代理完成的瞬间主会话关闭或切换会话；
-- 返工完成再次通知，重投的通知不重复叫醒；
-- 通知故障注入（P0 第 8 项的各个时间点），以及用户在主会话按停止清掉排队中的通知；
-- 主代理和子代理同时提问；
-- worktree 里的会话提问（不得因路径被拒）；
-- 工具卡住、忽略 abort、遗留 shell 后代进程；macOS 和 Linux 上 pi 被 SIGKILL 后的孤儿进程；
-- daemon 被强杀：macOS、Linux 上旧 pi 仍在运行时，重启后先按进程身份停止并确认退出，再允许 resume；Windows 上受管进程随 Job 终止；
-- 模拟断电：会话文件最后一行不完整、数据库在事务中断电；
-- 重复请求：同一 `Idempotency-Key` 的 spawn、steer、answer 只执行一次；
-- 主会话 fork 后两个会话同时认领同一 principal；
-- 子代理读取 `secret/host.key` 后以 `host:cli` 身份尝试答复自己转给用户的提问：只能生成待确认，不能直接生效；
-- 待确认的挑战被重放、过期后提交、参数被改；
-- pi-pane 正托管某个会话文件时，daemon 尝试托管同一文件（写锁拒绝）；pi-pane 被强杀后 daemon 打开同一会话文件，以及 daemon 被强杀后 pi-pane 打开（新持锁方先停止遗留的 pi 写者）；恰在 spawn 之后、写入 `writer` 之前杀掉宿主（新持锁方返回 failed，不自动拉起）；
-- 任务占满名额时召开会议（应排队并通知，名额释放后优先给会议）；
-- daemon 运行中升级版本（备份、校验、迁移失败时保持原库）。
+| 故障 | 归属 | 测试与验收 |
+| --- | --- | --- |
+| 子代理完成瞬间主会话关闭 | 1a | `notify-faults.test.mjs` 的实际任务完成通知强杀与恢复用例 |
+| 子代理完成瞬间主会话切换 | 1b | `extension-hooks.test.mjs`：switch 遇到旧 principal 的迟到完成通知时不能注入新会话 |
+| 返工再次通知、同代重投不重复叫醒 | 1b | `notification-clear-1b.test.mjs`：真实主会话 clear_queue + abort 后重投，同代去重，新 generation 再次唤醒；`task-1b.test.mjs` 保留各代结果 |
+| P0 #8 五个通知故障时点 | 1a | `notify-faults.test.mjs` 的 message_end、落盘前、静默注入、空会话和 ack 前强杀用例 |
+| 用户停止清掉排队通知 | 1b | `notification-clear-1b.test.mjs` 的真实队列与 settled 重投 |
+| 主代理和子代理同时提问 | 1b | `task-1b.test.mjs`：主代理与子代理同时提问不互相阻塞 |
+| worktree 会话提问 | 1b | `task-1b.test.mjs`：worktree 从父提交创建、提问仅核对 principal |
+| 工具卡住、忽略 abort、shell 后代、POSIX 孤儿进程 | 1a | `driver.test.mjs` 的挂起工具 / provider、shell 与脱离进程组用例；快照覆盖不外推为整树保证 |
+| daemon 强杀后旧 pi 清理、确认退出后 resume | 1a 清理，1b 恢复 | `daemon-restart.test.mjs` 的真实旧进程清理；`task-1b.test.mjs` 的 resume / reopen / replace / abandon |
+| 会话尾行不完整、数据库事务中断 | 1a 通知证据与事务原子性，1d 全量解析 | `extension.test.mjs`：未换行片段不能确认；`store.test.mjs`：通知失败事务回滚。全量 archive 截断解析在 1d；真实断电尚未实测 |
+| 同 key 的 spawn / steer / answer | 1a spawn，1b steer / answer | `daemon.test.mjs`：并发幂等 spawn；`task-1b.test.mjs`：返工与答复只执行一次 |
+| fork 后并发认领同 principal | 1b | `claim-fork-1b.test.mjs`：fork 新 sessionId 不继承 principal；同原 sessionId 并发仅一个租约 |
+| 读取 host.key 后冒充用户答复 | 1c | 待确认与设备签名；1b CLI 通路尚不能区分用户与 Agent |
+| 挑战重放、过期、参数篡改 | 1c | 用户确认验签测试 |
+| 跨宿主写锁拒绝、强杀恢复与 gate 放行前强杀 | 1a | `driver.test.mjs`、`driver-faults.test.mjs`、`daemon-restart.test.mjs`；双向共享协议由 hostkit 的跨宿主测试覆盖 |
+| 运行中升级、备份与迁移失败 | 1a v1/v2，1b v3 | `store.test.mjs` 的一致性备份和回滚；`task-1b.test.mjs` 的 v2→v3 成功、备份及 DDL 失败回滚 |
+
+1b 的多层委派另须通过：父任务等待下级不提前完成；回收父进程后重拉并投递通知；子树各层 StopReport；层数、下级数、档位和限制拒绝；单名额多层调度不死锁；提问逐级上交与原提问者收到答案；禁止管理别人的任务，主代理不能跳级返工但能停止。自动化入口为 `task-1b.test.mjs` 与 `tree-e2e.test.mjs`。
 
 切片 2：
 
@@ -124,6 +131,7 @@ pi-pane 的估算见其 `docs/roadmap.md`（18–26 人日，P0 后重估）；�
 
 切片 3：
 
+- 任务占满名额时召开会议（排队并通知，名额释放后优先给会议）；
 - board 条目已写入但投递未确认时 daemon 崩溃；
 - 密封草稿通过任何接口泄漏给其他参会者；
 - 最后一个认可与新反对意见并发到达；`decision` 插话后旧阶段的晚到条目；
@@ -141,13 +149,11 @@ pi-pane 的估算见其 `docs/roadmap.md`（18–26 人日，P0 后重估）；�
 - 不自动合并、推送、发版；不自动删除有改动的 worktree。
 - 不承诺有副作用操作的“恰好一次”：通知可去重，外部副作用不自动重放。
 - 不做沙箱：implement 档位的 bash 不保证不越界。
-- 子代理不能再派子代理（MVP）。
 - 不迁移 pi-web-ui 的私有运行状态。
 
 ## 以后可能做
 
 - 按 loopback 连接的对端进程 PID 判断请求是否来自受管会话的进程树，作为额外的审计信息和门槛（见 [security.md](security.md#以后可能做)）。
-- 子代理再派子代理。
 - 会议预算的硬上限：关闭模型服务 SDK 的内部重试并由 daemon 批准每次请求，或经由记账网关转发模型请求（见 [meetings.md](meetings.md#以后可能做)）。
 - P1 调研项：在 pi 里用扩展包住 bash 工具，命令启动时上报进程组以兜住早退后台进程（见 [pi-hostkit 设计文档的“剩余风险”](https://github.com/PosvdM/pi-hostkit/blob/main/docs/design.md#剩余风险)）。
 

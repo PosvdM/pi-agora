@@ -1,6 +1,6 @@
 # 集成协议
 
-> 本文描述完整集成设计。切片 1a 的实际端点和测试入口见 [development.md](development.md)，pane、archive 和其他领域接口按后续切片提供。
+> 本文描述完整集成设计。切片 1b 的实际任务、提问、最终就绪和 CLI 通路见 [development.md](development.md)。用户级确认为 1c 目标，存档 / 会话视图为 1d，pane 和其他领域接口按后续切片提供；下表列出的设计端点不表示全部已开放。
 
 本文定义 pi-agora 自己对外的接口，以及 agora 如何接入 pi-pane：
 
@@ -86,6 +86,14 @@ pi-hostkit        ◄── daemon、extension（pi-pane 服务端也依赖它�
   | 426 | `protocol_unsupported` |
   | 503 | `draining`（daemon 正在排空，拒绝新任务） |
 
+### 1b 通路与边界
+
+1b 的任务接口支持 list、status、result、steer、stop、cleanup、recover；recover 的 mode 为 resume / reopen / replace / abandon。任务返回 parentTaskId、depth、maxDepth 和 maxChildren，waiting_children 映射为 waiting。默认深度为两层，maxDepth 从新任务自身起计，拒绝使用 depth_exceeded、depth_limit_exceeded、children_exceeded、child_limit_exceeded、profile_upgrade 等错误码。
+
+提问返回 targetId（当前接收方）、route（逐级转交链）和 revision；答复始终送给 askerId。主代理也能 ask，直接面向 user。1b 的 host:cli 可直接答复任意提问，answeredVia.confirmedBy 为 none；不存在设备挑战或用户级签名，不发送 Agora-Act-As 请求头。完整用户级协议按下节目标在 1c 接入。
+
+子会话 inbox 只有在 run 持有推理名额且最终就绪时返回通知。等待下级的父任务先经 daemon 重新排队或拉起，再由扩展注入同一 outbox 通知，防止通知绕过全局名额。
+
 ### 幂等
 
 `Idempotency-Key` 标识的是**一次操作**，不是一份响应快照：
@@ -108,6 +116,7 @@ pi-hostkit        ◄── daemon、extension（pi-pane 服务端也依赖它�
 | | `POST /v1/auth/launch` | 协作会话用 launch ticket 换 token | 协作会话里的扩展 |
 | | `POST /v1/auth/refresh` | 续期 token | 全部 |
 | 运行 | `POST /v1/runs/:runId/ready` | 协作会话报告就绪（活动工具、模型等），见 [architecture.md](architecture.md#受管扩展的就绪检查) | 协作会话里的扩展 |
+| | `GET /v1/runs/:runId/authorized` | 查询 RPC 二次核对后的最终授权；子会话工具执行必须等待 ready | 协作会话扩展 |
 | | `POST /v1/runs/:runId/fatal` | 权限检查发生内部故障时报告 fatal，停止自己的 run；不接受控制其他 run | 协作会话里的扩展 |
 | 主会话 | `POST /v1/principals/register`、`/reclaim` | 注册、恢复后认领 principal | 主会话扩展 |
 | | `POST /v1/lease/renew`、`/release` | 每 30 秒续控制租约及连接 token；关闭或切换主会话时释放租约 | 主会话扩展 |
@@ -122,12 +131,12 @@ pi-hostkit        ◄── daemon、extension（pi-pane 服务端也依赖它�
 | 安全警告 | `GET /v1/security/alerts` | 当前的安全警告（`alertId`、类型、`revision`、内容、状态） | CLI、pane 插件 |
 | | `POST /v1/security/alerts/:alertId/acknowledge` | 带 `revision` 发起确认知悉，返回 `202` 和待确认；签名走 `/v1/confirmations/:id/sign`。只适用于 `devices-reset` | pane 插件 |
 | 配置 | `GET /v1/settings`、`PUT /v1/settings/:key` | 如 `userConfirmation`、`meetingLimitDefaults`、`agentLimitCap`；关闭保护、调高上限配置是用户级，开启保护、调低随时可以 | CLI |
-| 任务 | `POST /v1/tasks` | spawn | 主会话扩展、CLI、pane 插件 |
+| 任务 | `POST /v1/tasks` | spawn；maxDepth / maxChildren 逐层收紧，按 principal 与任务树授权 | 主 / 子会话扩展、CLI、pane 插件 |
 | | `GET /v1/tasks`、`GET /v1/tasks/:id`、`GET /v1/tasks/:id/result?generation=` | 列表、当前详情、指定代结果 | 同上 |
 | | `POST /v1/tasks/:id/steer`、`/stop`、`/cleanup`、`/recover`、`/takeover` | 返工、停止、清理 worktree、中断后的处理、接管 | 同上 |
 | 提问 | `POST /v1/requests` | 提问 | 协作会话扩展 |
-| | `GET /v1/requests` | 按状态和接收方查询；`?for=me` | 全部 |
-| | `POST /v1/requests/:id/answer`、`/escalate`、`/cancel` | 答复、转给用户、取消 | 召集人、`host:*` |
+| | `GET /v1/requests`、`GET /v1/requests/:id` | 当前身份可见提问，支持重复 state 参数及 limit / cursor 分页 | 全部 |
+| | `POST /v1/requests/:id/answer`、`/escalate`、`/cancel` | 答复、逐级转交、取消；保留原 requestId，答案回原提问者 | 直接接收方、提问者取消、host:cli 答复 |
 | board | `GET /v1/boards/:id`、`GET /v1/boards/:id/entries?afterSeq=` | 元数据、公开条目 | 成员、`host:*` |
 | | `POST /v1/boards/:id/entries` | 发条目（`sealed` 仅会议密封阶段） | 成员、召集人、`host:*`（作者为 user，用户级） |
 | | `POST /v1/boards` | 新建独立 board（非会议） | 主会话扩展、`host:*` |
@@ -268,7 +277,7 @@ agora:root:user-tasks            〔用户任务〕   用户通过 CLI 或 pi-pa
 
 | 节点 | `kind` | `parentId` | `title` | `badge` |
 | --- | --- | --- | --- | --- |
-| 任务会话 | session | `pane:session:<召集人的 piSessionId>`；召集人是 user 时为 `agora:root:user-tasks` | 任务标题 | `子代理` |
+| 任务会话 | session | 直接召集人的节点：主会话为 `pane:session:<piSessionId>`，子任务为 `agora:session:<父任务当前会话 ID>`；user 为 `agora:root:user-tasks` | 任务标题 | `子代理` |
 | 会议 | group | 召集人主会话；召集人是 user 时为 `agora:root:user-meetings` | 议题 | `会议` |
 | 参会者 | session | 会议节点 | `<seat 名>（<模型简称>，<角色>）` | `参会` |
 | 书记 | session | 会议节点 | `书记（<模型简称>）` | `书记` |
@@ -294,7 +303,7 @@ agora:root:user-tasks            〔用户任务〕   用户通过 CLI 或 pi-pa
 | --- | --- |
 | 任务 `created`（排队等名额或进程尚未就绪） | `waiting` |
 | 任务 `running` | `running` |
-| 任务 `waiting_decision` | `waiting` |
+| 任务 `waiting_decision`、`waiting_children` | `waiting` |
 | 任务 `completed` | `done` |
 | 任务 `failed` | `failed` |
 | 任务 `stopped` | `stopped` |

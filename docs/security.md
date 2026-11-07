@@ -1,6 +1,6 @@
 # 安全模型
 
-> 本文描述完整安全设计。切片 1a 实现主 / 子 Agent 级身份、握手、主会话恢复与租约、launch ticket 和只读权限；不开放用户级操作。用户确认、设备配对及相关接口按后续切片提供。
+> 本文描述完整安全设计。切片 1b 实现 principal、租约、launch ticket、最终就绪、三档路径检查，以及任务树的直接召集关系与权限限制。完整用户级确认、设备配对、审计和资源 ACL 在 1c。1b 的 CLI 可以直接答复提问，尚不能区分用户与同一系统用户下的 Agent。
 
 本文定义 agora daemon 的身份、鉴权、用户确认、设备配对、资源访问控制、审计和剩余风险。进程与存储见 [architecture.md](architecture.md)，平台相关的实现（密钥目录权限、路径规范化）见 [pi-hostkit 设计文档](https://github.com/PosvdM/pi-hostkit/blob/main/docs/design.md)，HTTP 端点见 [integration.md](integration.md)。
 
@@ -15,7 +15,7 @@
 
 | 级别 | 谁 | 凭证来源 | 能做什么 |
 | --- | --- | --- | --- |
-| 子 Agent 级 | `agent:child`（任务、参会者、书记） | launch ticket 换来的连接 token | 只做自己的工作：读写自己会话可见的内容、按档位使用工具、写自己所在的 board、认可（参会者）、用 `agora_request ask` 向召集人提问。不能做主 Agent 级和用户级的任何操作，只能发起提问 |
+| 子 Agent 级 | `agent:child`（任务、参会者、书记） | launch ticket 换来的连接 token | 按档位做自己的工作；任务子代理在限制内派下级，查看、返工、停止及答复自己直接派出的任务；向直接上级提问或逐级转交。不能做主 Agent 级或用户级操作；board 与会议权限随对应切片提供 |
 | 主 Agent 级 | `agent:main`（主代理，用户的代理人）；`host:cli`、`host:pane` | 磁盘凭证（`secret/` 下的文件） | 派任务、召开会议、返工、停止、读取、转发、发起待确认；`agent:main` 还可以裁决自己召集的会议、答复发给自己的提问、在 `agentLimitCap` 以内提高自己会议的上限（见 [meetings.md](meetings.md#参数)） |
 | 用户级 | `user` | 已配对浏览器的设备密钥对 daemon 挑战的签名 | 见下表 |
 
@@ -47,7 +47,7 @@ principal 是 daemon 里的行为主体。所有任务、提问、board 条目�
 | `agent:child` | daemon 拉起的协作会话（kind = task / meeting-seat / secretary） | 子 Agent 级 |
 
 - 召集人（convener）是任务或会议的发起方，只能是 `agent:main` 或 `user`。`host:cli` 和 `host:pane` 创建任务和会议时召集人记为 `user`，同时记录实际发起的 principal；创建本身是主 Agent 级操作，之后对这些资源做的用户级决定仍需确认。
-- 协作会话不能再派任务或召开会议（MVP）。
+- 任务子代理可以在配置和父子树限制内派下级，不得升级档位或放宽层数 / 下级数；不能召开会议。所有子任务管理在 daemon 按 token 的 principal 和任务树核对，不按 cwd 授权。
 
 ## 磁盘凭证与连接 token
 
@@ -94,6 +94,8 @@ daemon 拉起协作会话时生成一次性 launch ticket，经环境变量 `AGO
 - 读到 ticket 的代码最多抢先兑换它：ticket 只能兑换一次，被抢先后 agora 扩展兑换失败，就绪检查不通过，run 被结束（见 [architecture.md](architecture.md#受管扩展的就绪检查)）；抢到的 token 只有该协作会话自己的权限，且随进程退出作废。兑换之后还要完成受管扩展的就绪检查，见 [architecture.md](architecture.md#受管扩展的就绪检查)。
 
 ## 用户确认
+
+本节是 1c 的设计目标。1b 只提供转交和 host:cli 直接答复通路，答复标注 confirmedBy: none；host:pane 不接受此直接执行路径。任何能取得 host.key 的同用户进程都能通过 CLI 身份答复，不能将 1b 声称为已实现用户防冒充。预算封顶、待确认、设备和安全审计尚未开放。
 
 用户级操作必须由已配对浏览器对 daemon 下发的一次性挑战签名，daemon 验签后才执行。pi-pane 服务端只转发，无法伪造签名；pi-pane 的 HTTP 接口没有任何 Agent 可用的凭证（pi-pane 的鉴权见其 `docs/architecture.md`）。
 
@@ -228,11 +230,12 @@ daemon 启动时、以及在线检测到状态变化时，检查以下情况，�
 
 | 操作 | host:* | 召集人（agent:main） | 其他 agent:main | agent:child |
 | --- | --- | --- | --- | --- |
-| spawn | ✔（召集人记为 user） | — | ✔（成为新任务的召集人） | ✘ |
-| list `scope: "mine"` | ✔（召集人为 user 的任务） | ✔ | ✔ | ✘ |
+| spawn | ✔（召集人记为 user） | — | ✔（成为新任务的召集人） | ✔，层数、下级数、档位不得放宽 |
+| list `scope: "mine"` | ✔（召集人为 user 的任务） | ✔ | ✔ | 仅直接下级 |
 | list `scope: "all"` | ✔ 全部 | 只返回摘要 | 只返回摘要 | ✘ |
-| 读详情、结果 | ✔ | ✔ | ✘ | 只能读自己所属任务的状态 |
-| steer、stop、cleanup | ✔ | ✔ | ✘ | ✘ |
+| 读详情、结果 | ✔ | ✔，包含自己任务树 | ✘ | 直接下级；另可读自己所属任务的状态 |
+| steer、cleanup | ✔ | 仅直接下级 | ✘ | 仅直接下级 |
+| stop | ✔，整个目标子树 | ✔，整个目标子树 | ✘ | 仅直接下级及随其停止的整棵子树 |
 | recover（召集人为 agent:main 且可达） | ✘ | ✔ | ✘ | ✘ |
 | recover（召集人为 user，或已转给用户） | 确认 | ✘（显示“已转给用户”） | ✘ | ✘ |
 | 接管（召集人改为 user） | 确认 | ✘ | ✘ | ✘ |
@@ -243,11 +246,11 @@ daemon 启动时、以及在线检测到状态变化时，检查以下情况，�
 
 | 操作 | host:* | 召集人 | 提问者（agent:child） |
 | --- | --- | --- | --- |
-| ask | ✘ | ✘ | ✔ |
+| ask | ✘ | ✔，主代理发给用户 | ✔，发给直接上级 |
 | 列表、读取 | ✔ 全部 | 发给自己的 | 自己提的 |
 | answer（`open`，召集人为 agent:main） | 确认 | ✔ | ✘ |
 | answer、cancel（`escalated`，或召集人为 user） | 确认 | ✘ | ✘ |
-| escalate | ✘ | ✔ | ✘ |
+| escalate | ✘ | ✔，主代理转给用户 | 作为直接召集人时逐级向上转交 |
 | cancel（`open`，召集人为 agent:main） | ✘ | ✔ | ✔（自己提的） |
 
 ### board
