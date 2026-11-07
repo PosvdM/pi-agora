@@ -7,8 +7,9 @@ export function gitEnvironment(source: NodeJS.ProcessEnv = process.env): NodeJS.
     GIT_PAGER: 'cat', PAGER: 'cat', GIT_EXTERNAL_DIFF: '', GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0' };
 }
 const prefix = ['--no-pager', '--no-optional-locks', '-c', 'core.fsmonitor=', '-c', 'core.pager=cat',
-  '-c', 'color.ui=never', '-c', 'log.showSignature=false'];
-export async function gitExec(cwd: string, args: string[], signal?: AbortSignal): Promise<string> {
+  '-c', 'color.ui=never', '-c', 'log.showSignature=false', '-c', 'core.hooksPath=/dev/null'];
+// 配置探测只读取配置，不运行工作区转换器；所有实际命令由 gitExec 加固。
+async function gitRaw(cwd: string, args: string[], signal?: AbortSignal): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile('git', [...prefix, ...args], { cwd, env: gitEnvironment(), timeout: 30_000,
       maxBuffer: 1024 * 1024, windowsHide: true, encoding: 'utf8', signal }, (error, stdout) => {
@@ -27,12 +28,17 @@ export async function gitRead(cwd: string, command: string, options: string[] = 
   if (command === 'status' && refs.length || command === 'show' && refs.length !== 1 || refs.length > (command === 'diff' ? 2 : 1)) throw new Error('git 提交参数无效');
   if (refs.some(ref => !/^[A-Za-z0-9_][A-Za-z0-9_./~^{}-]*$/.test(ref) || ref.includes('@{') || ref.includes('.../') || ref.includes(':'))) throw new Error('git 提交或范围无效');
   if (paths.some(p => p.startsWith(':'))) throw new Error('不允许 git pathspec 魔术参数');
-  // 读取配置不会运行 filter；覆盖工作区比较可能触发的转换器。
+  const args = command === 'status'
+    ? ['status', '--porcelain=v1', '--ignore-submodules=all', '--untracked-files=normal']
+    : [command, '--no-ext-diff', '--no-textconv', '--no-color', ...(command === 'log' || command === 'show' ? ['--no-show-signature'] : []), ...(command === 'log' ? ['-n50'] : []), ...options, ...refs];
+  return gitExec(cwd, ['--literal-pathspecs', ...args, '--', ...(paths.length ? paths : ['.'])], signal);
+}
+export async function gitExec(cwd: string, args: string[], signal?: AbortSignal): Promise<string> {
   let config = '';
-  try { config = await gitExec(cwd, ['config', '--null', '--get-regexp', '^filter\\.'], signal); }
+  try { config = await gitRaw(cwd, ['config', '--null', '--get-regexp', '^filter\\.'], signal); }
   catch {
     // --get-regexp 无匹配返回 1，独立读取全部配置区分无匹配与查询故障。
-    config = await gitExec(cwd, ['config', '--null', '--list'], signal);
+    config = await gitRaw(cwd, ['config', '--null', '--list'], signal);
   }
   const drivers = new Set<string>();
   for (const item of config.split('\0')) {
@@ -41,8 +47,5 @@ export async function gitRead(cwd: string, command: string, options: string[] = 
     if (match) drivers.add(match[1]!);
   }
   const filters = [...drivers].flatMap(driver => ['clean', 'smudge', 'process'].flatMap(key => ['-c', `filter.${driver}.${key}=`]).concat(['-c', `filter.${driver}.required=false`]));
-  const args = command === 'status'
-    ? ['status', '--porcelain=v1', '--ignore-submodules=all', '--untracked-files=normal']
-    : [command, '--no-ext-diff', '--no-textconv', '--no-color', ...(command === 'log' || command === 'show' ? ['--no-show-signature'] : []), ...(command === 'log' ? ['-n50'] : []), ...options, ...refs];
-  return gitExec(cwd, ['--literal-pathspecs', ...filters, ...args, '--', ...(paths.length ? paths : ['.'])], signal);
+  return gitRaw(cwd, [...filters, ...args], signal);
 }

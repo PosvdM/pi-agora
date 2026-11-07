@@ -7,9 +7,10 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { gitRead, gitExec, gitEnvironment } from '../packages/protocol/dist/git.js';
+import { Worktrees } from '../packages/daemon/dist/worktrees.js';
 
 const prefix = ['--no-pager', '--no-optional-locks', '-c', 'core.fsmonitor=', '-c', 'core.pager=cat',
-  '-c', 'color.ui=never', '-c', 'log.showSignature=false'];
+  '-c', 'color.ui=never', '-c', 'log.showSignature=false', '-c', 'core.hooksPath=/dev/null'];
 const quote = value => `'${value.replaceAll('\\', '/').replaceAll("'", "'\\''")}'`;
 async function fixture(t) {
   const root = await mkdtemp(path.join(tmpdir(), 'agora-git-1b-'));
@@ -39,7 +40,7 @@ async function fixture(t) {
   await writeFile(path.join(cwd, 'file.txt'), 'working\n');
   const oracle = path.join(root, 'markers.jsonl');
   const script = path.join(root, 'probe.mjs');
-  await writeFile(script, `import { appendFileSync } from 'node:fs';\nappendFileSync(process.argv[2], JSON.stringify({ kind: process.argv[3], argv: process.argv.slice(4) }) + '\\n');\n`);
+  await writeFile(script, `import { appendFileSync } from 'node:fs';\nappendFileSync(process.argv[2], JSON.stringify({ kind: process.argv[3], pid: process.pid, argv: process.argv.slice(4) }) + '\\n');\n`);
   const probe = kind => `${quote(process.execPath)} ${quote(script)} ${quote(oracle)} ${quote(kind)}`;
   const markers = async () => existsSync(oracle) ? (await readFile(oracle, 'utf8')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line)) : [];
   const clear = () => rm(oracle, { force: true });
@@ -65,7 +66,7 @@ test('1b git argv：固定安全前缀、filter 覆盖和 -- 分隔，不依赖 
       calls.length = 0;
       assert.equal(await gitRead('/repo', command, options, refs, paths, signal), 'output');
       assert.deepEqual(calls[0].args, [...prefix, 'config', '--null', '--get-regexp', '^filter\\.']);
-      assert.deepEqual(calls[1].args, [...prefix, '--literal-pathspecs', ...filters, ...expected]);
+      assert.deepEqual(calls[1].args, [...prefix, ...filters, '--literal-pathspecs', ...expected]);
       for (const call of calls) {
         assert.equal(call.file, 'git');
         assert.equal(call.options.signal, signal);
@@ -77,7 +78,8 @@ test('1b git argv：固定安全前缀、filter 覆盖和 -- 分隔，不依赖 
     }
     calls.length = 0;
     await gitExec('/repo', ['rev-parse', '--show-toplevel'], signal);
-    assert.deepEqual(calls[0].args, [...prefix, 'rev-parse', '--show-toplevel']);
+    assert.deepEqual(calls[0].args, [...prefix, 'config', '--null', '--get-regexp', '^filter\\.']);
+    assert.deepEqual(calls[1].args, [...prefix, ...filters, 'rev-parse', '--show-toplevel']);
   } finally {
     mock.restoreAll();
     syncBuiltinESMExports();
@@ -189,4 +191,42 @@ test('1b 真实 Git：textconv/external/fsmonitor/pager/required filters/gpg 配
   for (const key of ['filter.trap.clean', 'filter.trap.smudge', 'filter.trap.process', 'filter.trap.required']) f.raw(['config', '--unset-all', key]);
   assert.match(await gitRead(f.cwd, 'status'), /file\.txt/);
   assert.deepEqual(await f.markers(), []);
+});
+
+test('F2：worktree 检出禁用恶意 smudge/process 与 hooks，正控执行且无遗留进程', { timeout: 90_000 }, async t => {
+  const f = await fixture(t);
+  const manager = new Worktrees({ home: f.root }, path.join(f.root, 'worktrees'));
+  const dead = async markers => {
+    for (const marker of markers) {
+      // Git 等待 filter 退出后才返回；短暂等待兼容 Windows 退出可见性延迟。
+      let alive = true;
+      for (let attempt = 0; attempt < 40 && alive; attempt++) {
+        try { process.kill(marker.pid, 0); await new Promise(resolve => setTimeout(resolve, 50)); }
+        catch (error) { if (error.code === 'ESRCH') alive = false; else throw error; }
+      }
+      assert.equal(alive, false, `filter 进程 ${marker.pid} 必须退出`);
+    }
+  };
+  for (const kind of ['smudge', 'process']) {
+    f.raw(['config', `filter.trap.${kind}`, f.probe(kind)]);
+    f.raw(['config', 'filter.trap.required', 'true']);
+    const positive = path.join(f.root, `positive-${kind}`);
+    try { f.raw(['worktree', 'add', '--detach', positive, 'HEAD']); } catch { /* process 协议故意不实现。 */ }
+    const executed = await f.markers();
+    assert.ok(executed.some(marker => marker.kind === kind), `${kind} 正控必须执行`);
+    await dead(executed); await f.clear();
+    const result = await manager.create(f.cwd, `negative-${kind}`);
+    assert.equal(await readFile(path.join(result.worktree.path, 'file.txt'), 'utf8'), 'committed\n');
+    assert.deepEqual(await f.markers(), [], `${kind} 不能在加固的 worktree add 中执行`);
+    f.raw(['config', '--unset-all', `filter.trap.${kind}`]);
+    f.raw(['config', '--unset-all', 'filter.trap.required']);
+  }
+  const hooks = path.join(f.root, 'hooks'); await mkdir(hooks);
+  const hook = path.join(hooks, 'post-checkout');
+  await writeFile(hook, `#!/bin/sh\nexec ${f.probe('hook')} "$@"\n`); await chmod(hook, 0o755);
+  f.raw(['config', 'core.hooksPath', hooks.replaceAll('\\', '/')]);
+  f.raw(['worktree', 'add', '--detach', path.join(f.root, 'positive-hook'), 'HEAD']);
+  const hooksRun = await f.markers(); assert.ok(hooksRun.some(marker => marker.kind === 'hook'));
+  await dead(hooksRun); await f.clear();
+  await manager.create(f.cwd, 'negative-hook'); assert.deepEqual(await f.markers(), []);
 });

@@ -26,10 +26,7 @@ export class Worktrees {
       const parent = path.join(this.root, `${path.basename(repo)}-${hash}`);
       await mkdir(parent, { recursive: true });
       const directory = path.join(parent, `agora-${taskId}`), branch = `agora/${taskId}`;
-      // post-checkout 等仓库 hook 不能在创建隔离目录时运行。
-      const noHooks = path.join(this.store.home, 'run', 'disabled-hooks');
-      await mkdir(noHooks, { recursive: true });
-      await gitExec(cwd, ['-c', `core.hooksPath=${noHooks}`, 'worktree', 'add', '-b', branch, directory, base]);
+      await gitExec(cwd, ['worktree', 'add', '-b', branch, directory, base]);
       return { worktree: { task_id: taskId, repo_root: repo, base_commit: base, branch, path: directory, owner_id: '', state: 'active' },
         warnings: dirty ? [`父工作目录有 ${dirty} 处未提交改动，不会带入 worktree`] : [] };
     });

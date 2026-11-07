@@ -316,7 +316,7 @@ P0 测试用例：搜索根是受保护目录的祖先、受保护目录嵌套�
 
   ```text
   git --no-pager --no-optional-locks
-      -c core.fsmonitor= -c core.pager=cat -c color.ui=never -c log.showSignature=false
+      -c core.fsmonitor= -c core.pager=cat -c color.ui=never -c log.showSignature=false -c core.hooksPath=/dev/null
       [ -c filter.<driver>.clean= -c filter.<driver>.smudge= -c filter.<driver>.process= ]…   # 见下文 filter
   ```
 
@@ -333,7 +333,7 @@ P0 测试用例：搜索根是受保护目录的祖先、受保护目录嵌套�
 - **环境变量**：删除继承环境中的全部 `GIT_*`，再设置 `GIT_CONFIG_NOSYSTEM=1`、`GIT_CONFIG_GLOBAL` 为平台空设备、`GIT_PAGER=cat`、`PAGER=cat`、`GIT_EXTERNAL_DIFF=`（空）、`GIT_TERMINAL_PROMPT=0` 和 `GIT_OPTIONAL_LOCKS=0`。
 - **白名单选项**：模型只能传白名单内的选项（如 `--stat`、`--name-only`、`--name-status`、`-n<数字>`、`--oneline`、`--format=<固定几种>`、`-U<数字>`、`--cached`（仅 `diff`））、提交号和提交范围，以及 `--` 之后的路径。其余一律拒绝，尤其是 `-c`、`--output`、`--exec`、`--git-dir`、`--work-tree`、`-C`、`--ext-diff`、`--textconv`、`--show-signature`、`--config-env`、`--color` 和任何会写文件或改引用的选项。提交号和范围用正则校验（十六进制、分支名字符、`..`、`~n`、`^`），不允许以 `-` 开头，不允许包含 `:`（防止 `<提交>:<路径>` 形式读取任意 blob 时触发 textconv）。
 - **路径限定**：`--` 之后的路径用 `canonicalPath` 规范化，必须在任务工作目录内，同时受“受保护目录”规则约束。传给 Git 的是核对后的相对路径，并在全局选项中设置 `--literal-pathspecs`，禁止将 glob 解释成其他路径。省略路径时显式使用 `.`，将查询限制在任务 cwd 内。
-- **filter**：`status` 和对工作区的 `diff` 在文件状态信息过期时可能对工作区文件运行 `filter.<driver>.clean` 或 `process`。每次执行前用 `git config --get-regexp "^filter\."` 读出仓库配置的 filter（读配置不执行代码），对每个 driver 在前缀中用 `-c` 把 `clean`、`smudge`、`process` 覆盖为空。已在 git 2.34.1、2.56.0 的默认非 required filter 配置下验证，覆盖为空未触发恶意程序；不外推到任意版本和 filter 组合。
+- **共用安全调用层**：daemon 和扩展的 Git 调用统一经过 `packages/protocol/src/git.ts` 的 `gitExec`，包括 `worktree add` 的检出与清理。固定前缀将 hooks 路径设为 `/dev/null`。每次实际命令前只读查询仓库的 filter 配置，对每个 driver 用 `-c` 将 `clean`、`smudge`、`process` 覆盖为空，并设置 `required=false`；配置探测本身不读取工作区或运行转换器。`status` / 工作区 `diff` 的 clean/process 和 worktree 检出的 smudge/process 均受此规则约束。真实 Git 测试包含恶意 filter 与 post-checkout hook 的正控、加固调用的零执行标记和正控进程退出检查。
 
 P0 用一个带恶意配置的测试仓库验证：仓库配置了 textconv、`diff.external`、`core.fsmonitor`、`core.pager`、clean/smudge/process filter、`log.showSignature` + `gpg.program`，并让工作区文件的状态信息过期；对 `status`、`diff`（工作区、`--cached`、两个提交之间）、`log`（含 `-p`）、`show` 的每一种调用都检查，这些程序一次都不会执行（用写标记文件的脚本判断）。
 
