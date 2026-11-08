@@ -2,7 +2,7 @@ import { realpath, mkdir, stat, writeFile, rename } from "node:fs/promises";
 import path from "node:path";
 import { acquireSessionWriterLock, currentProcessIdentity, isSessionWriterLock, type ProcessIdentity, type RpcResponse, type SessionWriterLock, type StopReport } from "pi-hostkit";
 import { Auth, type Connection, type RunPolicy } from "./auth.js";
-import { AgoraError, invalid, text } from "./errors.js";
+import { AgoraError, invalid, text, object } from "./errors.js";
 import { Store, id, now, type RunRow, type TaskRow } from "./store.js";
 import type { DriverHandle, DriverExit, SessionDriver } from "./driver.js";
 import { Worktrees } from "./worktrees.js";
@@ -139,6 +139,14 @@ export class TaskManager {
     if (!["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(thinking)) invalid("推理级别无效");
     const prompt = text(body.prompt, "prompt", 1_000_000);
     const title = body.title === undefined ? prompt.split(/\r?\n/, 1)[0]!.slice(0, 200) : text(body.title, "title", 200);
+    let originToolCall: { sessionRef: { source: string; id: string }; toolCallId: string } | undefined;
+    if (body.originToolCall !== undefined) {
+      const origin = object(body.originToolCall);
+      if (!conn.type.startsWith("agent:")) invalid("主机创建的任务不能声明工具来源");
+      const sourceId = parent ? this.store.session(parent.agora_session_id).pi_session_id : principal?.pi_session_id;
+      if (!sourceId || origin.sessionId !== sourceId) invalid("工具来源必须属于当前召集人会话");
+      originToolCall = { sessionRef: { source: parent ? "agora" : "pane", id: parent?.agora_session_id ?? sourceId }, toolCallId: text(origin.toolCallId, "toolCallId", 1024) };
+    }
     const notify = body.notify ?? "wake";
     if (notify !== "wake" && notify !== "silent") invalid("通知方式无效");
     const rawCwd = body.cwd ?? principal?.cwd;
@@ -167,7 +175,9 @@ export class TaskManager {
       this.store.run("UPDATE tasks SET skills=?,skill_paths=? WHERE id=?", JSON.stringify(skills), JSON.stringify(resolved.map(item => item.path)), taskId);
       if (isolated) this.store.run("INSERT INTO worktrees VALUES(?,?,?,?,?,?,?)", taskId, isolated.worktree.repo_root, isolated.worktree.base_commit, isolated.worktree.branch, cwd, convenerId, "active");
       this.store.run("INSERT INTO task_generations(task_id,generation,status,agora_session_id) VALUES(?,1,'created',?)", taskId, sessionId);
+      if (originToolCall) this.store.run("INSERT INTO settings(key,value) VALUES(?,?)", `origin:task:${taskId}`, JSON.stringify(originToolCall));
       this.store.change("task", taskId);
+      if (parent) this.store.change("session", parent.agora_session_id);
     });
     this.pending.push(taskId);
     queueMicrotask(() => this.pump());

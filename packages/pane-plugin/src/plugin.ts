@@ -141,6 +141,8 @@ export default function createPlugin(options: PluginOptions = {}): PanePlugin {
         try {
           const health = await api.request("GET", "/v1/health", undefined, { timeoutMs: 5_000 });
           if (health.status !== 200) throw new AgoraConnectionError();
+          const authorization = await api.request("GET", "/v1/status", undefined, { timeoutMs: 5_000 });
+          if (authorization.status !== 200) throw new AgoraConnectionError();
           await refreshDomains();
           if (!domainOff) await watchDomains(generation);
           if (!inboxRunning) void inbox(++inboxGeneration);

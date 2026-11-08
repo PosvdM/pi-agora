@@ -2,7 +2,7 @@ import type {
   PanePlugin, NodeStatus, TreeNode, SessionRef, SessionSnapshot, HistoryPage,
   SessionStreamEvent, PanelContent,
 } from "@pi-pane/plugin-api";
-import { encoded, message, type PluginRuntime, type SessionItem, type SessionsPage, type ApiEvent } from "./contracts.js";
+import { encoded, message, parentNodeId, type PluginRuntime, type SessionItem, type SessionsPage, type ApiEvent } from "./contracts.js";
 
 const USER_TASKS = "agora:root:user-tasks";
 const TASK_PANEL = "agora.task";
@@ -42,7 +42,7 @@ function node(item: SessionItem, revision = item.revision): TreeNode {
   if (item.taskId && ["quota_paused", "budget_paused", "interrupted"].includes(item.status)) capabilities.push("action:agora.task.recover");
   return {
     id: nodeId(item.agoraSessionId), source: "agora", kind: "session",
-    parentId: item.parentId ?? (item.taskId ? USER_TASKS : null), title: item.title,
+    parentId: parentNodeId(item), title: item.title,
     badge: item.taskId ? "子代理" : item.kind === "secretary" ? "书记" : "参会",
     sessionRef: { source: "agora", id: item.agoraSessionId }, status: status(item.status),
     ...(item.statusDetail ? { statusDetail: item.statusDetail } : {}),
@@ -131,12 +131,13 @@ export function createViews(runtime: PluginRuntime): {
     const counts = new Map<string, number>();
     for (const item of items.values()) {
       if (!item.taskId || TERMINAL.has(item.status)) continue;
-      let parent = item.parentId;
+      let parent = parentNodeId(item);
       const visited = new Set<string>();
       while (parent && !parent.startsWith("pane:session:")) {
         if (visited.has(parent)) { parent = null; break; }
         visited.add(parent);
-        parent = items.get(parent)?.parentId ?? null;
+        const ancestor = items.get(parent);
+        parent = ancestor ? parentNodeId(ancestor) : null;
       }
       if (!parent) continue;
       const id = parent.slice("pane:session:".length);

@@ -8,6 +8,8 @@ interface ListedSession extends SessionRow {
   cursor: number; parent_id: string | null; title: string; kind: string;
   child_count: number; last_activity_at: string; status_detail: string | null;
   archive_state: string; tree_revision: number; effective_status: string;
+  task_parent_id: string | null; parent_session_id: string | null; convener_pi_session_id: string | null;
+  origin_call: string | null;
 }
 interface Filter { owner: string | null; parent: string | null; snapshot: boolean; open: string[]; recent: string | null; legacy: boolean }
 
@@ -35,6 +37,8 @@ function treeSql(): string {
     UNION SELECT t.id FROM tasks t JOIN allowed a ON t.parent_task_id=a.id
   ), base AS (
     SELECT s.*,s.rowid AS cursor,t.title,t.status_detail,t.convener_id AS task_convener_id,
+      t.parent_task_id AS task_parent_id,pt.agora_session_id AS parent_session_id,p.pi_session_id AS convener_pi_session_id,
+      origin.value AS origin_call,
       CASE WHEN t.agora_session_id=s.id THEN t.status ELSE s.status END AS effective_status,
       CASE WHEN t.parent_task_id IS NOT NULL THEN 'agora:session:' || pt.agora_session_id
         WHEN COALESCE(s.convener_id,t.convener_id) IN ('user','host:cli','host:pane') OR p.type LIKE 'host:%' THEN 'agora:root:user-tasks'
@@ -49,6 +53,7 @@ function treeSql(): string {
     FROM agora_sessions s JOIN tasks t ON t.id=s.task_id JOIN allowed a ON a.id=t.id
     LEFT JOIN tasks pt ON pt.id=t.parent_task_id
     LEFT JOIN principals p ON p.id=COALESCE(s.convener_id,t.convener_id)
+    LEFT JOIN settings origin ON origin.key='origin:task:' || t.id
     LEFT JOIN settings sm ON sm.key='changes:object:session:' || s.id
     LEFT JOIN settings tm ON tm.key='changes:object:task:' || t.id
   )`;
@@ -58,9 +63,14 @@ export function sessionView(session: ListedSession) {
   return { agoraSessionId: session.id, taskId: session.task_id, piSessionId: session.pi_session_id,
     profile: session.profile, model: session.model, thinking: session.thinking, cwd: session.cwd,
     status: session.effective_status ?? session.status, revision: session.tree_revision, createdAt: session.created_at,
-    parentId: session.parent_id, title: session.title, kind: session.kind,
+    parentId: session.parent_id,
+    ...(session.task_parent_id && session.parent_session_id ? { parent: { kind: "task", taskId: session.task_parent_id, sessionId: session.parent_session_id } }
+      : session.convener_pi_session_id ? { parent: { kind: "main", piSessionId: session.convener_pi_session_id } }
+      : session.parent_id === "agora:root:user-tasks" ? { parent: { kind: "user" } } : {}),
+    title: session.title, kind: session.kind,
     hasChildren: session.child_count > 0, childCount: session.child_count,
-    lastActivityAt: session.last_activity_at, statusDetail: session.status_detail, archiveState: session.archive_state };
+    lastActivityAt: session.last_activity_at, statusDetail: session.status_detail, archiveState: session.archive_state,
+    ...(session.origin_call ? { originToolCall: JSON.parse(session.origin_call) } : {}) };
 }
 
 export function listSessions(store: Store, conn: Connection, params: URLSearchParams, limit: number) {
@@ -88,7 +98,7 @@ export function listSessions(store: Store, conn: Connection, params: URLSearchPa
     const args = { $owner: filter.owner, $legacy: filter.legacy ? 1 : 0, $after: after, $limit: resultLimit + 1, $parent: filter.parent };
     let sql = treeSql();
     if (filter.snapshot) {
-      sql += `, hot(id) AS (SELECT id FROM base WHERE effective_status IN ('created','running','waiting','paused','waiting_decision','waiting_children','quota_paused')
+      sql += `, hot(id) AS (SELECT id FROM base WHERE effective_status IN ('created','running','waiting','paused','waiting_decision','waiting_children','quota_paused','budget_paused')
         OR 'agora:session:' || id IN (SELECT value FROM json_each($open)) OR ($recent IS NOT NULL AND last_activity_at>$recent)),
         wanted(id) AS (SELECT id FROM hot UNION SELECT b.id FROM base b JOIN wanted w JOIN base child ON child.id=w.id AND child.parent_id='agora:session:' || b.id)`;
     }

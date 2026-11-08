@@ -64,7 +64,7 @@ function change(stream, seq, objectType = 'session', objectId = 's1', patch = {}
 
 test('树映射热快照、虚拟根、状态与子节点分页 epoch', async t => {
   const rows = [
-    item('created', { status: 'created', parentId: null }),
+    item('created', { status: 'created', parentId: null, parent: { kind: 'user' } }),
     item('paused', { status: 'quota_paused' }),
     item('done', { status: 'completed', archiveState: 'missing' }),
     item('interrupted', { status: 'interrupted' }),
