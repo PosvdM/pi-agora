@@ -177,7 +177,24 @@ export function createViews(runtime: PluginRuntime): {
       return { source: "agora", epoch: page.changesCursor.epoch, revision, nodes };
     },
     async children(parentId, page) {
-      const result = await get<SessionsPage>(query("/v1/sessions", { parent: parentId, limit: page.limit, cursor: page.cursor }));
+      // 旧来源的游标可能在 daemon 返回 epoch 前被拒绝，先用有界读取核实来源。
+      const current = await get<SessionsPage>("/v1/sessions?limit=1");
+      lifetime.signal.throwIfAborted();
+      if (current.changesCursor.epoch !== page.epoch) return { reset: true, epoch: current.changesCursor.epoch };
+      const reply = await runtime.api.request("GET",
+        query("/v1/sessions", { parent: parentId, limit: page.limit, cursor: page.cursor }),
+        undefined, { signal: lifetime.signal });
+      lifetime.signal.throwIfAborted();
+      if (reply.status < 200 || reply.status >= 300) {
+        if (page.cursor !== undefined && reply.status === 400 && reply.body?.error?.code === "invalid_params") {
+          // 两次读取之间也可能切换来源；同 epoch 的参数错误仍交给调用方。
+          const latest = await get<SessionsPage>("/v1/sessions?limit=1");
+          lifetime.signal.throwIfAborted();
+          if (latest.changesCursor.epoch !== page.epoch) return { reset: true, epoch: latest.changesCursor.epoch };
+        }
+        throw new Error(message(reply));
+      }
+      const result: SessionsPage = reply.body;
       if (result.changesCursor.epoch !== page.epoch) return { reset: true, epoch: result.changesCursor.epoch };
       remember(result.items);
       return { epoch: result.changesCursor.epoch, revision: result.changesCursor.seq,
