@@ -3,8 +3,9 @@ import { mkdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { AgoraError } from "./errors.js";
+import { archiveSchemaV6 } from "./archive-schema.js";
 
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 6;
 export const schemaMigrations: readonly string[] = [String.raw`
 CREATE TABLE principals (
   id TEXT PRIMARY KEY, type TEXT NOT NULL, label TEXT NOT NULL DEFAULT '',
@@ -112,7 +113,36 @@ CREATE TABLE usage_records (
   created_at TEXT NOT NULL, UNIQUE(run_id,request_id)
 );
 CREATE INDEX usage_task ON usage_records(task_id,generation,seq);
-`];
+`, String.raw`
+ALTER TABLE tasks ADD COLUMN max_tokens INTEGER NOT NULL DEFAULT 50000000;
+ALTER TABLE tasks ADD COLUMN taken_over_from TEXT;
+ALTER TABLE requests ADD COLUMN answer_proof TEXT;
+CREATE TABLE budget_grants (
+  id TEXT PRIMARY KEY, resource_id TEXT NOT NULL, principal_id TEXT NOT NULL,
+  day TEXT NOT NULL, tokens INTEGER NOT NULL, confirmed_by TEXT NOT NULL, created_at TEXT NOT NULL
+);
+CREATE TABLE devices (
+  id TEXT PRIMARY KEY, public_key TEXT NOT NULL UNIQUE, label TEXT NOT NULL,
+  state TEXT NOT NULL CHECK(state IN ('pending','paired')), created_at TEXT NOT NULL
+);
+CREATE TABLE pending_confirmations (
+  id TEXT PRIMARY KEY, action TEXT NOT NULL, target TEXT NOT NULL, params TEXT NOT NULL,
+  challenge TEXT NOT NULL, nonce TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL,
+  requested_by TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending'
+    CHECK(state IN ('pending','executing','confirmed','failed','cancelled','expired')),
+  consumed_at TEXT, confirmed_by TEXT, result TEXT, failure_reason TEXT, created_at TEXT NOT NULL
+);
+CREATE TABLE security_alerts (
+  id TEXT PRIMARY KEY, kind TEXT NOT NULL UNIQUE, revision INTEGER NOT NULL,
+  details TEXT NOT NULL, acknowledged_at TEXT, acknowledged_by TEXT, created_at TEXT NOT NULL
+);
+CREATE TABLE security_audit (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT, action TEXT NOT NULL, target TEXT NOT NULL,
+  requested_by TEXT NOT NULL, confirmed_by TEXT NOT NULL, device_id TEXT,
+  confirmation_id TEXT, outcome TEXT NOT NULL, reason TEXT, via TEXT NOT NULL,
+  details TEXT, created_at TEXT NOT NULL
+);
+`, archiveSchemaV6];
 
 export interface PrincipalRow {
   id: string; type: string; label: string; pi_session_id: string | null;
@@ -134,6 +164,9 @@ export interface SessionRow {
   pi_session_id: string | null; profile: string; model: string; thinking: string;
   cwd: string; status: string; revision: number; created_at: string;
   convener_id: string; parent_principal_id: string; control_state: string | null;
+  kind: string; meeting_id: string | null; inherits_from: string | null; inherit_reason: string | null;
+  archive_state: string; archive_hash: string | null; archive_bytes: number; archive_verified_at: string | null;
+  archive_error: string | null; ended_at: string | null;
 }
 export interface RunRow {
   id: string; agora_session_id: string; daemon_instance_id: string;
