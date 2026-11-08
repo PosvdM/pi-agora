@@ -33,6 +33,7 @@ export interface SessionItem {
   taskId?: string | null;
   kind?: string;
   isCurrent?: boolean;
+  takenOver?: boolean;
   parentId: string | null;
   parent?: SessionParent;
   title: string;
@@ -56,6 +57,9 @@ export interface SessionsPage {
   items: SessionItem[];
   nextCursor?: string | null;
   changesCursor: ChangeCursor;
+}
+export function statusDetail(item: { takenOver?: boolean; statusDetail?: string | null }): string | undefined {
+  return [item.takenOver ? "已由用户接管" : undefined, item.statusDetail || undefined].filter(Boolean).join("；") || undefined;
 }
 export function encoded(value: string): string { return encodeURIComponent(value); }
 export function message(reply: ApiReply): string {

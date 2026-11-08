@@ -136,7 +136,7 @@ cleanup 在有未提交改动且未指定 `discard` 时返回 `409 worktree_dirt
 | 主会话 | `POST /v1/principals/register`、`/reclaim` | 注册、恢复后认领 principal | 主会话扩展 |
 | | `POST /v1/lease/renew`、`/release` | 每 30 秒续控制租约及连接 token；关闭或切换主会话时释放租约 | 主会话扩展 |
 | | `POST /v1/principals/:id/takeover` | 强制转移租约（用户级） | CLI、pane 插件 |
-| 用户确认 | `GET /v1/confirmations` | 待确认列表（状态、发起方、过期时间） | CLI、pane 插件 |
+| 用户确认 | `GET /v1/confirmations` | 确认列表（状态、发起方、过期时间）；可用重复的 state 参数过滤 pending / executing 等状态，省略时保留全状态列表 | CLI、pane 插件 |
 | | `POST /v1/confirmations/:id/sign` | 提交设备签名 `{ deviceId, publicKey, alg, signature }`，验签后执行 | pane 插件 |
 | | `POST /v1/confirmations/:id/cancel` | 用户拒绝 | pane 插件、CLI |
 | 设备 | `POST /v1/devices/pair` | 取配对挑战（`action: "agora.device.pair"`），新设备用自己的密钥签名后提交。同一事务内按三种情况处理：`everPaired = false` → TOFU 直接配对；`reTofuArmed = true`（离线重置后）→ 直接配对并消费该状态；其他 → 进入待批准。规则见 [security.md](security.md#配对状态) | pane 插件 |
@@ -144,7 +144,7 @@ cleanup 在有未提交改动且未指定 `discard` 时返回 `409 worktree_dirt
 | | `POST /v1/devices/:id/approve`、`/revoke` | 批准、撤销（用户级，已配对设备签名） | CLI、pane 插件 |
 | | `POST /v1/devices/reset` | 在线重置配对（`agora pair --reset`，用户级，已配对设备签名）：保留签名设备，清掉其余。没有可用浏览器时用离线命令，不经 API | CLI、pane 插件 |
 | 安全警告 | `GET /v1/security/alerts` | 当前的安全警告（`alertId`、类型、`revision`、内容、状态） | CLI、pane 插件 |
-| | `POST /v1/security/alerts/:alertId/acknowledge` | 带 `revision` 发起确认知悉，返回 `202` 和待确认；签名走 `/v1/confirmations/:id/sign`。只适用于 `devices-reset` | pane 插件 |
+| | `POST /v1/security/alerts/:alertId/acknowledge` | 带 `revision` 发起确认知悉，返回 `202` 和待确认；签名走 `/v1/confirmations/:id/sign`。适用于 `devices-reset` 和 `budget-config-changed`，不适用于 `protection-off` | pane 插件 |
 | 配置 | `GET /v1/settings`、`PUT /v1/settings/:key` | 如 `userConfirmation`、`meetingLimitDefaults`、`agentLimitCap`；关闭保护、调高上限配置是用户级，开启保护、调低随时可以 | CLI |
 | 任务 | `POST /v1/tasks` | spawn；maxDepth / maxChildren 逐层收紧，按 principal 与任务树授权 | 主 / 子会话扩展、CLI、pane 插件 |
 | | `GET /v1/tasks`、`GET /v1/tasks/:id`、`GET /v1/tasks/:id/result?generation=` | 列表、当前详情、指定代结果 | 同上 |
@@ -457,6 +457,7 @@ daemon 的安全警告（规则见 [security.md](security.md#启动检查与安�
 | 横幅 id | 内容 | 动作 | 清除条件 |
 | --- | --- | --- | --- |
 | `agora:security:devices-reset` | 检测时间、来源（离线命令 / 未知修改）、当前配对设备的标签和指纹、警告 `revision` | “我已知悉”：调用 `POST /v1/security/alerts/:alertId/acknowledge`（带横幅显示的 `revision`），签名走通用确认流程 | 插件从 daemon 收到该警告变为已知悉的变更后清除；`revision` 更新时用新内容替换横幅 |
+| `agora:security:budget-config-changed` | 磁盘预算配置放宽的字段、前后值、检测时间和警告 `revision` | “我已知悉”：按当前 revision 发起签名确认；保护关闭也需签名 | daemon 确认知悉后清除；再次放宽的 revision 替换旧横幅 |
 | `agora:security:protection-off` | “用户确认已关闭，无法区分你和 Agent 的操作” | 无（不能确认知悉） | daemon 报告保护已重新开启后清除 |
 
 插件的规则：

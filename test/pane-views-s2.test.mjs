@@ -81,7 +81,7 @@ test('历史任务节点只读且不能通过 send 或 abort 操作当前任务'
 
 test('树映射热快照、虚拟根、状态与子节点分页 epoch', async t => {
   const rows = [
-    item('created', { status: 'created', parentId: null, parent: { kind: 'user' } }),
+    item('created', { status: 'created', parentId: null, parent: { kind: 'user' }, takenOver: true, statusDetail: '排队中' }),
     item('paused', { status: 'quota_paused' }),
     item('done', { status: 'completed', archiveState: 'missing' }),
     item('interrupted', { status: 'interrupted' }),
@@ -97,6 +97,7 @@ test('树映射热快照、虚拟根、状态与子节点分页 epoch', async t 
   assert.equal(snapshot.epoch, 'db'); assert.equal(snapshot.revision, 10);
   const [created, paused, done, interrupted, seat, root] = snapshot.nodes;
   assert.equal(created.status, 'waiting'); assert.equal(created.parentId, 'agora:root:user-tasks');
+  assert.equal(created.statusDetail, '已由用户接管；排队中');
   assert.equal(paused.status, 'paused'); assert.equal(done.status, 'done');
   assert.equal(done.availability, 'missing'); assert.equal(done.composer.images, false);
   assert.ok(done.capabilities.includes('action:agora.task.cleanup'));

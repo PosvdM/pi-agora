@@ -14,6 +14,7 @@ const STATES: Record<string, readonly string[]> = {
 };
 function businessState(kind: string, object: any): string {
   const state = kind === "decision" ? object.status : object.state;
+  if (kind === "request" && (typeof object.targetId !== "string" || !object.targetId)) throw new Error("提问接收方无效，无法核实终态，保留待处理表单");
   if (typeof state !== "string" || !STATES[kind]?.includes(state)) throw new Error("无法识别事项状态，无法核实终态，保留待处理表单");
   return state;
 }
@@ -92,7 +93,7 @@ export function createForms(runtime: PluginRuntime, security: Security) {
     if (!runtime.online()) return sorted();
     const budget = { items: 0, bytes: 0, pages: 0 };
     const requests = await pages("/v1/requests?state=open&state=escalated", budget);
-    const confirmations = await pages("/v1/confirmations", budget);
+    const confirmations = await pages("/v1/confirmations?state=pending&state=executing", budget);
     const devices = await pages("/v1/devices", budget);
     const decisions = await pages("/v1/tasks?scope=mine&status=interrupted", budget);
     for (const [kind, items] of [["request", requests], ["confirmation", confirmations], ["device", devices], ["decision", decisions]] as const) {

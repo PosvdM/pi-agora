@@ -2,7 +2,7 @@ import type {
   PanePlugin, NodeStatus, TreeNode, SessionRef, SessionSnapshot, HistoryPage,
   SessionStreamEvent, PanelContent,
 } from "@pi-pane/plugin-api";
-import { encoded, message, parentNodeId, type PluginRuntime, type SessionItem, type SessionsPage, type ApiEvent } from "./contracts.js";
+import { encoded, message, parentNodeId, statusDetail, type PluginRuntime, type SessionItem, type SessionsPage, type ApiEvent } from "./contracts.js";
 
 const USER_TASKS = "agora:root:user-tasks";
 const TASK_PANEL = "agora.task";
@@ -50,7 +50,7 @@ function node(item: SessionItem, revision = item.revision): TreeNode {
     parentId: parentNodeId(item), title: item.title,
     badge: item.taskId ? "子代理" : item.kind === "secretary" ? "书记" : "参会",
     sessionRef: { source: "agora", id: item.agoraSessionId }, status: status(item.status),
-    ...(item.statusDetail ? { statusDetail: item.statusDetail } : {}),
+    ...(statusDetail(item) ? { statusDetail: statusDetail(item) } : {}),
     availability: item.archiveState === "missing" ? "missing" : item.archiveState === "archived" ? "archived" : "online",
     hasChildren: item.hasChildren, ...(item.childCount === undefined ? {} : { childCount: item.childCount }),
     lastActivityAt: item.lastActivityAt, sortKey: item.createdAt, revision, capabilities,

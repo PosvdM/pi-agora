@@ -39,6 +39,34 @@ for (const kind of ["request", "confirmation", "device", "decision"]) {
   });
 }
 
+test("活动确认过滤避免五千条历史记录挤满待处理区，终态通过详情核实", async () => {
+  const historical = Array.from({ length: 5_000 }, (_, index) => ({ confirmationId: `old-${index}`, state: 'confirmed', title: '历史确认', summary: '历史操作', createdAt: AT }));
+  const active = { confirmationId: 'active', state: 'pending', title: '新确认', summary: '待处理操作', createdAt: AT };
+  const removed = [];
+  let lists = 0;
+  const runtime = { online: () => true, context: { formAdded() {}, formRemoved: (...args) => removed.push(args) }, api: {
+    async request(_method, path) {
+      const url = new URL(path, 'http://agora');
+      if (url.pathname === '/v1/confirmations/active') return { status: 200, body: active };
+      if (url.pathname !== '/v1/confirmations') return { status: 200, body: { items: [] } };
+      lists++;
+      const states = url.searchParams.getAll('state');
+      assert.deepEqual(states, ['pending', 'executing']);
+      const items = [...historical, active].filter(item => states.includes(item.state));
+      return { status: 200, body: { items, nextCursor: null } };
+    },
+  } };
+  const controller = createForms(runtime, {});
+  assert.equal((await controller.forms.pending()).length, 1);
+  active.state = 'executing';
+  assert.equal((await controller.forms.pending()).length, 1);
+  active.state = 'confirmed';
+  assert.deepEqual(await controller.forms.pending(), []);
+  assert.deepEqual(removed, [['agora:confirmation:active', 'handled']]);
+  assert.equal(lists, 3);
+  controller.dispose();
+});
+
 test("已签名执行中的 confirmation 保留在待处理区，重复提交返回 pending", async () => {
   const f = fixture("confirmation");
   await f.controller.forms.pending();
@@ -50,6 +78,17 @@ test("已签名执行中的 confirmation 保留在待处理区，重复提交返
   f.object.state = "confirmed";
   assert.deepEqual(await f.controller.forms.pending(), []);
   assert.deepEqual(f.removed, [["agora:confirmation:cf_one", "handled"]]);
+  f.controller.dispose();
+});
+
+test("提问的接收方缺失不能被误认为已转离用户", async () => {
+  const f = fixture("request");
+  const previous = await f.controller.forms.pending();
+  delete f.object.targetId;
+  await assert.rejects(f.controller.forms.pending(), /提问接收方无效/);
+  assert.equal(f.removed.length, 0);
+  f.setOffline();
+  assert.deepEqual(await f.controller.forms.pending(), previous);
   f.controller.dispose();
 });
 

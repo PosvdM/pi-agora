@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { setImmediate as yieldTurn } from "node:timers/promises";
 import type { NodeStatus, PanePlugin, SessionRef, SessionSnapshot, TreeNode } from "@pi-pane/plugin-api";
+import { statusDetail } from "./contracts.js";
 
 /** 归档关系使用领域标识符，由插件映射为树节点 ID。 */
 export type ArchivedSessionParent =
@@ -24,6 +25,7 @@ export interface ArchivedSessionSummary {
   messageCount?: number;
   inheritsFrom?: string;
   isCurrent?: boolean;
+  takenOver?: boolean;
   usage?: { contextTokens?: number };
   createdAt: string;
   endedAt?: string;
@@ -174,7 +176,7 @@ export function createOfflineViews(reader: ArchiveReader, epoch = `offline:${ran
       nodes.set(id, { id, source: "agora", kind: "session", parentId, title: item.title,
         badge: item.kind === "task" ? "子代理" : item.kind === "secretary" ? "书记" : "参会",
         sessionRef: { source: "agora", id: item.agoraSessionId }, status: status(item.status),
-        statusDetail: item.statusDetail, availability: item.archiveState === "missing" ? "missing" : "archived",
+        statusDetail: statusDetail(item), availability: item.archiveState === "missing" ? "missing" : "archived",
         hasChildren: false, lastActivityAt: item.lastActivityAt ?? item.endedAt ?? item.createdAt,
         messageCount: item.messageCount,
         sortKey: item.kind === "task" ? item.createdAt : `${item.kind === "secretary" ? "1" : "0"}:${item.createdAt}`,
