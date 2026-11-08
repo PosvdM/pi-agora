@@ -72,6 +72,15 @@ jobs:
           echo "XDG_RUNTIME_DIR=/run/user/$uid" >> "$GITHUB_ENV"
           echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus" >> "$GITHUB_ENV"
           if [ "${{ matrix.containment }}" = auto ]; then echo "HOSTKIT_TEST_REQUIRE_CGROUP=1" >> "$GITHUB_ENV"; fi
+      - name: 取得固定版本的 pane 协议源码
+        uses: actions/checkout@v4
+        with:
+          repository: PosvdM/pi-pane
+          ref: 03f7916c1a7e3787fc4eaddbdfb10667a217fae7
+          path: .pi-tmp-pane-api
+          token: ${{ secrets.PANE_SOURCE_TOKEN || github.token }}
+      - name: 比对 pane 协议只读副本
+        run: node scripts/vendor-pane-api.mjs compare .pi-tmp-pane-api
       - run: npm test
       - name: macOS 忽略 abort 的 provider 真实停止重复二十五次
         if: runner.os == 'macOS'
