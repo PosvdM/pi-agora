@@ -440,22 +440,22 @@ test("启用尚在连接时停用，迟到连接关闭后不能安装重连定�
 
 test("完整动作调用身份跨插件重启仍冲突，相同调用与新 origin 复用持久最终结果", { timeout: 5_000 }, async t => {
   const h = await host(t);
-  const first = mockApi(h, call => call.method === "POST" && call.path === "/tasks" ? ok({ agoraSessionId: "as_created" }) : undefined);
+  const first = mockApi(h, call => call.method === "POST" && call.path === "/v1/tasks" ? ok({ agoraSessionId: "as_created" }) : undefined);
   const plugin = h.plugin({ connect: async () => first.api });
   await plugin.activate(h.context);
   const form = await plugin.actions.resolveForm("agora.task.spawn", { type: "global" });
   assert.ok(form);
   const inv = { actionId: "agora.task.spawn", target: { type: "global" }, formId: form.id, formRevision: form.revision,
-    input: { answers: [], fields: { model: "provider/model", profile: "review", prompt: "检查生命周期" } }, idempotencyKey: "persistent-action" };
+    input: { answers: [], fields: { model: "provider/model", profile: "review", prompt: "检查生命周期", cwd: h.context.dataDir } }, idempotencyKey: "persistent-action" };
   const result = await plugin.actions.invoke(inv, origin);
   assert.deepEqual(result, { status: "ok", openNodeId: "agora:session:as_created" });
-  assert.equal(first.calls.filter(call => call.method === "POST" && call.path === "/tasks").length, 1);
+  assert.equal(first.calls.filter(call => call.method === "POST" && call.path === "/v1/tasks").length, 1);
   await plugin.deactivate();
   const second = mockApi(h);
   const restarted = h.plugin({ connect: async () => second.api });
   await restarted.activate(h.context);
   const reordered = structuredClone(inv);
-  reordered.input.fields = { prompt: "检查生命周期", profile: "review", model: "provider/model" };
+  reordered.input.fields = { cwd: h.context.dataDir, prompt: "检查生命周期", profile: "review", model: "provider/model" };
   assert.deepEqual(await restarted.actions.invoke(reordered, { ...origin, connectionId: "tab-b", receivedAt: "2026-01-02T00:00:00.000Z" }), result);
   const mutations = [
     value => { delete value.target; },

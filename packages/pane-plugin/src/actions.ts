@@ -102,7 +102,7 @@ function targetKey(target: ActionTarget | undefined, action: TaskAction): string
   return value.nodeId;
 }
 function modes(task: TaskState): string[] {
-  return task.status === "quota_paused" ? ["resume"] : task.status === "interrupted" ? ["resume", "reopen", "replace", "abandon"] : [];
+  return ["quota_paused", "budget_paused"].includes(task.status) ? ["resume"] : task.status === "interrupted" ? ["resume", "reopen", "replace", "abandon"] : [];
 }
 function allowed(action: TaskAction, task?: TaskState): boolean {
   if (action === "spawn") return true;
@@ -110,7 +110,7 @@ function allowed(action: TaskAction, task?: TaskState): boolean {
   if (action === "recover") return modes(task).length > 0;
   if (action === "steer") return [...active.filter(status => status !== "created"), "completed", "failed"].includes(task.status);
   if (action === "cleanup") return ["completed", "failed", "stopped", "interrupted"].includes(task.status);
-  return [...active, "quota_paused", "interrupted", "completed", "failed", "stopped"].includes(task.status);
+  return [...active, "quota_paused", "budget_paused", "interrupted", "completed", "failed", "stopped"].includes(task.status);
 }
 function outcome(reply: ApiReply, action: TaskAction): ActionResult {
   if (reply.status === 202 || reply.status >= 500) return { status: "pending", message: "操作尚未结束，请使用同一请求标识查询" };
@@ -269,7 +269,7 @@ export function createActions(runtime: PluginRuntime, execute: ExecuteOperation)
     }
   }
   async function get(path: string): Promise<JsonRecord> {
-    const reply = await runtime.api.request("GET", path);
+    const reply = await runtime.api.request("GET", `/v1${path}`);
     if (reply.status < 200 || reply.status >= 300 || reply.status === 202) throw new ReadReply(reply);
     return object(reply.body, "任务状态");
   }
@@ -308,7 +308,7 @@ export function createActions(runtime: PluginRuntime, execute: ExecuteOperation)
       { id: "profile", label: "权限档位", type: "select", options: profiles, required: true, default: "explore" },
       { id: "thinking", label: "推理级别", type: "select", options: thinking, default: "high" },
       { id: "isolation", label: "隔离方式", type: "select", options: ["none", "worktree"], default: "none" },
-      { id: "cwd", label: "工作目录", type: "text", default: state.task?.cwd },
+      { id: "cwd", label: "工作目录", type: "text", required: true, default: state.task?.cwd },
       { id: "title", label: "任务标题", type: "text" },
       { id: "prompt", label: "任务书", type: "textarea", required: true },
     ];
@@ -373,7 +373,7 @@ export function createActions(runtime: PluginRuntime, execute: ExecuteOperation)
       if (fields.thinking !== undefined) body.thinking = enumValue(fields.thinking, thinking, "推理级别");
       if (fields.isolation !== undefined) body.isolation = enumValue(fields.isolation, ["none", "worktree"], "隔离方式");
       if (fields.title !== undefined && fields.title !== "") body.title = text(fields.title, "任务标题", 200);
-      if (fields.cwd !== undefined && fields.cwd !== "") body.cwd = text(fields.cwd, "工作目录", 32768);
+      body.cwd = text(fields.cwd === undefined || fields.cwd === "" ? state.task?.cwd : fields.cwd, "工作目录", 32768);
       return { method: "POST", path: "/tasks", body };
     }
     if (action === "steer") {
@@ -452,7 +452,7 @@ export function createActions(runtime: PluginRuntime, execute: ExecuteOperation)
       if ("status" in prepared) return prepared;
       try {
         const { operation, action, idempotencyKey } = prepared;
-        return outcome(await execute(operation.method, operation.path, structuredClone(operation.body), {
+        return outcome(await execute(operation.method, `/v1${operation.path}`, structuredClone(operation.body), {
           idempotencyKey, origin, ...(operation.actAsUser ? { actAsUser: true } : {}),
         }), action);
       } catch {

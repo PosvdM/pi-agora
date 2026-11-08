@@ -35,9 +35,13 @@ function node(item: SessionItem, revision = item.revision): TreeNode {
   if (item.agoraSessionId === USER_TASKS) return group(revision);
   const capabilities = ["open"];
   const steerable = !!item.taskId && STEERABLE.has(item.status);
-  if (!item.taskId || !TERMINAL.has(item.status) && item.status !== "quota_paused") capabilities.push("subscribe");
+  const paused = ["quota_paused", "budget_paused"].includes(item.status);
+  if (!item.taskId || !TERMINAL.has(item.status) && !paused) capabilities.push("subscribe");
   if (steerable) capabilities.push("send", "action:agora.task.steer");
-  if (item.taskId && !TERMINAL.has(item.status)) capabilities.push("abort", "action:agora.task.stop");
+  if (item.taskId && !TERMINAL.has(item.status)) {
+    if (!paused) capabilities.push("abort");
+    capabilities.push("action:agora.task.stop");
+  }
   if (item.taskId && ["completed", "failed"].includes(item.status)) capabilities.push("action:agora.task.cleanup");
   if (item.taskId && ["quota_paused", "budget_paused", "interrupted"].includes(item.status)) capabilities.push("action:agora.task.recover");
   return {

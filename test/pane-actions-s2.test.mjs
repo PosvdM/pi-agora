@@ -30,6 +30,8 @@ function setup(status = "running", dataDir = temporaryDirectory()) {
     context: { dataDir, token: "此凭据不可写入快照" }, online: () => online,
     api: {
       async request(method, path) {
+        assert.ok(path.startsWith("/v1/"), "动作读取使用完整 daemon API 路径");
+        path = path.slice(3);
         reads.push({ method, path });
         await beforeRead?.(method, path);
         if (readFailure instanceof Error) throw readFailure;
@@ -41,6 +43,8 @@ function setup(status = "running", dataDir = temporaryDirectory()) {
     },
   };
   const actions = createActions(runtime, async (method, path, body, options) => {
+    assert.ok(path.startsWith("/v1/"), "动作写入使用完整 daemon API 路径");
+    path = path.slice(3);
     calls.push({ method, path, body, options });
     const reply = replies.shift();
     if (reply instanceof Error) throw reply;
@@ -63,7 +67,7 @@ async function invocation(s, action, fields, key = `${action}-key`, selectedTarg
     input: { answers: [], fields }, formId: form.id, formRevision: form.revision,
   };
 }
-const spawn = { model: "provider/model", profile: "explore", prompt: "检查任务" };
+const spawn = { model: "provider/model", profile: "explore", prompt: "检查任务", cwd: "D:/workspace" };
 const stop = key => ({ actionId: id("stop"), target, idempotencyKey: key });
 
 test("静态目录仅开放五个任务动作，返回副本且文案为中文", () => {
