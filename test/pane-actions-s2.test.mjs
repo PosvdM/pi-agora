@@ -1,11 +1,22 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { after } from "node:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createActions } from "../packages/pane-plugin/dist/actions.js";
 
 const origin = { client: "browser", connectionId: "tab-one", receivedAt: "2026-01-01T00:00:00.000Z" };
 const target = { type: "node", nodeId: "agora:session:as_original" };
 const id = name => `agora.task.${name}`;
-function setup(status = "running") {
+const directories = [];
+function temporaryDirectory() {
+  const path = mkdtempSync(join(tmpdir(), "pane-actions-s2-"));
+  directories.push(path);
+  return path;
+}
+after(() => { for (const path of directories) rmSync(path, { recursive: true, force: true }); });
+function setup(status = "running", dataDir = temporaryDirectory()) {
   const state = {
     taskId: "tk_actual", agoraSessionId: "as_original", status, generation: 2, revision: 7,
     model: "provider/model", profile: "explore", cwd: "D:/workspace",
@@ -13,12 +24,14 @@ function setup(status = "running") {
   const reads = [], calls = [], replies = [];
   let online = true;
   let readFailure;
+  let beforeRead;
   let session = { agoraSessionId: "as_original", taskId: "tk_actual", kind: "task" };
   const runtime = {
-    context: {}, online: () => online,
+    context: { dataDir, token: "此凭据不可写入快照" }, online: () => online,
     api: {
       async request(method, path) {
         reads.push({ method, path });
+        await beforeRead?.(method, path);
         if (readFailure instanceof Error) throw readFailure;
         if (readFailure) return structuredClone(readFailure);
         if (method === "GET" && path === "/sessions/as_original") return { status: 200, body: structuredClone(session) };
@@ -35,9 +48,10 @@ function setup(status = "running") {
     return reply ?? { status: 200, body: { ...state, agoraSessionId: "as_created" } };
   });
   return {
-    actions, state, reads, calls, replies,
+    actions, state, reads, calls, replies, dataDir,
     setOnline: value => { online = value; },
     setReadFailure: value => { readFailure = value; },
+    setBeforeRead: value => { beforeRead = value; },
     setSession: value => { session = value; },
   };
 }
@@ -398,4 +412,248 @@ test("离线隐藏表单且动作 pending，恢复连接后同 key 执行", asyn
   assert.equal(s.reads.length, 0);
   s.setOnline(true);
   assert.equal((await s.actions.invoke(stop("offline"), origin)).status, "ok");
+});
+
+test("五个动作跨重启使用落盘的 HTTP 快照，不查表单和当前状态", async () => {
+  for (const [action, status, fields, selectedTarget] of [
+    ["spawn", "running", spawn, { type: "global" }],
+    ["steer", "running", { message: "跨重启返工" }, target],
+    ["stop", "running", undefined, target],
+    ["cleanup", "completed", { discard: "true" }, target],
+    ["recover", "interrupted", { mode: "resume" }, target],
+  ]) {
+    const s = setup(status);
+    const inv = action === "stop" ? stop("restart") : await invocation(s, action, fields, "restart", selectedTarget);
+    let durableBeforeExecute = false;
+    s.replies.push(async () => {
+      const saved = JSON.parse(await readFile(join(s.dataDir, "actions.json"), "utf8"));
+      const entry = saved.data.identities.find(([key]) => key === inv.idempotencyKey)[1];
+      assert.equal(entry.fingerprint.length, 64);
+      assert.equal(entry.operation.method, "POST");
+      assert.deepEqual(entry.operation.body, s.calls[0].body);
+      assert.equal(entry.result, undefined);
+      durableBeforeExecute = true;
+      return { status: 202, body: {} };
+    });
+    assert.equal((await s.actions.invoke(inv, origin)).status, "pending");
+    assert.equal(durableBeforeExecute, true, "execute 前必须完成快照写入");
+    const recovered = setup("stopped", s.dataDir);
+    recovered.state.generation = 99;
+    recovered.state.revision = 999;
+    recovered.setReadFailure(new Error("重试不能预检"));
+    const retryOrigin = { ...origin, connectionId: "重启后的连接" };
+    assert.equal((await recovered.actions.invoke(inv, retryOrigin)).status, "ok");
+    assert.deepEqual(recovered.calls[0].body, s.calls[0].body);
+    assert.equal(recovered.calls[0].method, s.calls[0].method);
+    assert.equal(recovered.calls[0].path, s.calls[0].path);
+    assert.equal(recovered.calls[0].options.actAsUser, s.calls[0].options.actAsUser);
+    assert.equal(recovered.calls[0].options.origin, retryOrigin);
+    assert.equal(recovered.reads.length, 0);
+    recovered.replies.push({ status: 403, body: { error: { message: "再次查询的 daemon 结果" } } });
+    assert.equal((await recovered.actions.invoke(inv, origin)).status, "failed");
+    assert.equal(recovered.calls.length, 2);
+    const disk = await readFile(join(s.dataDir, "actions.json"), "utf8");
+    assert.ok(!disk.includes("此凭据不可写入快照"));
+    assert.ok(!disk.includes("connectionId"));
+    assert.ok(!disk.includes("再次查询的 daemon 结果"));
+  }
+});
+
+test("执行写入后断线也能跨重启查询，已完成结果同样重新转发", async () => {
+  const s = setup();
+  const inv = stop("transport-restart");
+  s.replies.push(new Error("daemon 已收到请求"));
+  assert.equal((await s.actions.invoke(inv, origin)).status, "pending");
+  const next = setup("stopped", s.dataDir);
+  next.setReadFailure(new Error("禁止预检"));
+  assert.equal((await next.actions.invoke(inv, origin)).status, "ok");
+  const last = setup("stopped", s.dataDir);
+  last.replies.push({ status: 202, body: {} });
+  assert.equal((await last.actions.invoke(inv, origin)).status, "pending");
+  assert.equal(last.reads.length, 0);
+  assert.deepEqual(last.calls[0].body, s.calls[0].body);
+});
+
+test("完整调用指纹跨重启保留，等价 HTTP 输入也不能更改同 key", async () => {
+  const s = setup();
+  const inv = await invocation(s, "steer", { message: "原指令" }, "durable-identity");
+  s.replies.push({ status: 202, body: {} });
+  await s.actions.invoke(inv, origin);
+  const next = setup("running", s.dataDir);
+  for (const change of [
+    value => { value.input.fields.interrupt = "false"; },
+    value => { value.formRevision++; },
+    value => { value.formId += "-other"; },
+    value => { value.target = { type: "global" }; },
+    value => { value.extra = "unknown"; },
+  ]) {
+    const changed = structuredClone(inv);
+    change(changed);
+    assert.equal((await next.actions.invoke(changed, origin)).status, "idempotencyConflict");
+  }
+  assert.equal(next.calls.length, 0);
+  assert.equal(next.reads.length, 0);
+});
+
+test("动态表单跨重启可直接新 key 提交，状态变化后旧版本仍被拒绝", async () => {
+  for (const [action, status, fields, selectedTarget] of [
+    ["spawn", "running", spawn, { type: "global" }],
+    ["steer", "running", { message: "提交保留的表单" }, target],
+    ["cleanup", "completed", { discard: "false" }, target],
+    ["recover", "interrupted", { mode: "reopen" }, target],
+  ]) {
+    const s = setup(status);
+    const inv = await invocation(s, action, fields, "submit-after-restart", selectedTarget);
+    const next = setup(status, s.dataDir);
+    assert.equal((await next.actions.invoke(inv, origin)).status, "ok");
+    const old = await next.actions.resolveForm(id(action), selectedTarget);
+    const another = setup(status, s.dataDir);
+    const stable = await another.actions.resolveForm(id(action), selectedTarget);
+    assert.deepEqual(stable, old);
+    if (selectedTarget.type === "node") {
+      another.state.revision++;
+      const changed = await another.actions.resolveForm(id(action), selectedTarget);
+      assert.equal(changed.id, stable.id);
+      assert.equal(changed.createdAt, stable.createdAt);
+      assert.equal(changed.revision, stable.revision + 1);
+      const final = setup(status, s.dataDir);
+      final.state.revision++;
+      assert.equal((await final.actions.invoke({ ...inv, idempotencyKey: "stale-version" }, origin)).status, "failed");
+      assert.equal(final.calls.length, 0);
+    }
+  }
+});
+
+test("needsInput 与 replace 分步表单跨重启稳定，新 key 校验后执行", async () => {
+  const s = setup("interrupted");
+  const request = { actionId: id("recover"), target, idempotencyKey: "need-recover" };
+  const first = await s.actions.invoke(request, origin);
+  const next = setup("interrupted", s.dataDir);
+  next.setReadFailure(new Error("表单结果重放不读取状态"));
+  assert.deepEqual(await next.actions.invoke(request, origin), first);
+  next.setReadFailure(undefined);
+  const choose = {
+    ...request, idempotencyKey: "choose-after-restart", formId: first.followUpForm.id,
+    formRevision: first.followUpForm.revision, input: { answers: [], fields: { mode: "replace" } },
+  };
+  const replacement = await next.actions.invoke(choose, origin);
+  assert.equal(replacement.status, "needsInput");
+  const last = setup("interrupted", s.dataDir);
+  last.state.revision++;
+  assert.deepEqual(await last.actions.invoke(choose, origin), replacement);
+  const follow = {
+    ...choose, idempotencyKey: "replace-after-restart", formId: replacement.followUpForm.id,
+    formRevision: replacement.followUpForm.revision, input: { answers: [], fields: { model: "new/model", profile: "review" } },
+  };
+  assert.equal((await last.actions.invoke(follow, origin)).status, "failed");
+  last.state.revision--;
+  assert.equal((await last.actions.invoke(follow, origin)).status, "ok");
+  assert.deepEqual(last.calls[0].body, { mode: "replace", model: "new/model", profile: "review", expectedGeneration: 2, expectedRevision: 7 });
+});
+
+test("离线与预检失败的身份也落盘，pending 不阻止恢复后再次准备", async () => {
+  for (const failure of ["offline", "read"]) {
+    const s = setup();
+    if (failure === "offline") s.setOnline(false);
+    else s.setReadFailure(new Error("预检断线"));
+    const inv = stop(`before-prepare-${failure}`);
+    assert.equal((await s.actions.invoke(inv, origin)).status, "pending");
+    const next = setup("running", s.dataDir);
+    assert.equal((await next.actions.invoke({ ...inv, actionId: id("cleanup") }, origin)).status, "idempotencyConflict");
+    assert.equal((await next.actions.invoke(inv, origin)).status, "ok");
+    assert.equal(next.calls.length, 1);
+    assert.equal(next.reads.length, 2);
+  }
+});
+
+test("损坏快照或写入失败均阻止 HTTP 执行，并且不自行覆盖损坏文件", async () => {
+  for (const content of ["{", "{}", '{"version":1,"data":{}}', '{"version":1,"data":{"identities":[],"forms":[],"versions":[["bad",{}]]}}']) {
+    const s = setup();
+    const path = join(s.dataDir, "actions.json");
+    await writeFile(path, content);
+    assert.equal((await s.actions.invoke(stop("corrupt"), origin)).status, "failed");
+    assert.equal(await s.actions.resolveForm(id("steer"), target), null);
+    assert.equal(s.calls.length, 0);
+    assert.equal(s.reads.length, 0);
+    assert.equal(await readFile(path, "utf8"), content);
+  }
+  const s = setup();
+  const inv = stop("save-failure");
+  // 身份文件可以写入，但预检后最终快照的原子替换必须失败。
+  const path = join(s.dataDir, "actions.json");
+  s.setBeforeRead(async (_method, requestPath) => {
+    if (requestPath !== "/tasks/tk_actual") return;
+    rmSync(path);
+    await mkdir(path);
+  });
+  assert.equal((await s.actions.invoke(inv, origin)).status, "failed");
+  rmSync(path, { recursive: true });
+  assert.equal((await s.actions.invoke(inv, origin)).status, "failed");
+  assert.equal(s.calls.length, 0);
+});
+
+test("合法 JSON 中的无效 HTTP 或表单结构同样关闭执行", async () => {
+  for (const mutate of [
+    saved => { saved.data.identities[0][1].operation.method = "DELETE"; },
+    saved => { saved.data.identities[0][1].operation.path = "/auth/token"; },
+    saved => { saved.data.identities[0][1].operation.body.expectedRevision = "7"; },
+    saved => { saved.data.identities[0][1].operation.body.token = "不能恢复凭据"; },
+  ]) {
+    const s = setup();
+    const inv = stop("invalid-snapshot");
+    await s.actions.invoke(inv, origin);
+    const path = join(s.dataDir, "actions.json");
+    const saved = JSON.parse(await readFile(path, "utf8"));
+    mutate(saved);
+    await writeFile(path, JSON.stringify(saved));
+    const next = setup("running", s.dataDir);
+    assert.equal((await next.actions.invoke(inv, origin)).status, "failed");
+    assert.equal(next.calls.length, 0);
+    assert.equal(next.reads.length, 0);
+  }
+  const s = setup();
+  await s.actions.resolveForm(id("steer"), target);
+  const path = join(s.dataDir, "actions.json");
+  const saved = JSON.parse(await readFile(path, "utf8"));
+  saved.data.forms[0][1].record.form.fields = [null];
+  await writeFile(path, JSON.stringify(saved));
+  const next = setup("running", s.dataDir);
+  assert.equal((await next.actions.invoke(stop("bad-form-storage"), origin)).status, "failed");
+  assert.equal(next.calls.length, 0);
+});
+
+test("未过期身份达到容量后拒绝新请求，不驱逐已有快照", async () => {
+  const s = setup();
+  await s.actions.invoke(stop("retained"), origin);
+  const path = join(s.dataDir, "actions.json");
+  const saved = JSON.parse(await readFile(path, "utf8"));
+  while (saved.data.identities.length < 4096) {
+    saved.data.identities.push([`reserved-${saved.data.identities.length}`, { fingerprint: "0".repeat(64), expiresAt: Date.now() + 24 * 60 * 60 * 1000 }]);
+  }
+  const content = JSON.stringify(saved);
+  await writeFile(path, content);
+  const next = setup("running", s.dataDir);
+  assert.equal((await next.actions.invoke(stop("over-capacity"), origin)).status, "failed");
+  assert.equal(next.calls.length, 0);
+  assert.equal(next.reads.length, 0);
+  assert.equal(await readFile(path, "utf8"), content);
+});
+
+test("持久化身份与快照在重启后仍保留至少 24 小时", async t => {
+  let now = Date.now();
+  t.mock.method(Date, "now", () => now);
+  const s = setup();
+  s.setOnline(false);
+  const inv = stop("long-offline");
+  await s.actions.invoke(inv, origin);
+  now += 23 * 60 * 60 * 1000;
+  const prepared = setup("running", s.dataDir);
+  prepared.replies.push({ status: 202, body: {} });
+  await prepared.actions.invoke(inv, origin);
+  now += 24 * 60 * 60 * 1000 - 1;
+  const next = setup("stopped", s.dataDir);
+  next.setReadFailure(new Error("禁止重读"));
+  assert.equal((await next.actions.invoke(inv, origin)).status, "ok");
+  assert.deepEqual(next.calls[0].body, prepared.calls[0].body);
+  assert.equal((await next.actions.invoke({ ...inv, target: { type: "global" } }, origin)).status, "idempotencyConflict");
 });
