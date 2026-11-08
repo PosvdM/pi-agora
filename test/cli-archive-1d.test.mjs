@@ -163,6 +163,15 @@ test("tail 快照后订阅 SSE，resync 重新快照，取消后释放连接", a
   assert.equal(await h.run(["tail", "as_one"]), 0);
   assert.equal(snapshots, 2); assert.equal(streams, 2); assert.equal(h.clientClosed, 1);
 });
+test("tail 正常运行退出或终态快照后的 EOF 不误报连接故障", async () => {
+  for (const frame of ['', 'event: session\ndata: {"event":{"type":"agora_run","phase":"exited"}}\n\n']) {
+    const h = harness({ available: async () => true, fetch: async () => sse(frame) });
+    h.client.request = async () => ({ cursor: { epoch: 'epoch', seq: 1 }, entries: [], status: frame ? 'running' : 'completed' });
+    assert.equal(await h.run(['tail', 'as_one']), 0);
+    assert.deepEqual(h.errors, []);
+    assert.equal(h.clientClosed, 1);
+  }
+});
 test("健康检查只在缺少发现或传输不可达时返回离线", async () => {
   const home = await mkdtemp(path.join(tmpdir(), "agora-cli-health-"));
   let status = 403, protocol = { min: 1, max: 1 };

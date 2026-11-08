@@ -1,6 +1,6 @@
 # 路线图
 
-> 状态：代码覆盖切片 1b 的任务核心；用户级安全、存档、pane、board 和会议按后续切片推进。实现与测试入口见 [development.md](development.md)。
+> 状态：代码覆盖任务核心及 1d 的存档、会话视图与 CLI；用户级安全及相应在线操作按 1c 接线，pane、board 和会议按后续切片推进。实现与测试入口见 [development.md](development.md)。
 
 ## P0 验证项
 
@@ -17,7 +17,7 @@ P0 验证设计依赖的 pi 行为和平台行为，目标 pi 版本为 1.5.x，
 | 7 | - [ ] | 通知送达：`pi.sendMessage(..., { triggerTurn: true, deliverAs: "followUp" })` 在主代理空闲、忙碌、执行工具时的行为；以会话条目确认；`triggerTurn: false` 的静默注入；用户 `clear_queue` 清掉排队中的通知 | 空闲时立即开始新一轮；忙碌时排队；被清掉的通知在 `agent_settled` 后重新注入；同一 `dedupeKey` 在会话里只出现一次 | **部分通过**。受管停止流程采用 `clear_queue` + `abort` 实测通过（通知仅落盘一条）；只发 abort 时排队通知留在队列未落盘、settled 后重投导致重复落盘已确认为第三方 RPC 客户端已知偏差，展示时统一按 `dedupeKey` 去重；Windows/Linux 待测移入公开发布前跨平台测试。依据见 [D 组 RESULTS.md](../experiments/p0/d-notify/RESULTS.md)。 | tasks.md、board.md |
 | 8 | - [x] | 通知故障注入：在扩展的 `message_end` 回调中杀掉 pi；`message_end` 已发出、写入会话文件前杀掉 pi；静默注入后立即杀掉 pi；新会话尚未出现任何对话消息时静默注入通知、再杀掉 pi；ack 请求发出前杀掉 daemon | 每种情况下通知最终恰好在会话里出现一次，outbox 不会在通知写入会话文件之前被确认 | **通过**（限 pi 内部派发和强杀两种情况，恢复后恰好落盘一次）。依据见 [D 组 RESULTS.md](../experiments/p0/d-notify/RESULTS.md)。Windows/Linux 待测移入公开发布前跨平台测试。 | tasks.md |
 | 9 | - [x] | `node:sqlite`：WAL 模式下 daemon 写、archive adapter 以 `readOnly` 读；事务内写 outbox 和 `changes`；`backup()` 在写入进行中的一致性和 `PRAGMA integrity_check` | 并发读写无错误；崩溃后数据一致；备份可打开且校验通过 | **通过**（macOS 进程崩溃恢复通过；备份限制为同一连接或一步复制全部页；断电操作系统崩溃待后续测试）。依据见 [G 组 RESULTS.md](../experiments/p0/g-store/RESULTS.md)。Windows/Linux 待测移入公开发布前跨平台测试。 | architecture.md、archive.md |
-| 10 | - [x] | 只读解析：pi 1.5.0 支持的各版本会话文件、空文件、最后一行被截断的文件 | 解析出的活动分支与 `get_entries` + 叶子计算的结果一致；解析前后文件哈希不变 | **通过**（macOS 文件重新打开语义通过；v1 id 不稳定、截断行留在文件中间作为设计约束）。依据见 [G 组 RESULTS.md](../experiments/p0/g-store/RESULTS.md)。Windows/Linux 待测移入公开发布前跨平台测试。 | archive.md |
+| 10 | - [x] | 只读解析：pi 1.5.0 支持的各版本会话文件、空文件、最后一行被截断的文件 | 解析出的活动分支与 `get_entries` + 叶子计算的结果一致；解析前后文件哈希不变 | **通过**（P0 的 macOS 文件重新打开语义通过；v1 id 不稳定、截断行留在文件中间作为设计约束）。1d 的 `archive-parser-pi-1d.test.mjs` 用真实 pi 1.5.0 对 v1/v2/v3、分支和截断文件做差分，原文件哈希不变；Windows 本机已实测，三平台运行入口纳入 CI。P0 依据见 [G 组 RESULTS.md](../experiments/p0/g-store/RESULTS.md)。 | archive.md |
 | 11 | - [ ] | 资源实测：空闲 pi RPC 进程的内存；8 个进程同时存在时的总内存 | 得到实测值替换“100–300 MiB”估算 | **推迟；具体阶段待排期。** | architecture.md |
 | 12 | - [ ] | prompt cache：同一会话连续追加 board 增量时，各模型的 `usage.cacheRead`；`cache_warming_decision` 返回 `stop` 后不再产生 warming 用量 | 记录各模型的实际命中情况；warming 被关闭 | **推迟；具体阶段待排期。** | board.md、meetings.md |
 | 13 | - [ ] | 软上限记账的准确度：两席会议跑到触及上限，对比账本的记账值与会话文件中的用量记录、模型服务返回的用量；分别统计 pi 自动重试、模型服务 SDK 内部重试、上下文压缩、停止前已发出的请求造成的差额 | 记录各类差额的实际大小，写回 meetings.md 作为“可能略超”的量级说明；记账值不少于会话文件中记录的用量 | **推迟；具体阶段待排期。** | meetings.md |
@@ -48,7 +48,7 @@ pi-agora 和 pi-pane 的 MVP 按同样的三个切片推进，两仓的 roadmap 
 | 1a：最小闭环 | 四包工程和三平台 CI；daemon 单实例、握手、主会话注册与恢复、租约、launch ticket、就绪检查、排空、版本和迁移；RPC driver、会话写锁、并发、诊断、旧进程清理、扩展 UI；explore 的 spawn / status / result / stop；outbox 可靠通知；CLI start / shutdown / status / ls / show |
 | 1b：任务补全 | 全部任务动作与状态机、generation、steer 追踪、worktree、三档与路径、agora_git、提问及逐级转交、pending / answer、空闲回收、看门狗；多层委派、子树限制与停止、等待下级；请求传输重试与 Windows 停止重试；D15 子代理标记、skill 白名单、逐请求用量及任务树汇总、额度暂停和恢复 |
 | 1c：安全 | 子 / 主 Agent 与用户级划分、预算封顶、任务树 token 软预算（与 `agentLimitCap` 一并设计）、完整资源访问控制、待确认、设备登记与验签、everPaired、离线命令、安全状态检查和审计；跟进可选扩展 / MCP 白名单及 saved 项目信任的配置隔离 |
-| 1d：存档与收尾 | 全量存档、只读解析器、archive adapter、会话视图、log / tail / verify-archive 和其他 CLI；创建 archive 包；CLI 展示用量和上下文大小 |
+| 1d：存档与收尾 | 全量流片段和退出诊断、只读解析器、archive adapter、快照 / 历史 / SSE、log / tail / verify-archive / ls --tree、显式离线 archive delete；创建 archive 与共享 harness-pi 包；CLI 展示会话用量和上下文。用户级在线删除与接管须接入 1c 签名机制，不以主机凭证绕过 |
 | 1d 之后 | 上下文超过阈值时通知上级；返工时可选新会话附摘要或先压缩再返工 |
 
 下面列出切片 1 的完整目标，不表示这些内容均已实现。
@@ -109,16 +109,18 @@ pi-pane 的估算见其 `docs/roadmap.md`（18–26 人日，P0 后重估）；�
 | worktree 会话提问 | 1b | `task-1b.test.mjs`：worktree 从父提交创建、提问仅核对 principal |
 | 工具卡住、忽略 abort、shell 后代、POSIX 孤儿进程 | 1a | `driver.test.mjs` 的挂起工具 / provider、shell 与脱离进程组用例；快照覆盖不外推为整树保证 |
 | daemon 强杀后旧 pi 清理、确认退出后 resume | 1a 清理，1b 恢复 | `daemon-restart.test.mjs` 的真实旧进程清理；`task-1b.test.mjs` 的 resume / reopen / replace / abandon |
-| 会话尾行不完整、数据库事务中断 | 1a 通知证据与事务原子性，1d 全量解析 | `extension.test.mjs`：未换行片段不能确认；`store.test.mjs`：通知失败事务回滚。全量 archive 截断解析在 1d；真实断电尚未实测 |
+| 会话尾行不完整、数据库事务中断 | 1a 通知证据与事务原子性，1d 全量解析 | `extension.test.mjs`：未换行片段不能确认；`store.test.mjs`：通知失败事务回滚。1d 的 `archive-parser-1d.test.mjs`、`archive-parser-pi-1d.test.mjs`、`archive-daemon-1d.test.mjs` 覆盖尾部及中间截断、完整行保留和解析前后哈希不变；真实断电尚未实测 |
 | 同 key 的 spawn / steer / answer | 1a spawn，1b steer / answer | `daemon.test.mjs`：并发幂等 spawn；`task-1b.test.mjs`：返工与答复只执行一次 |
 | fork 后并发认领同 principal | 1b | `claim-fork-1b.test.mjs`：fork 新 sessionId 不继承 principal；同原 sessionId 并发仅一个租约 |
 | 读取 host.key 后冒充用户答复 | 1c | 待确认与设备签名；1b CLI 通路尚不能区分用户与 Agent |
 | 挑战重放、过期、参数篡改 | 1c | 用户确认验签测试 |
 | 跨宿主写锁拒绝、强杀恢复与 gate 放行前强杀 | 1a | `driver.test.mjs`、`driver-faults.test.mjs`、`daemon-restart.test.mjs`；双向共享协议由 hostkit 的跨宿主测试覆盖 |
-| 运行中升级、备份与迁移失败 | 1a v1/v2，1b v3/v4 | `store.test.mjs` 的一致性备份和回滚；`task-1b.test.mjs` 的 v2→v4 与 `task-d15.test.mjs` 的 v3→v4 成功、备份及 DDL 失败回滚 |
+| 运行中升级、备份与迁移失败 | 1a v1/v2，1b v3/v4，1d v6 | `store.test.mjs` 的一致性备份和回滚；`task-1b.test.mjs` 的 v2→v4 与 `task-d15.test.mjs` 的 v3→v4 成功、备份及 DDL 失败回滚 |
 | 同项目双主会话的孙代理提问路由 | 1b D15 | `task-d15.test.mjs`：仅直接上级接收提问 |
 | 子代理标记、skill 名单和只读授权 | 1b D15 | `driver-d15.test.mjs`、`task-d15.test.mjs`、`d15-e2e.test.mjs`：空默认值、子集继承、名单外及项目 skill 不自动加载、文件工具只读 |
 | 用量汇总、额度暂停与恢复 | 1b D15 | 上述 D15 测试覆盖请求去重、任务 / 代 / 树汇总、429 暂停、到期通知、可选自动恢复和父任务恢复不隐式恢复下级 |
+
+1d 的归档故障由 `archive-e2e-1d.test.mjs` 验证真实 pi 强杀时保留 thinking / text / toolCall、退出诊断和原文件；`session-views-1d.test.mjs` 覆盖停止未确认时的迟到流、闭片段双证据、快照切点和游标重同步。`archive-verification-1d.test.mjs` 验证重复校验不能覆盖可信前缀基线，在线和离线使用同一证据；离线删除的锁与路径拒绝见 `cli-archive-1d.test.mjs`。
 
 1b 的多层委派另须通过：父任务等待下级不提前完成；回收父进程后重拉并投递通知；子树各层 StopReport；层数、下级数、档位和限制拒绝；单名额多层调度不死锁；提问逐级上交与原提问者收到答案；禁止管理别人的任务，主代理不能跳级返工但能停止。自动化入口为 `task-1b.test.mjs` 与 `tree-e2e.test.mjs`。
 

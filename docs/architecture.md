@@ -1,6 +1,6 @@
 # 总体架构
 
-> 本文同时说明已实现的任务核心与后续架构目标。切片 1b 提供多层任务、三个档位、提问和逐级转交；用户级安全、可选扩展 / MCP、存档及其他领域功能按 [roadmap.md](roadmap.md) 推进。当前配置、源码和测试见 [development.md](development.md)。
+> 本文同时说明已实现的任务核心与后续架构目标。切片 1b 提供多层任务、三个档位、提问和逐级转交，1d 提供存档及会话视图；用户级安全、可选扩展 / MCP 及其他领域功能按 [roadmap.md](roadmap.md) 推进。当前配置、源码和测试见 [development.md](development.md)。
 
 pi-agora 是 pi 的协作引擎：一个每用户单实例的后台进程（daemon）负责拉起和监管所有协作会话（子代理、参会者、书记），并持久保存任务、提问、共享桌面（board）、会议和全部对话。主代理通过 pi 扩展调用它，用户通过 CLI 或 pi-pane 插件调用它。
 
@@ -68,8 +68,8 @@ pi-agora 是 pi 的协作引擎：一个每用户单实例的后台进程（daem
 当前只提供 pi 1.5.x 实现，不预先设计其他 Harness 的完整适配器。目录与边界如下：
 
 - `packages/daemon/src/harness/types.ts` 定义与 Harness 无关的启动规格、技能解析结果及逐请求用量、额度事件，不依赖 pi 或 hostkit 类型。
-- `packages/daemon/src/harness/pi/driver.ts` 实现 pi 定位、skill 解析、RPC 驱动、会话写锁、心跳、UI 与进程清理；`launch.ts` 拼装 pi 参数，`events.ts` 将 pi usage 与额度错误转为中立派生事件。
-- `packages/harness-pi` 放 daemon 以外的包也需要使用的 pi 专有实现。只读会话解析器在这里维护 v1/v2/v3 的内存迁移、条目键、叶子和截断诊断；中立的 archive reader 接口与用户视图投影由 `packages/archive` 定义，archive 默认装配 pi 解析器。
+- `packages/daemon/src/harness/pi/driver.ts` 实现 pi 定位、skill 解析、RPC 驱动、会话写锁、心跳、UI 与进程清理；`launch.ts` 拼装 pi 参数，`events.ts` 将 pi usage 与额度错误转为中立派生事件；`archive-events.ts` 和 `archive-observation.ts` 负责只读条目刷新、流式块重建与最终消息观察。
+- `packages/harness-pi` 放 daemon 以外的包也需要使用的 pi 专有实现。只读会话解析器维护 v1/v2/v3 的内存迁移、条目键、叶子和截断诊断；`session-messages.ts` 提取不透明消息的身份与条目关联，其他包不直接解析 pi 的消息条目结构。中立条目图接口位于 protocol，archive reader 接口与用户视图投影由 `packages/archive` 定义，archive 默认装配 pi 实现。
 - `packages/daemon/src/driver.ts` 保留全部既有导出，避免为目录迁移改动任务调度及现有调用方。`SessionDriver` 和 `DriverHandle` 仍暴露 pi RPC 类型，未构成完整的中立 Harness 接口。
 - `packages/extension` 整个包属于 pi 侧适配；它的扩展 API、工具钩子、通知注入与会话落盘确认不另拆。
 - 任务状态机、数据库、HTTP API 和 CLI 不随目录迁移改变。任务层直接使用 pi RPC、会话身份和队列语义等高成本项见 [Harness 耦合清单](harness-portability.md)，清单同时覆盖代码、测试、配置、CLI 输出与文档。
@@ -263,7 +263,7 @@ pi 专有的 skill 解析与启动参数位于 `packages/daemon/src/harness/pi/d
 | 对话 | pi JSONL | 由 pi 自己写，daemon 不复制到数据库 |
 | 流片段、退出诊断 | `sessions/<id>/` 下的文件 | 见 [archive.md](archive.md) |
 
-数据库 schema v4 保留 v2 的多会话继承与每代所属会话关系、v3 的任务树与限制（parent_task_id、depth、depth_limit、child_limit）、恢复计数和待发送消息，以及 steer_messages、requests、worktrees 表。v4 在任务记录中保存 skill 名单、解析路径和额度恢复信息，`usage_records` 按请求保存任务、代、会话及运行关联和 token 用量。旧库按 v1→v2→v3→v4 顺序迁移，已有任务按第一层、默认两层回填。迁移前执行一致性备份，保留数据、显式索引和触发器，提交前执行 foreign_key_check；失败回滚。首代分配会话时即写入代数到会话的关联。
+数据库 schema v6 保留多会话继承与每代所属会话、任务树与限制、返工、提问、worktree、skill、额度和逐请求用量。v5 的安全状态表与 v6 的归档证据按顺序叠加；`archive_observed_messages` 按会话和最终消息摘要去重，`agora_sessions` 保存最后可信文件哈希、字节数、校验时间与可见错误。旧库依次迁移到 v6，已有任务的历史关系不重建。迁移前执行一致性备份，保留数据、显式索引和触发器，提交前执行 foreign_key_check；失败回滚。首代分配会话时即记录代数到会话的关联。
 
 不做通用事件溯源：业务状态用普通表，board 条目追加，状态变更和 outbox 在同一事务里完成。代价是不能重放任意历史时刻的业务状态；需要追溯的信息（board、对话、状态变更时间）都单独保存。
 
@@ -274,8 +274,9 @@ pi 专有的 skill 解析与启动参数位于 `packages/daemon/src/harness/pi/d
 | 表 | 主要字段 |
 | --- | --- |
 | `principals` | id、type、label、pi_session_id、session_file、forked_from、created_at |
-| `agora_sessions` | id、kind、profile、model、thinking、cwd、session_file、pi_session_id、convener_id、parent_principal_id、task_id、meeting_id、inherits_from、inherit_reason、status、control_state、revision、archive_state、created_at、ended_at |
+| `agora_sessions` | id、kind、profile、model、thinking、cwd、session_file、pi_session_id、convener_id、parent_principal_id、task_id、meeting_id、inherits_from、inherit_reason、status、control_state、revision、archive_state、archive_hash、archive_bytes、archive_verified_at、archive_error、created_at、ended_at |
 | `process_runs` | id（runId）、agora_session_id、pid、process_start_time、daemon_instance_id、state（starting / ready / exited）、started_at、exited_at、exit_code、signal、diagnostics_path |
+| `archive_observed_messages` | agora_session_id、run_id、signature、role、timestamp、observed_at；用于跨运行的完整性证据，不保存完整消息正文 |
 | `tasks`、`task_generations`、`steer_messages` | `tasks.agora_session_id` 指向当前会话；`agora_sessions.task_id` 是非唯一关联，同一任务可保留多个有继承关系的会话；`task_generations.agora_session_id` 记录每代所属会话。其他字段见 [tasks.md](tasks.md) |
 | `requests` | 见 [tasks.md](tasks.md#提问答复与转交) |
 | `worktrees` | id、task_id、repo_root、base_commit、branch、path、owner_id、state |

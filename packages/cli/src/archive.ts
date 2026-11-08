@@ -193,11 +193,17 @@ async function tail(client: AgoraClient, id: string, options: Map<string, string
       });
       if (!response.ok) throw new AgoraHttpError(response.status, "stream_failed");
       if (!response.body || !response.headers.get("content-type")?.startsWith("text/event-stream")) throw new Error("daemon 未返回 SSE 流");
-      let resync = false;
+      let resync = false, ended = false;
+      let terminal = ["completed", "failed", "stopped", "interrupted"].includes(String(snap.status));
       for await (const event of readSse(response.body)) {
         if (event.event === "resync" || (event.data && typeof event.data === "object" && (event.data as Row).type === "resync")) { resync = true; break; }
+        const data = event.data && typeof event.data === "object" ? event.data as Row : {};
+        const change = data.event && typeof data.event === "object" ? data.event as Row : data;
+        if (change.type === "agora_run" && change.phase === "exited") ended = true;
+        if (change.type === "agora_status") terminal = ["completed", "failed", "stopped", "interrupted"].includes(String(change.status));
         io.out(JSON.stringify(event));
       }
+      if (!resync && (ended || terminal)) return;
       if (!resync && !signal.aborted) throw new AgoraConnectionError();
     }
   } catch (error) { if (!signal.aborted) throw error; }

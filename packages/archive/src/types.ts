@@ -1,5 +1,4 @@
-import type { SessionEntry } from "@pi-agora/harness-pi";
-import type { Page, PermissionProfile, SessionKind, SessionParent, UsageSummary } from "@pi-agora/protocol";
+import type { SessionEntry, Page, PermissionProfile, SessionKind, SessionParent, UsageSummary } from "@pi-agora/protocol";
 
 export type { SessionEntry, Page, SessionParent };
 export type ArchiveState = "ok" | "partial" | "suspect" | "missing";

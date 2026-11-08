@@ -55,7 +55,7 @@ function sessionView(session: SessionRow, store: Store) {
     profile: session.profile, model: session.model, thinking: session.thinking, cwd: session.cwd,
     parent: store.sessionParent(session.id),
     status: session.status, revision: session.revision, createdAt: session.created_at,
-    archiveState: session.archive_state, archiveHash: session.archive_hash, archiveBytes: session.archive_bytes,
+    archiveState: session.archive_state === "live" ? "partial" : session.archive_state, archiveHash: session.archive_hash, archiveBytes: session.archive_bytes,
     archiveVerifiedAt: session.archive_verified_at, archiveError: session.archive_error,
     inheritsFrom: session.inherits_from, inheritReason: session.inherit_reason, endedAt: session.ended_at,
     ...(session.task_id ? { usage: store.sessionUsage(session.id), treeUsage: store.usage(session.task_id, true) } : {}) };

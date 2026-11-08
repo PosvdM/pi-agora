@@ -19,6 +19,7 @@ const parserFile = path.join(temporary, 'parser.mjs');
 await writeFile(parserFile, `
 import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
+export { sessionMessages } from ${JSON.stringify(new URL('../packages/harness-pi/dist/session-messages.js', import.meta.url).href)};
 export async function parseSessionFile(file) {
   const raw = await readFile(file), entries = [], diagnostics = [];
   let version = 3;
@@ -106,7 +107,7 @@ const sessionsUrl = await compile('../packages/daemon/src/sessions.ts', 'session
   './harness/pi/archive-events.js': eventsUrl,
 });
 const { SessionViews } = await import(sessionsUrl);
-const { PiArchiveEvents, entriesFromResponse } = await import(eventsUrl);
+const { PiArchiveEvents, entriesFromResponse, readPiEntries } = await import(eventsUrl);
 
 function message(text, timestamp = 1, role = 'assistant') {
   return { role, timestamp, content: [{ type: 'text', text }] };
@@ -836,6 +837,24 @@ test('会话视图：停止未确认时继续接收迟到流，活跃助手与�
   assert.equal(exited.inFlight.assistant, undefined);
   assert.equal(exited.unfinishedPartials[0].blocks[0].text, '第一段第二段');
   assert.equal(f.driver.events.size, 0);
+});
+
+test('pi 条目刷新使用追加游标，游标失效只重新读取一次全量', async () => {
+  const first = entry('first', null), second = entry('second', 'first');
+  const commands = [];
+  let result = await readPiEntries(async command => {
+    commands.push(command);
+    return { success: true, data: { entries: [second], leafId: 'second' } };
+  }, [first]);
+  assert.deepEqual(commands, [{ type: 'get_entries', since: 'first' }]);
+  assert.deepEqual(result.entries, [first, second]);
+  commands.length = 0;
+  result = await readPiEntries(async command => {
+    commands.push(command);
+    return command.since ? { success: false } : { success: true, data: { entries: [second], leafId: 'second' } };
+  }, [first]);
+  assert.deepEqual(commands, [{ type: 'get_entries', since: 'first' }, { type: 'get_entries' }]);
+  assert.deepEqual(result.entries, [second]);
 });
 
 test('会话视图：使用真实共享包执行严格类型检查', () => {

@@ -2,7 +2,7 @@
 
 pi-agora 是 [pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) 编码智能体的协作引擎。主代理用它把任务派给子代理、召开多模型会议，所有协作会话的完整对话都会永久保存。
 
-> **当前状态：切片 1b（任务核心）。** 提供 daemon、pi 扩展和 CLI，支持多层子代理、三个权限档位、worktree、返工、提问与逐级转交、恢复和可靠通知；提供 skill 白名单、逐请求用量和任务树汇总、额度暂停及到期恢复通知。用户设备确认、可选扩展 / MCP 白名单、存档读取、board、会议和 pi-pane 插件属于后续范围；下方“功能”描述完整设计目标。
+> **当前状态：任务核心与存档（切片 1b、1d）。** 提供 daemon、pi 扩展、CLI 和只读存档库，支持多层子代理、三个权限档位、worktree、返工、提问、恢复、可靠通知、skill 白名单、用量与额度暂停；会话可在线查看、追踪实时流，daemon 关闭后仍可只读查看。用户设备确认、可选扩展 / MCP 白名单、board、会议和 pi-pane 插件属于后续范围；下方“功能”包含完整设计目标。
 
 ## 使用
 
@@ -34,12 +34,19 @@ node packages/cli/dist/main.js daemon start
 node packages/cli/dist/main.js status
 node packages/cli/dist/main.js ls
 node packages/cli/dist/main.js show <任务或会话 ID>
+node packages/cli/dist/main.js log <任务或会话 ID> --limit 100
+node packages/cli/dist/main.js tail <任务或会话 ID>
+node packages/cli/dist/main.js verify-archive <会话 ID>
 node packages/cli/dist/main.js pending
 node packages/cli/dist/main.js answer <提问 ID> --answers '<答复 JSON 数组>'
 node packages/cli/dist/main.js shutdown
 ```
 
 可用 `npm link --workspace @pi-agora/cli` 注册 `agora` 命令。默认数据目录为 `~/.pi/agora`；设置 `AGORA_HOME` 或给 CLI 传 `--home <目录>` 可改用其他本地目录。关闭主会话不会停止 daemon 或正在运行的子代理；恢复原主会话后会补收尚未确认的通知。通知只有在主会话文件中找到完整记录后才确认。
+
+`show` 查看会话快照或任务详情，任务详情包含累计和任务树用量，会话快照包含本段用量与最近已知上下文。`log` 沿当前分支分页，保留压缩前的历史；`tail` 追踪流式事件，按 `Ctrl+C` 结束。`ls --tree` 按任务父关系显示树，继承出的会话仍保留各自元数据。存档查询不会启动 daemon，只在没有可用健康连接时读取离线存档；鉴权或协议错误不会降级。
+
+`verify-archive` 检查格式、消息证据及历史前缀，结果的 `state` 是完整性结论。daemon 离线或显式传 `--offline` 时只读计算、不更新数据库；`status` 的 `archiveBytes` 显示会话目录占用。存档不自动删除，删除需先关闭 daemon，再显式执行 `agora archive delete <会话 ID> --offline`；锁、进程退出或路径状态不明时拒绝，不强制清理。详细规则见 [docs/archive.md](docs/archive.md)。
 
 `shutdown` 排空运行中的任务；`--timeout <秒>` 默认 600，超时后保留 daemon，需用户显式重试 `shutdown --force`。强制关闭会中断任务并清理受管进程。停止报告会说明覆盖范围：Windows Job Object、Linux cgroup，或 macOS / Linux 的进程快照；快照的空残留列表不能证明整棵进程树均已退出。中断任务可选择 `resume`、`reopen`、`replace` 或 `abandon`；恢复要求旧写者已经确认退出，不自动重放有副作用的工具。
 
@@ -91,7 +98,8 @@ packages/
   daemon/        后台进程：进程监管、身份鉴权、任务/提问/board/会议、存档、HTTP API
   extension/     pi 扩展：装进主代理和每个协作会话，提供 agora_* 工具
   cli/           agora 命令行
-  archive/       后续切片：只读存档读取库（daemon 不运行时也能用）
+  archive/       只读存档读取库、活动分支与中断块投影
+  harness-pi/    跨包共用的 pi 专有实现：只读会话文件解析
   pane-plugin/   后续切片：pi-pane 插件
   protocol/      协议类型与 schema
 ```
@@ -101,7 +109,7 @@ packages/
 ## 开发
 
 ```sh
-npm run build    # tsc project references 构建四个工作区
+npm run build    # tsc project references 构建六个工作区
 npm test         # 构建后用 node --test 验证，真实 pi 测试要求 1.5.0
 ```
 
@@ -111,7 +119,7 @@ npm test         # 构建后用 node --test 验证，真实 pi 测试要求 1.5.
 
 | 文档 | 内容 |
 | --- | --- |
-| [docs/development.md](docs/development.md) | 1b 实现范围、配置、源码结构、构建、CLI、测试映射和限制 |
+| [docs/development.md](docs/development.md) | 任务与存档的实现范围、配置、源码结构、构建、CLI、测试映射和限制 |
 | [docs/architecture.md](docs/architecture.md) | 总体架构、进程模型、受管扩展就绪检查、控制队列、daemon 生命周期、存储、权限档位与路径校验、worktree、崩溃与恢复、资源、平台注意事项 |
 | [docs/security.md](docs/security.md) | 安全模型：principal、主 Agent 级与用户级权限、用户确认、设备配对、只用终端、资源级访问控制、审计、剩余风险 |
 | [docs/tasks.md](docs/tasks.md) | 任务（子代理）：工具接口、状态机、返工与送达追踪、可靠通知、提问与转交、召集人离线 |

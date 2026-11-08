@@ -3,7 +3,8 @@ import { opendir, realpath } from "node:fs/promises";
 import path from "node:path";
 import { setImmediate } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
-import type { ParsedSession, SessionEntry } from "@pi-agora/harness-pi";
+import { messageIdentity, sessionMessages, type MessageIdentity, type ParsedSession } from "@pi-agora/harness-pi";
+import type { SessionEntry } from "@pi-agora/protocol";
 import { agoraHome, type PermissionProfile, type SessionKind } from "@pi-agora/protocol";
 import type {
   ArchiveReaderV1, ArchivedSession, ArchivedSessionSummary, ArchiveState,
@@ -43,7 +44,7 @@ function decode(value: string): unknown {
   try { return JSON.parse(Buffer.from(value, "base64url").toString("utf8")); }
   catch { throw new ArchiveError("invalid_cursor", "分页游标无效"); }
 }
-function messageKey(message: Record<string, unknown>): string {
+function messageKey(message: MessageIdentity): string {
   return JSON.stringify([message.role, typeof message.timestamp === "object" ? null : message.timestamp]);
 }
 function record(value: unknown): value is Record<string, unknown> {
@@ -211,15 +212,13 @@ class ArchiveReader implements ArchiveReaderV1 {
     const session = await this.required(id);
     const entries = session.availability === "missing" ? [] : (await this.parsed(session)).entries;
     const messages = new Map<string, unknown[]>();
-    for (let i = 0; i < entries.length; i++) {
-      const entry = entries[i];
-      if (entry.type === "message" && record(entry.message)) {
-        const key = messageKey(entry.message);
-        const candidates = messages.get(key) ?? [];
-        candidates.push(entry.message);
-        messages.set(key, candidates);
-      }
-      if (i % 1000 === 999) await setImmediate();
+    let messageCount = 0;
+    for (const evidence of sessionMessages(entries)) {
+      const key = messageKey(evidence);
+      const candidates = messages.get(key) ?? [];
+      candidates.push(evidence.message);
+      messages.set(key, candidates);
+      if (++messageCount % 1000 === 0) await setImmediate();
     }
     const directory = await archiveDirectory(this.home, path.join(path.dirname(session.sessionFile), "partials"));
     if (!directory) return [];
@@ -239,8 +238,9 @@ class ArchiveReader implements ArchiveReaderV1 {
         if (value.closed === true) {
           finalized.add(seq);
         } else if (value.ended === true) {
-          if (record(value.message)) {
-            const key = messageKey(value.message);
+          const identity = messageIdentity(value.message);
+          if (identity) {
+            const key = messageKey(identity);
             const candidates = messages.get(key) ?? [];
             for (let i = 0; i < candidates.length; i++) {
               if (isDeepStrictEqual(candidates[i], value.message)) { finalized.add(seq); break; }

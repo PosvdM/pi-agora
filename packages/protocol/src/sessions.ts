@@ -1,5 +1,15 @@
 import type { UsageSummary } from "./index.js";
 
+export interface SessionEntry {
+  type: string;
+  id: string;
+  parentId: string | null;
+  [key: string]: unknown;
+}
+
+export interface MessageIdentity { role: unknown; timestamp: unknown }
+export interface SessionMessageEvidence extends MessageIdentity { entryId: string; message: unknown }
+
 export interface StreamCursor { epoch: string; seq: number }
 
 export type InFlightBlock =

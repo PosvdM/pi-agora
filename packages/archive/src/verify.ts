@@ -17,7 +17,7 @@ export async function verifySessionFile(file: string, expected: VerifyExpected =
   }
   try {
     if (!(await stat(file)).isFile()) throw new ArchiveError("invalid_file", "会话路径不是普通文件");
-    const { parseSessionFile } = await import("@pi-agora/harness-pi");
+    const { parseSessionFile, sessionMessages } = await import("@pi-agora/harness-pi");
     const parsed = await parseSessionFile(file);
     const diagnostics: unknown[] = [...parsed.diagnostics];
     const incomplete = (kind: string) => /truncat|incomplete|partial|unterminated|截断|不完整/i.test(kind);
@@ -27,15 +27,11 @@ export async function verifySessionFile(file: string, expected: VerifyExpected =
     if (parsed.status === "empty") diagnostics.push({ kind: "empty_session", message: "会话文件为空，尚无可读取条目" });
     let messageCount = 0;
     let foundLast = expected.lastMessage === undefined;
-    for (let i = 0; i < parsed.entries.length; i++) {
-      const entry = parsed.entries[i];
-      if (entry.type === "message" && entry.message && typeof entry.message === "object") {
-        messageCount++;
-        const message = entry.message as Record<string, unknown>;
-        if (expected.lastMessage && message.role === expected.lastMessage.role &&
-            isDeepStrictEqual(message.timestamp, expected.lastMessage.timestamp)) foundLast = true;
-      }
-      if (i % 1000 === 999) await setImmediate();
+    for (const message of sessionMessages(parsed.entries)) {
+      messageCount++;
+      if (expected.lastMessage && message.role === expected.lastMessage.role &&
+          isDeepStrictEqual(message.timestamp, expected.lastMessage.timestamp)) foundLast = true;
+      if (messageCount % 1000 === 0) await setImmediate();
     }
     const fail = (kind: string, message: string) => { suspect = true; diagnostics.push({ kind, message }); };
     if (expected.messageEndCount !== undefined && messageCount < expected.messageEndCount) {

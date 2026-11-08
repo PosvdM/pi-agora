@@ -1,4 +1,4 @@
-import type { SessionEntry } from "@pi-agora/harness-pi";
+import type { SessionEntry } from "@pi-agora/protocol";
 import { setImmediate } from "node:timers/promises";
 import { ArchiveError } from "./errors.js";
 

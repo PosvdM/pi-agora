@@ -4,11 +4,12 @@ import path from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { openArchive, projectPartials, projectUserView, verifySessionFile } from "@pi-agora/archive";
 import type { InFlightState, SessionStreamEvent } from "@pi-agora/protocol";
-import { parseSessionFile, type SessionEntry } from "@pi-agora/harness-pi";
+import { parseSessionFile, sessionMessages } from "@pi-agora/harness-pi";
+import type { SessionEntry } from "@pi-agora/protocol";
 import type { DriverHandle } from "./driver.js";
 import type { Store } from "./store.js";
 import { AgoraError } from "./errors.js";
-import { entriesFromResponse, PiArchiveEvents, sameMessage, type ArchiveFragment, type PartialRow } from "./harness/pi/archive-events.js";
+import { readPiEntries, PiArchiveEvents, sameMessage, type ArchiveFragment, type PartialRow } from "./harness/pi/archive-events.js";
 
 type ViewEvent = SessionStreamEvent;
 interface DiskView { entries: SessionEntry[]; leafId: string | null; completeIds: Set<string>; idsStable: boolean }
@@ -204,7 +205,7 @@ export class SessionViews {
   private async refresh(state: ViewState, initial = false): Promise<void> {
     let live: { entries: SessionEntry[]; leafId: string | null } | undefined;
     if (state.handle && !state.closing) {
-      try { live = entriesFromResponse(await state.handle.send({ type: "get_entries" }, { timeoutMs: 5000 })); }
+      try { live = await readPiEntries(command => state.handle!.send(command, { timeoutMs: 5000 }), state.rpcEntries); }
       catch (error) { this.issue(state, "get_entries_fallback", error); }
     }
     const disk = await this.disk(state);
@@ -218,9 +219,9 @@ export class SessionViews {
     } catch (error) { this.issue(state, "archive_partials_read", error); }
     const next = live ?? disk;
     if (live) state.rpcEntries = clone(live.entries);
+    const nextMessages = [...sessionMessages(next.entries)];
     if (initial) state.initialMessageCount = Math.max(0,
-      next.entries.filter(entry => entry.type === "message").length -
-      [...state.events.messages.values()].filter(item => item.ended && next.entries.some(entry => entry.type === "message" && sameMessage(entry.message, item.message))).length);
+      nextMessages.length - [...state.events.messages.values()].filter(item => item.ended && nextMessages.some(evidence => sameMessage(evidence.message, item.message))).length);
     const before = new Map(state.entries.map(entry => [entry.id, entry]));
     const changed = next.entries.filter(entry => !sameMessage(before.get(entry.id), entry));
     const ids = new Set(next.entries.map(entry => entry.id));
@@ -243,13 +244,15 @@ export class SessionViews {
     } else if (changed.length || removedIds.length || leafChanged) {
       this.publish(state, "agora_entries", { entries: clone(changed), leafId: state.leafId });
     }
+    const rpcMessages = [...sessionMessages(state.rpcEntries)];
+    const diskMessages = new Map([...sessionMessages(disk.entries)].map(evidence => [evidence.entryId, evidence]));
     for (const item of state.events.messages.values()) {
       if (!item.ended || !disk.idsStable) continue;
       // v1 临时 ID 仅供本次读取；即使消息匹配，也不能写入持久 closed 引用。
       // 即使 RPC 已失效，也不能仅凭磁盘解析自行宣称取得了 RPC entryId。
-      const entry = state.rpcEntries.find(entry => entry.type === "message" && sameMessage(entry.message, item.message));
-      if (!entry || !disk.completeIds.has(entry.id) || !disk.entries.some(value => value.id === entry.id && sameMessage(value.message, item.message))) continue;
-      state.pending.push({ runId: state.runId, t: new Date().toISOString(), messageSeq: item.messageSeq, closed: true, entryId: entry.id });
+      const evidence = rpcMessages.find(value => sameMessage(value.message, item.message));
+      if (!evidence || !disk.completeIds.has(evidence.entryId) || !sameMessage(diskMessages.get(evidence.entryId)?.message, item.message)) continue;
+      state.pending.push({ runId: state.runId, t: new Date().toISOString(), messageSeq: item.messageSeq, closed: true, entryId: evidence.entryId });
       state.events.close(item.messageSeq);
       this.scheduleWrite(state);
     }

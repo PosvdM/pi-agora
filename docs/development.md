@@ -2,11 +2,13 @@
 
 ## 实现范围
 
-切片 1b 提供任务核心。四个 workspace 为 protocol、daemon、extension、cli，不依赖 pi-pane。任务动作包括 spawn、list、status、result、steer、stop、cleanup 和 recover；权限档位为 explore、review、implement。子代理可以继续派出下级，daemon 强制核对 principal、直接召集关系、任务树、层数、下级数和档位。
+切片 1b 提供任务核心，1d 提供存档、会话视图与查询 CLI。六个 workspace 为 protocol、harness-pi、archive、daemon、extension、cli，不依赖 pi-pane。任务动作包括 spawn、list、status、result、steer、stop、cleanup 和 recover；权限档位为 explore、review、implement。子代理可以继续派出下级，daemon 强制核对 principal、直接召集关系、任务树、层数、下级数和档位。
 
 提问由 `agora_request` 创建、答复、逐级转交或取消；CLI 提供 pending 和 answer。父任务有未完成下级时进入 `waiting_children`，有未答复提问时进入 `waiting_decision`。两者 settled 后都释放推理名额，可空闲回收。需要推理的通知重新排队取得名额，必要时拉起原会话，再由扩展注入持久通知；静默投递与等待下级时的强制唤醒规则见 [tasks.md](tasks.md#工具一览)。
 
-尚未提供：用户设备确认、预算与完整资源 ACL、配对及安全状态审计（1c），可选扩展 / MCP 白名单及 `implement.projectTrust: "saved"`（建议随 1c 跟进），存档读取与会话视图（1d），board、会议和 pane 插件。生产子会话固定 `-ne --no-mcp --no-approve`，只显式加载 agora；测试 driver 可以独立注入假 provider，不开放生产 HTTP 注入。
+存档查询包括快照、历史分页、SSE、流片段、运行诊断和完整性校验；daemon 离线时通过只读 adapter 查询。用户级在线删除和接管在签名确认接入前拒绝，显式离线删除使用独立维护入口。
+
+尚未提供：用户设备确认、预算与完整资源 ACL、配对及安全状态审计（1c），可选扩展 / MCP 白名单及 `implement.projectTrust: "saved"`（建议随 1c 跟进），board、会议和 pane 插件。生产子会话固定 `-ne --no-mcp --no-approve`，只显式加载 agora；测试 driver 可以独立注入假 provider，不开放生产 HTTP 注入。
 
 **1b 的 CLI 答复未经设备确认，无法区分用户与 Agent。** 完整用户级安全模型仍以 [security.md](security.md) 为设计目标，不能把此通路视为已完成的用户身份验证。
 
@@ -28,22 +30,25 @@ npm test
 
 | 路径 | 职责 |
 | --- | --- |
-| `packages/protocol/src/index.ts` | 协议类型、工具 schema 和版本 |
+| `packages/protocol/src/index.ts`、`sessions.ts` | 协议类型、工具 schema、版本及中立会话快照、事件与块类型 |
+| `packages/harness-pi/src/session-parser.ts`、`json-prefix.ts`、`session-messages.ts` | pi v1/v2/v3 的只读流式解析、内存迁移、临时 ID、叶子、截断分类及中立消息证据 |
+| `packages/archive/src/` | 只读数据库与文件读取、活动分支和中断块投影、分页及完整性校验 |
 | `packages/protocol/src/client.ts` | 发现、双向握手、连接、请求总期限与有界重试 |
 | `packages/protocol/src/git.ts` | 共用 Git 安全调用层、配置与环境清理、字面路径和只读查询白名单 |
 | `packages/daemon/src/index.ts`、`main.ts` | 配置、单实例、启动恢复、排空与入口 |
 | `packages/daemon/src/server.ts`、`auth.ts` | HTTP、幂等记录、principal、租约、launch ticket |
-| `packages/daemon/src/store.ts` | schema v4、一致性备份、迁移、条件更新、outbox 和逐请求用量 |
+| `packages/daemon/src/store.ts`、`archive-schema.ts` | schema v6、一致性备份、迁移、条件更新、outbox、逐请求用量和归档证据 |
 | `packages/daemon/src/tasks.ts` | 控制队列、树限制、调度、返工、恢复、回收和看门狗 |
+| `packages/daemon/src/sessions.ts`、`archive-verification.ts`、`archive-maintenance.ts` | 会话内存模型与 SSE、流片段与诊断、可信校验基线、磁盘统计及显式离线删除 |
 | `packages/daemon/src/requests.ts`、`worktrees.ts` | 提问及逐级转交、按仓库串行的 worktree 操作 |
 | `packages/daemon/src/driver.ts` | 既有导出的兼容入口，转出 pi 驱动实现 |
-| `packages/daemon/src/harness/types.ts` | 中立的启动规格、技能结果与逐请求用量 / 额度事件 |
-| `packages/daemon/src/harness/pi/` | pi 的 RPC、会话写锁、整树停止、UI 取消、心跳、诊断、skill 解析、参数与用量 / 额度适配 |
+| `packages/daemon/src/harness/types.ts` | 中立的启动规格、技能结果、逐请求用量 / 额度事件和最终消息观察 |
+| `packages/daemon/src/harness/pi/` | daemon 独用的 pi RPC、会话写锁、停止、UI、心跳、skill、参数、用量 / 额度及流式事件重建和最终消息适配 |
 | `packages/extension/src/index.ts`、`permissions.ts` | 主 / 子会话工具、最终就绪门槛、三档与路径检查 |
 | `packages/extension/src/notifications.ts` | 在途去重、完整磁盘记录核对和确认 |
-| `packages/cli/src/index.ts`、`main.ts` | CLI 参数和命令 |
+| `packages/cli/src/index.ts`、`main.ts`、`archive.ts` | CLI 参数、任务控制、在线与离线存档查询、SSE tail |
 
-扩展的路径检查只加载 `pi-hostkit/paths`，不加载原生模块。archive 和 pane-plugin 包在对应切片创建。Harness 适配层边界及高成本保留项见 [总体架构](architecture.md#harness-适配层) 和 [耦合清单](harness-portability.md)。
+扩展的路径检查只加载 `pi-hostkit/paths`，不加载原生模块。pane-plugin 在切片 2 创建；archive 不反向依赖 daemon，跨包 pi 解析由 harness-pi 提供。Harness 适配层边界及高成本保留项见 [总体架构](architecture.md#harness-适配层) 和 [耦合清单](harness-portability.md)。
 
 ## 启动与配置
 
@@ -72,7 +77,11 @@ spawn 的 `maxDepth` 表示以新任务为第一层的子树层数，`maxChildre
 ```sh
 node packages/cli/dist/main.js daemon start --home <目录>
 node packages/cli/dist/main.js status --home <目录>
-node packages/cli/dist/main.js ls --limit 50 --home <目录>
+node packages/cli/dist/main.js ls --tree --limit 50 --home <目录>
+node packages/cli/dist/main.js log <任务或会话 ID> --limit 100 --home <目录>
+node packages/cli/dist/main.js tail <任务或会话 ID> --home <目录>
+node packages/cli/dist/main.js verify-archive <会话 ID> --offline --home <目录>
+node packages/cli/dist/main.js archive delete <会话 ID> --offline --home <目录>
 node packages/cli/dist/main.js show <任务或会话 ID> --home <目录>
 node packages/cli/dist/main.js pending --home <目录>
 node packages/cli/dist/main.js answer <提问 ID> --answers '[{"id":"q","selected":[],"custom":"答复"}]' --home <目录>
@@ -82,7 +91,7 @@ node packages/cli/dist/main.js task recover <任务 ID> --mode resume --home <�
 node packages/cli/dist/main.js shutdown --timeout 600 --home <目录>
 ```
 
-只有 daemon start 自动启动 daemon。CLI 输出 JSON，错误返回非零退出码。原生 PowerShell 中 JSON 参数应按当前 shell 的引号规则传入；机器可直接使用 HTTP API，避免 shell 转义。
+只有 daemon start 自动启动 daemon。存档查询仅在没有发现记录或健康连接传输不可达时降级，不因身份、权限、协议或业务错误读取本地库。`tail` 在 `resync` 后重新取快照，在运行退出或终态的正常流结束后退出；离线只显示快照。CLI 输出 JSON，命令错误返回非零；校验结论以结果 `state` 为准，离线校验不写数据库。原生 PowerShell 中 JSON 参数应按当前 shell 的引号规则传入；机器可直接使用 HTTP API，避免 shell 转义。
 
 shutdown 默认排空，超时后保留 daemon；force 中断并清理运行。停止固定先 clear_queue，再 abort 和 hostkit 清理；无法确认时保锁和诊断，不自动 assumeNoWriter。成功的重复 stop 不改已有终态结果、业务 revision 和更新时间。
 
@@ -93,15 +102,22 @@ shutdown 默认排空，超时后保留 daemon；force 中断并清理运行。�
 - **可靠通知**：状态、结果和通知同事务；每批最多 200，扩展取到空批。完整磁盘行的 entryId、noticeId、dedupeKey 全部相符才 ack。继承的历史通知不能代替当前 inbox 的授权。被 clear_queue 清掉的在途通知在 settled 后可重投；每代完成有独立 key。
 - **请求重试**：安全 GET、可幂等续期及带原 Idempotency-Key 的业务写入最多三次，共用一个总期限、原 token、参数与 key；间隔 50 / 100ms。取消、关闭、HTTP 拒绝、协议不兼容、无效 JSON 和一次性认证兑换不重试。子会话短暂续期传输错误不立即 fatal。`AgoraConnectionError.cause` 保留捕获的底层异常，message 附可获得的底层错误码；诊断提取不参与重试分类，不能将错误信息增强视为偶发 loopback 失败根因已解决。
 - **退出确认**：hostkit 在停止返回前确认已知身份退出可见；driver 在有效 StopReport 后单次独立核对写者身份，不设 Windows 专属轮询，也不补杀；alive / unknown 立即保锁。driver 的失败 stop 可显式重试，只复查原报告、身份和 release，不重放清队列或底层停止；已有失败报告不能变成新成功报告。TaskManager 重试仍核对版本与租约。
-- **迁移**：schema v3 为任务树、限制、返工、提问和 worktree 增加字段与表；v4 保存 skill 名单与解析路径、额度恢复时间和逐请求用量。旧库依次升级到 v4，已有 v2 任务按第一层、默认两层回填。迁移前从同一 SQLite 连接做一致性 backup、只读 integrity_check，DDL 同事务，提交前 foreign_key_check；失败回滚原库。
+- **迁移**：schema v3 为任务树、限制、返工、提问和 worktree 增加字段与表；v4 保存 skill、额度及逐请求用量；v5 预留安全状态；v6 增加可信哈希、字节数、校验时间和消息观察账本。旧库依次升级到 v6，已有 v2 任务按第一层、默认两层回填。迁移前从同一 SQLite 连接做一致性 backup、只读 integrity_check，DDL 同事务，提交前 foreign_key_check；失败回滚原库。
+- **只读归档**：不用 `SessionManager.open()`，原会话文件哈希不变；v1 在内存迁移，ID 不持久化；中间与尾部截断不直接判为可疑。会话文件、附属文件和目录的真实路径必须位于 AGORA_HOME 内。读取和投影分批让出事件循环，页面默认 50、上限 200。
+- **流与校验**：`message_end` 只记录匹配证据，取得 RPC entryId 且磁盘完整换行和内容相等才关闭片段。停止未确认时继续归档迟到流；归档 I/O 失败可见，不伪装为 flush 成功。可疑或缺失结果不覆盖可信前缀基线，在线与离线校验复用相同证据。
 - **恢复**：旧 run 未确认退出不能拉起写者；resume 代数不变，reopen / replace 新建继承会话并增加代数，历史 result 指向所属代数的会话。连续 resume 失败两次后需重开、换人或放弃，不自动重放副作用。
 
 ## 测试与 CI
 
-测试使用真实 pi 1.5.0 和本地假 provider，不访问模型服务。HOME、USERPROFILE、APPDATA、LOCALAPPDATA、agent 配置、会话、数据与锁全部隔离。PI_PACKAGE 可指定安装；KEEP_FIXTURES=1 可保留现场。
+测试使用真实 pi 1.5.0 和本地假 provider，不访问模型服务。HOME、USERPROFILE、APPDATA、LOCALAPPDATA、agent 配置、会话、数据与锁全部隔离。公共夹具在真实 pi 或会话锁操作前核对四个用户目录都位于独立临时现场，缺失重定向或链接越界直接失败；假驱动必须等最终授权，而不是把内部 `markReady` 当作启动完成。PI_PACKAGE 可指定安装；KEEP_FIXTURES=1 可保留现场。
 
 | 测试文件 | 验收与边界 |
 | --- | --- |
+| `test/archive-parser-1d.test.mjs`、`archive-parser-pi-1d.test.mjs` | v1/v2/v3、空文件、完整无尾换行、UTF-8 截断与真正坏行；真实 pi 重新打开副本的条目 / 叶子差分、原文件哈希不变 |
+| `test/archive-adapter-1d.test.mjs`、`archive-projection-1d.test.mjs`、`archive-relations-1d.test.mjs` | 只读 v4/v5/v6、路径与链接边界、分页、父关系与当前会话、同 reader 的 v1 水位、最终消息去重、权威块投影和按会话用量 |
+| `test/session-views-1d.test.mjs`、`archive-daemon-1d.test.mjs` | 快照切点、历史、RPC 追加游标、完整 SSE envelope / 重同步、迟到流、闭片段双证据、I/O 错误、认证和相关 HTTP 端点 |
+| `test/archive-verification-1d.test.mjs`、`archive-e2e-1d.test.mjs` | 可信前缀不被重复校验洗白、观察消息数与末消息、在线离线同证据、真实强杀三类块和规范诊断、正常最终内容去重、真实已释放写锁离线删除 |
+| `test/cli-archive-1d.test.mjs`、`test-home-1d.test.mjs` | 在线 / 离线 CLI、tail / resync / 正常 EOF、删除锁与路径拒绝、四用户目录隔离正负控 |
 | `test/task-1b.test.mjs` | generation、幂等 steer / answer、送达追踪、中断旧代结果与用量、D14 七项规则、失败与额度通知唤醒、静默投递、直接停止孙任务、恢复后的提问路由、父提交 worktree、回收、看门狗、配置及 v2→v4 迁移 |
 | `test/task-d15.test.mjs`、`driver-d15.test.mjs`、`d15-e2e.test.mjs` | 子代理标记、skill 白名单与只读授权、同项目双主会话的提问路由、任务 / 代 / 树用量及 stop / interrupt 收尾记账、静默终态唤醒与未知重置时间提示的持久化恢复、额度暂停与通知 / 自动恢复、v3→v4 备份和迁移回滚；真实 pi 的本地 429 与 skill 加载 |
 | `test/tree-e2e.test.mjs` | 真实子代理调用 agora_task 再派下级；单名额下静默下级通知真正启动父回合，覆盖父进程未回收及回收重拉、通知落盘；恶意 MCP / 扩展不启动；Windows 原生 PowerShell 实际工具调用 |
@@ -131,6 +147,8 @@ macOS 完整测试后额外执行 25 次“忽略 abort 的 provider”真实用
 
 ## 未实测与限制
 
+- v1 临时条目 ID 不能跨 reader 或 CLI 进程复用；文件变化后也必须重新取快照。原始会话文件不重写，旧格式不会因查看而被迁移到磁盘。
+- 存档附属 JSONL 单行和单个诊断文件读取上限为 8 MiB；超出明确报错，原始文件保留。显式删除的安全扫描最多 20000 个目录项目，包含链接、未知写者或缺失释放证据时拒绝。
 - 可选 MCP / 扩展白名单和 saved 项目信任未开放。pi 1.5.0 没有独立 MCP 配置参数，配置隔离方式尚未确定；当前基线直接关闭 MCP。
 - CLI 答复无设备确认，完整用户身份与审计在 1c。此项限制不能通过工具层 ACL 消除。
 - Git 最低设计版本为 2.34；1b 本机实际测试版本为 2.53.0.windows.2，旧版 2.34 的 P0 证据不等同于本轮重测。lazy-fetch 回归另行移除 `GIT_NO_LAZY_FETCH`，验证兼容旧版的协议防线。真实 TTY pager 由 Linux/macOS 的 Python PTY 执行；Windows 无 POSIX PTY 时说明原因跳过，固定 `--no-pager` argv 仍有独立回归。

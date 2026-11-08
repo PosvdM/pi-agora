@@ -1,5 +1,4 @@
-import type { SessionEntry } from "@pi-agora/harness-pi";
-import type { InFlightBlock, InFlightState } from "@pi-agora/protocol";
+import type { SessionEntry, InFlightBlock, InFlightState } from "@pi-agora/protocol";
 
 export interface ArchiveFragment {
   runId: string;
@@ -55,6 +54,21 @@ export function entriesFromResponse(response: unknown): { entries: SessionEntry[
         return typeof item.type !== "string" || typeof item.id !== "string" || !(item.parentId === null || typeof item.parentId === "string");
       })) throw new Error("get_entries 未返回有效的会话条目与叶子");
   return structuredClone({ entries: data.entries as SessionEntry[], leafId: data.leafId as string | null });
+}
+
+/** RPC 追加游标失效时重新取得全量，返回的模型始终包含压缩前和废弃分支。 */
+export async function readPiEntries(sender: (command: { type: "get_entries"; since?: string }) => Promise<unknown>, previous: SessionEntry[]): Promise<{ entries: SessionEntry[]; leafId: string | null }> {
+  const since = previous.at(-1)?.id;
+  let response = await sender({ type: "get_entries", ...(since ? { since } : {}) });
+  if (since && record(response).success === false) {
+    response = await sender({ type: "get_entries" });
+    return entriesFromResponse(response);
+  }
+  const next = entriesFromResponse(response);
+  if (!since) return next;
+  const replacements = new Map(next.entries.map(entry => [entry.id, entry]));
+  const known = new Set(previous.map(entry => entry.id));
+  return { entries: [...previous.map(entry => replacements.get(entry.id) ?? entry), ...next.entries.filter(entry => !known.has(entry.id))], leafId: next.leafId };
 }
 
 /** 同步捕获原始事件；异步刷新只能移除精确匹配的最终消息。 */

@@ -4,12 +4,8 @@ import { createReadStream } from "node:fs";
 import { setImmediate as yieldToLoop } from "node:timers/promises";
 import { isIncompleteJson } from "./json-prefix.js";
 
-export interface SessionEntry {
-  type: string;
-  id: string;
-  parentId: string | null;
-  [key: string]: unknown;
-}
+import type { SessionEntry } from "@pi-agora/protocol";
+export type { SessionEntry } from "@pi-agora/protocol";
 
 export interface SessionHeader {
   type: "session";

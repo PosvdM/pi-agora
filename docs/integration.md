@@ -1,6 +1,6 @@
 # 集成协议
 
-> 本文描述完整集成设计。切片 1b 的实际任务、提问、最终就绪和 CLI 通路见 [development.md](development.md)。用户级确认为 1c 目标，存档 / 会话视图为 1d，pane 和其他领域接口按后续切片提供；下表列出的设计端点不表示全部已开放。
+> 本文描述完整集成设计。任务、提问、最终就绪和 CLI 通路见 [development.md](development.md)；切片 1d 提供任务存档、会话快照、历史和事件流。用户级确认属于 1c，pane、board 和会议按后续切片提供；下表列出的设计端点不表示全部已开放。
 
 本文定义 pi-agora 自己对外的接口，以及 agora 如何接入 pi-pane：
 
@@ -25,15 +25,16 @@
 ## 依赖方向
 
 ```text
-packages/protocol ◄── daemon、extension、cli、archive、pane-plugin
+packages/protocol ◄── harness-pi、daemon、extension、cli、archive、pane-plugin
 packages/archive  ◄── daemon、cli、pane-plugin
+packages/harness-pi ◄── archive、daemon
 pi-hostkit        ◄── daemon、extension（pi-pane 服务端也依赖它）
 @pi-pane/plugin-api（peer 依赖）◄── 只有 pane-plugin
 ```
 
 - `daemon`、`extension`、`cli`、`archive`、`protocol` 都不依赖 pi-pane。不装 pi-pane 时 pi-agora 完整可用。
 - 只有 `packages/pane-plugin` 把 `@pi-pane/plugin-api` 作为 peer 依赖，负责把 agora 的数据翻译成 pane 协议。pane 协议升级时只需改这个包。
-- `packages/archive` 同时提供“用户聊天视图”的投影函数，daemon 在线读取和 adapter 离线读取用同一份代码，保证返回同一种视图（见 [archive.md](archive.md#三种投影)）。
+- `packages/archive` 提供 `projectUserView` 和 `projectPartials`，在线与离线共用用户聊天分支和中断块投影（见 [archive.md](archive.md#三种投影)）。pi 专有文件解析位于共享的 `packages/harness-pi`，archive 不依赖 daemon。
 
 ## 连接拓扑
 
@@ -119,6 +120,18 @@ cleanup 在有未提交改动且未指定 `discard` 时返回 `409 worktree_dirt
 
 额度暂停通过现有 `POST /v1/tasks/:id/recover`、`{ "mode": "resume" }` 恢复，不增加代数；重置时间未到返回 `409 quota_not_reset`，旧运行未确认退出返回 `409 stop_incomplete`。通知 `task:quota_ready` 的 payload.tasks 带暂停任务的 taskId、generation、resumeAt 和 contextTokens；没有可识别时间时发送 `task:quota_unknown`。不增加专用恢复端点，父任务恢复不隐式恢复下级。CLI 和 pane 的专用用量展示阶段见 [roadmap.md](roadmap.md)。
 
+### 存档与会话字段
+
+`GET /v1/sessions` 和会话详情返回中立的 `parent`：
+
+- `{ kind: "task", taskId, sessionId }`：父任务及其当前会话；父任务重开后关系跟随当前会话。
+- `{ kind: "main", piSessionId }`：主 Agent 的原生会话。
+- `{ kind: "user" }`：用户任务。
+
+旧元数据无法确定主会话标识时省略 `parent`；archive adapter 另给 `parentDiagnostics`。这些字段不包含 pane 节点 ID，节点映射由插件负责。adapter 的 `isCurrent` 标识任务当前指向的会话，不能按创建时间猜测；`inheritsFrom` 和 `inheritReason` 保留重开或换人的来源。`usage` 按会话累计，并给出最近已知上下文，不把后继会话的上下文填到旧段。
+
+会话快照、历史、事件流和诊断要求主 Agent 级身份，并按任务召集关系检查资源；协作子代理不能读取这些全量视图。`POST /v1/archive/verify` 接受 `{ sessionId? }`，省略时只检查当前身份可见的会话；计算结果后更新校验元数据并通知异常，不属于删除操作。`GET /v1/status` 返回 `archiveBytes`。在线删除在用户签名通路接入前拒绝；离线维护规则见 [archive.md](archive.md#保留策略)。
+
 ### 端点
 
 | 分组 | 方法与路径 | 用途 | 主要调用方 |
@@ -167,6 +180,7 @@ cleanup 在有未提交改动且未指定 `discard` 时返回 `409 worktree_dirt
 | 收件箱 | `GET /v1/inbox?wait=25` | 长轮询通知：按创建时间、id 排序，每批最多 200 条，无游标；非空批后用 wait=0 连续拉取到空批，见 [tasks.md](tasks.md#投递) | 全部扩展、pane 插件 |
 | | `POST /v1/inbox/ack` | 确认通知已写入会话文件（扩展）或已展示（pane 插件） | 同上 |
 | 变更流 | `GET /v1/changes?epoch=&afterSeq=` | 领域对象变更（SSE），见“变更流” | pane 插件 |
+| 存档 | `POST /v1/archive/verify` | 单会话或可见范围完整性校验；主 Agent 级，更新校验元数据 | CLI |
 | 审计 | `GET /v1/audit?target=` | 审计记录 | CLI、pane 插件 |
 | 管理 | `POST /v1/admin/shutdown` | 排空或强制关闭 | CLI |
 
@@ -199,7 +213,7 @@ cleanup 在有未提交改动且未指定 `discard` 时返回 `409 worktree_dirt
 
 - `epoch`：不透明字符串，按 pane 协议的规则在事件流无法保证连续时更换。daemon 取 `<instanceId>:<runId>`：每次会话运行开始（拉起或重建进程，包括恢复、回收后重新拉起）都换一个新 epoch；daemon 重启后 instanceId 也变。会话没有进程时取 `<当前 instanceId>:<最后一次运行的 runId>`，所以 daemon 重启后同样会变。
 - `seq`：同一 epoch 内从 1 递增，0 表示该 epoch 还没有事件。daemon 在内存里保留每个会话当前 epoch 最近 2000 个事件。
-- **运行变化触发重同步**：daemon 发出 `agora_run`（进程拉起或退出）后，拉起时立即换 epoch，已订阅的连接收到 `resync`，按新快照重新订阅。进程退出时 epoch 不变，订阅者收到 `agora_run` 的 `exited` 和最终状态。
+- **运行变化触发重同步**：daemon 发出 `agora_run`（进程拉起或退出）后，拉起时换 epoch，旧连接收到 `resync`，重新取快照时等待运行切换完成。确认退出时 epoch 不变，订阅者收到 `agora_run` 的 `exited` 和最终状态，流随后结束。停止未确认时保持订阅，继续归档迟到流，快照显示 `stopping`。
 
 客户端带来的 `epoch` 与当前不同、`afterSeq` 之后的事件已不在缓冲区内、或 `afterSeq` 大于当前 head 时，daemon 只发一条 `event: resync`，客户端必须重新取快照。
 
@@ -207,7 +221,7 @@ cleanup 在有未提交改动且未指定 `discard` 时返回 `409 worktree_dirt
 
 daemon 是 RPC 事件的唯一消费者，按 stdout 的顺序为每个有进程的会话维护一个内存模型：
 
-- **已记录的条目**：run 开始时（发送任何 prompt 之前，进程空闲）用 `get_entries` 取得全部条目和 `leafId`。`get_entries` 返回的是 pi 会话里已记录的条目，不一定已写入会话文件：新会话在出现第一条 user 或 assistant 消息之前，条目只在内存里（依据：`dist/core/session-manager.js` 的 `_persist`、`_hasConversation`）。会话视图只需要“pi 已记录”；需要“已写入文件”的地方（通知确认、流片段关闭、完整性校验）另行核对会话文件。之后每次 `message_end`、`turn_end`、`compaction_end`、`agent_settled`、`entry_appended` 后，在该会话的串行控制队列里用 `get_entries` 加 `since=<最后一个已知 entryId>` 取新条目，追加到模型，并产生一个 `agora_entries` 事件 `{ entries, leafId }`。
+- **已记录的条目**：run 开始时（发送任何 prompt 之前，进程空闲）用 `get_entries` 取得全部条目和 `leafId`。`get_entries` 返回的是 pi 会话里已记录的条目，不一定已写入会话文件：新会话在出现第一条 user 或 assistant 消息之前，条目只在内存里（依据：`dist/core/session-manager.js` 的 `_persist`、`_hasConversation`）。会话视图只需要“pi 已记录”；需要“已写入文件”的地方（通知确认、流片段关闭、完整性校验）另行核对会话文件。之后每次 `message_end`、`turn_end`、`compaction_end`、`agent_settled`、`entry_appended` 后，在会话视图的串行刷新队列里用 `get_entries` 加 `since=<最后一个已知 entryId>` 取新条目，追加到模型，并产生一个 `agora_entries` 事件 `{ entries, leafId }`。游标失效时重新取全量；刷新失败时保留诊断并只读回退到文件。该队列只更新视图，与任务控制共用原有 RPC 传输，不执行任务动作。
 - **进行中的状态**（`inFlight`）：字段与 pane 协议的 `InFlightState` 一致（在 `packages/protocol` 中独立定义）——`phase`（含 `stopping`）、按 `contentIndex` 排列的进行中助手消息块（thinking、text、toolCall，toolCall 带 id、toolName、参数片段）、`completed`（已收到 `message_end`、还没有对应条目的消息）、正在执行的工具、`queue`（来自 `queue_update`）、`retry`。块由 `message_update` 的 `*_start`/`*_delta`/`*_end` 重建（依据：`docs/json.md` 的 Message events 一节）。收到 `agora_entries` 后，`completed` 中按顺序对应的消息移除。
 
 `GET /v1/sessions/:id/snapshot` 在 daemon 事件循环的同一轮里同步读出模型和当前 seq，所以快照恰好反映 seq 不大于切点的全部事件，之后的事件都在缓冲区里：
@@ -227,7 +241,7 @@ daemon 是 RPC 事件的唯一消费者，按 stdout 的顺序为每个有进程
     "tools": [],
     "queue": { "steering": [], "followUp": [] }
   },
-  "unfinishedPartials": [ { "runId": "pr_51d0", "at": "…", "blocks": [ { "type": "text", "contentIndex": 0, "text": "中断时正在生成的内容……", "done": false } ] } ],
+  "unfinishedPartials": [ { "runId": "pr_previous", "at": "…", "blocks": [ { "type": "text", "contentIndex": 0, "text": "中断时正在生成的内容……", "done": false } ] } ],
   "status": "running",
   "statusDetail": null
 }
@@ -240,7 +254,7 @@ daemon 是 RPC 事件的唯一消费者，按 stdout 的顺序为每个有进程
 
 ### 历史分页
 
-`GET /v1/sessions/:id/history?before=<entryId>&limit=` 返回水位之前的条目（旧在前）和新的水位。条目树只追加、`parentId` 不变，沿父链往回翻得到的页面是确定的；新条目只会出现在叶子之后，由事件流送达，所以翻旧页与实时追加之间不会重复也不会遗漏。历史分页读的是不再变化的旧条目，daemon 用只读解析器读会话文件，不经过 RPC。
+`GET /v1/sessions/:id/history?before=<entryId>&limit=` 返回水位之前的条目（旧在前）和新的水位。条目树只追加、`parentId` 不变，沿父链往回翻得到的页面是确定的；新条目只会出现在叶子之后，由事件流送达，所以翻旧页与实时追加之间不会重复也不会遗漏。历史请求沿已加载会话模型的父链读取，不额外发送 RPC，也不改会话文件。无进程时模型来自只读文件解析；有进程时缓存 `get_entries` 已记录的完整历史，保留尚未落盘但已经进入用户视图的条目。
 
 协作会话不切换分支。万一活动分支的叶子移到了另一条分支（`get_entries` 返回的 `leafId` 不在原叶子之后），daemon 发 `resync`。
 
@@ -462,15 +476,17 @@ board 正文、对话内容、提问文字都来自模型，按不可信内容�
 
 ## 离线存档读取
 
-daemon 不在线时（`/v1/health` 连接失败），pane 插件和 CLI 改用 archive adapter（见 [archive.md](archive.md#只读-archive-adapter)）：
+daemon 不在线时（没有发现记录或 `/v1/health` 传输不可达），CLI 改用 archive adapter；认证、身份、协议或业务错误不能触发降级。pane 插件的离线目标沿用同一 adapter，见 [archive.md](archive.md#只读-archive-adapter)。
 
-- 树：`listSessions` 和 `getMeeting` 构造节点，`availability` 全部为 `archived`（文件缺失的为 `missing`）；session 节点的 `capabilities` 只有 `open`，其他节点为空。
-- 会话内容：`readUserView` + `readPartials` 构造会话快照，与在线时的用户聊天视图相同；只读。
-- board：`listBoardEntries` 构造 `timeline` 面板内容。
+- 任务树：`listSessions` 的中立父关系构造节点，`availability` 为 `archived`（文件缺失为 `missing`）；session 节点的 `capabilities` 只有 `open`。会议节点待对应领域实现后由 `getMeeting` 提供。
+- 会话内容：`readUserView` + `projectPartials(await readPartials(id))` 构造会话快照，与在线共用分支和中断块形状；只读。v1 派生水位只在同一内容快照及读取器内有效。
+- board、会议：`listBoardEntries`、`getMeeting` 当前返回 `unsupported`；后续领域实现后用于构造相应节点和面板。
 - 不提供动作和用户级操作；“待处理”区中 agora 的表单保留显示，提交时提示“agora 未运行”。
 - 每 15 秒重试 `/v1/health`，daemon 恢复后发树 `reset` 并切回在线模式。
 
-pane 插件和 CLI 不直接读 SQLite 表，不解析 `AGORA_HOME` 下的文件布局，全部通过 adapter。
+pane 插件和 CLI 的存档查询不直接读 SQLite 表，不解析 `AGORA_HOME` 文件布局，全部通过 adapter。显式离线删除单独调用 daemon 包的维护入口，不属于只读 adapter。
+
+离线 `verifySession(id)` 使用数据库保存的消息观察与可信前缀基线，但只返回结果；CLI 用 `persisted: false` 标明没有更新状态。CLI 命令退出码表示命令是否完成，完整性结论以结果的 `state` 为准。`tail` 在运行退出或终态快照的正常流结束后退出，`resync` 则重新取快照；离线时只返回快照，不伪装为实时订阅。
 
 pane 插件与 pi-pane 服务端在同一进程里运行，pi-pane 对插件调用只做合作式的异步超时，同步的长时间计算会卡住整个服务端。所以插件和 adapter 都不做同步重计算：`node:sqlite` 的同步查询都带 `LIMIT`，会话文件用流式异步读取并分页，单次处理的条目数有上限。
 
