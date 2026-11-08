@@ -66,6 +66,7 @@ export function taskSummary(row: TaskRow) {
 export class TaskManager {
   private readonly runtimes = new Map<string, Runtime>();
   private readonly controls = new Map<string, Promise<unknown>>();
+  private readonly activeControls = new Set<string>();
   private readonly pending: string[] = [];
   private readonly recoveryLocks = new Map<string, SessionWriterLock>();
   private occupied = 0;
@@ -88,7 +89,11 @@ export class TaskManager {
     if (!Number.isInteger(this.maxConcurrentRuns) || this.maxConcurrentRuns < 1 || this.maxConcurrentRuns > 64) throw new Error("并发运行数必须为 1 到 64 的整数");
   }
   private control<T>(taskId: string, fn: () => Promise<T>): Promise<T> {
-    const promise = (this.controls.get(taskId) ?? Promise.resolve()).catch(() => {}).then(fn);
+    const promise = (this.controls.get(taskId) ?? Promise.resolve()).catch(() => {}).then(async () => {
+      this.activeControls.add(taskId);
+      try { return await fn(); }
+      finally { this.activeControls.delete(taskId); }
+    });
     this.controls.set(taskId, promise);
     void promise.finally(() => { if (this.controls.get(taskId) === promise) this.controls.delete(taskId); }).catch(() => {});
     return promise;
@@ -751,6 +756,7 @@ export class TaskManager {
       }
       task = this.store.task(taskId);
       this.auth.requireAgent(conn);
+      this.acl.task(conn, task, 'steer');
       this.expected(task, body);
       this.budgets.requireAvailable(task);
       if (newGeneration) this.nextGeneration(task, annotated, interrupted);
@@ -775,9 +781,12 @@ export class TaskManager {
   }
   async recover(conn: Connection, taskId: string, body: Record<string, unknown>, proof?: UserExecutionProof) {
     this.auth.requireAgent(conn);
-    if (body.mode === "abandon") return this.stop(conn, taskId, body);
+    if (body.mode === "abandon") {
+      this.acl.task(conn, this.store.task(taskId), "recover", body, proof);
+      return this.stop(conn, taskId, body);
+    }
     return this.control(taskId, async () => {
-      let task = this.store.task(taskId); this.expected(task, body); this.acl.task(conn, task, "recover", body, proof);
+      let task = this.store.task(taskId); this.acl.task(conn, task, "recover", body, proof); this.expected(task, body);
       this.budgets.requireAvailable(task, true);
       if (this.ancestorsStopping(task)) throw new AgoraError(409, 'invalid_state', '任务或祖先正在停止');
       if (task.status === "budget_paused") {
@@ -827,7 +836,7 @@ export class TaskManager {
           this.store.run("INSERT INTO principals(id,type,label,cwd,created_at) VALUES(?,'agent:child',?,?,?)", child, task.title, task.cwd, at);
           this.store.run("INSERT INTO agora_sessions(id,task_id,principal_id,convener_id,parent_principal_id,inherits_from,inherit_reason,session_file,profile,model,thinking,cwd,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'created',?)", newSession, taskId, child, task.convener_id, task.requested_by, oldSession.id, String(mode), path.join(this.options.home, "sessions", newSession, "session.jsonl"), profile, model, task.thinking, task.cwd, at);
           this.store.run("UPDATE tasks SET agora_session_id=?,profile=?,model=?,recovery_attempts=0 WHERE id=?", newSession, profile, model, taskId);
-          this.store.run("UPDATE tasks SET convener_id=?,requested_by=? WHERE parent_task_id=?", child, child, taskId);
+          this.store.run("UPDATE tasks SET convener_id=?,requested_by=? WHERE parent_task_id=? AND taken_over_from IS NULL", child, child, taskId);
           this.store.run("UPDATE requests SET target_id=? WHERE target_id=?", child, oldSession.principal_id);
           this.store.run("UPDATE requests SET asker_id=? WHERE asker_id=? AND state IN ('open','escalated')", child, oldSession.principal_id);
           this.store.run("UPDATE outbox SET recipient_id=? WHERE recipient_id=? AND acked_at IS NULL", child, oldSession.principal_id);
@@ -860,14 +869,28 @@ export class TaskManager {
   }
   takeOver(conn: Connection, taskId: string, body: Record<string, unknown>, proof?: UserExecutionProof) {
     this.auth.requireAgent(conn);
-    const task = this.store.task(taskId);
-    this.expected(task, body);
-    this.acl.task(conn, task, 'takeover', body, proof);
-    this.budgets.atomic(() => {
-      this.store.run("UPDATE tasks SET convener_id='user',revision=revision+1,updated_at=? WHERE id=?", now(), taskId);
+    this.store.transaction(() => {
+      const task = this.store.task(taskId);
+      this.acl.task(conn, task, 'takeover', body, proof);
+      this.expected(task, body);
+      if (task.convener_id === 'user') return;
+      // 已排队的操作在执行时重检 ACL；已开始的相关操作须先退出线性化区间。
+      const related = this.store.all<{ id: string }>(`WITH RECURSIVE
+        ancestors(id,parent_task_id) AS (SELECT id,parent_task_id FROM tasks WHERE id=? UNION ALL SELECT t.id,t.parent_task_id FROM tasks t JOIN ancestors a ON t.id=a.parent_task_id),
+        subtree(id) AS (SELECT ? UNION ALL SELECT t.id FROM tasks t JOIN subtree s ON t.parent_task_id=s.id)
+        SELECT id FROM ancestors UNION SELECT id FROM subtree`, taskId, taskId);
+      if (related.some(row => this.activeControls.has(row.id)) || this.ancestorsStopping(task)) throw new AgoraError(409, 'task_busy', '任务或相关任务正在执行控制操作，请稍后重试接管');
+      this.store.run("UPDATE tasks SET taken_over_from=convener_id,convener_id='user',revision=revision+1,updated_at=? WHERE id=?", now(), taskId);
       this.store.run("UPDATE agora_sessions SET convener_id='user',revision=revision+1 WHERE id=?", task.agora_session_id);
       this.store.run("UPDATE worktrees SET owner_id='user' WHERE task_id=?", taskId);
+      const key = `task:${taskId}:taken_over:${id('op')}`;
+      this.store.notice(task.convener_id, key, 'task:taken_over', {
+        taskId, generation: task.generation, title: task.title, summary: '任务已被用户接管', notify: 'wake', triggerTurn: true,
+      });
       this.store.change('task', taskId);
+      queueMicrotask(() => {
+        if (this.store.get('SELECT id FROM outbox WHERE recipient_id=? AND dedupe_key=?', task.convener_id, key)) this.wake(task.convener_id);
+      });
     });
     return { ...taskSummary(this.store.task(taskId)), budget: this.budgets.view(this.store.task(taskId)) };
   }

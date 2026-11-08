@@ -21,10 +21,21 @@ export class AccessControl {
     if (conn.type !== 'agent:main') return false;
     let ancestor = task;
     while (ancestor.parent_task_id) {
+      if (ancestor.taken_over_from) return false;
       ancestor = this.store.task(ancestor.parent_task_id);
       if (ancestor.convener_id === conn.principalId) return true;
     }
     return false;
+  }
+  private taskBoundary(conn: Connection, task: TaskRow): void {
+    if (isHost(conn)) return;
+    let current = task, inside = false;
+    while (true) {
+      if (this.store.session(current.agora_session_id).principal_id === conn.principalId) inside = true;
+      if (current.taken_over_from && !inside) throw new AgoraError(403, 'task_taken_over', '任务已被用户接管，原召集人不能管理该任务或其子树', { taskId: current.id });
+      if (!current.parent_task_id) return;
+      current = this.store.task(current.parent_task_id);
+    }
   }
   reachable(principalId: string): boolean {
     const principal = this.store.principal(principalId);
@@ -33,15 +44,23 @@ export class AccessControl {
   }
   task(conn: Connection, task: TaskRow, action: TaskAction, body: Record<string, unknown> = {}, proof?: UserExecutionProof): void {
     this.actor(conn);
+    this.taskBoundary(conn, task);
+    // 整树操作在任何停止或预算副作用前检查接管边界。
+    if (!isHost(conn) && (action === 'stop' || action === 'limits' && typeof body.maxTokens === 'number' && body.maxTokens < task.max_tokens)) {
+      const boundaries = this.store.all<TaskRow>(`WITH RECURSIVE subtree(id) AS (
+        SELECT ? UNION ALL SELECT t.id FROM tasks t JOIN subtree s ON t.parent_task_id=s.id
+      ) SELECT t.* FROM tasks t JOIN subtree s ON t.id=s.id WHERE t.taken_over_from IS NOT NULL`, task.id);
+      for (const boundary of boundaries) this.taskBoundary(conn, boundary);
+    }
     if (isHost(conn)) {
       if (['status', 'result', 'stop', 'cleanup'].includes(action)) return;
       if (action === 'takeover') {
-        if (task.convener_id !== 'user' && this.reachable(task.convener_id)) throw new AgoraError(403, 'convener_reachable', '直接召集人仍可达，不能接管任务');
-        if (!proof || proof.confirmedBy !== 'device') confirmationRequired('agora.task.takeover', task.id, body);
+        if (!proof) confirmationRequired('agora.task.takeover', task.id, body);
         return;
       }
+      if (action === 'steer' && task.convener_id === 'user') return;
       if (action === 'recover' || action === 'limits') {
-        if (task.convener_id !== 'user') throw new AgoraError(403, this.reachable(task.convener_id) ? 'convener_reachable' : 'takeover_required', '请由直接召集人操作；不可达时须先由用户确认接管');
+        if (task.convener_id !== 'user') throw new AgoraError(403, this.reachable(task.convener_id) ? 'convener_reachable' : 'takeover_required', '请由直接召集人操作，或先由用户显式接管');
         if (action === 'recover' && !proof) confirmationRequired('agora.task.recover', task.id, body);
         return;
       }

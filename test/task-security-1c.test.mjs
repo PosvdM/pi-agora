@@ -20,12 +20,6 @@ async function until(fn) {
   do { const value = fn(); if (value) return value; await delay(2); } while (Date.now() < deadline);
   assert.fail('等待模拟运行超时');
 }
-// 生产迁移由 schema 任务提供；这里只为尚处于 v4 的工作树建立测试兼容列。
-function fixtureSchema(store) {
-  if (!store.all('PRAGMA table_info(tasks)').some(c => c.name === 'max_tokens')) store.db.exec('ALTER TABLE tasks ADD COLUMN max_tokens INTEGER NOT NULL DEFAULT 2000000');
-  if (!store.all('PRAGMA table_info(requests)').some(c => c.name === 'answer_proof')) store.db.exec('ALTER TABLE requests ADD COLUMN answer_proof TEXT');
-  store.db.exec('CREATE TABLE IF NOT EXISTS budget_grants(id TEXT PRIMARY KEY,resource_id TEXT NOT NULL,principal_id TEXT NOT NULL,day TEXT NOT NULL,tokens INTEGER NOT NULL,confirmed_by TEXT NOT NULL,created_at TEXT NOT NULL)');
-}
 class Driver {
   handles = [];
   async start(spec) {
@@ -64,7 +58,7 @@ class Driver {
 }
 async function setup(t, options = {}) {
   const home = await mkdtemp(join(tmpdir(), 'agora-security-1c-'));
-  const store = await openStore(home); fixtureSchema(store);
+  const store = await openStore(home);
   const auth = await Auth.create(store, 'test-instance'), driver = new Driver();
   const tasks = new TaskManager(store, auth, driver, { home, instanceId: 'test-instance', url: 'http://test', maxTaskDepth: 4, maxConcurrentRuns: 8, taskLimitDefaults: { maxTokens: 1000 }, agentLimitCap: { perTaskFactor: 2, dailyTokens: 10000 }, ...options });
   driver.auth = auth; driver.tasks = tasks; tasks.startQueue();
@@ -147,26 +141,198 @@ test('1c 提问只允许 asker/target 访问，逐级转交后不能撤销用户
   assert.equal(answered.answeredBy, 'user');
 });
 
-test('1c host 不得恢复可达 agent，不可达资源先签名接管', async t => {
+test('1c host 不得直接恢复 Agent 任务，用户可显式签名接管可达召集人的任务', async t => {
   const f = await setup(t), m = await f.main(), root = await f.spawn(m), p = await f.handle(root);
   await p.stop(); await f.tasks.flush();
   assert.equal(f.store.task(root.taskId).status, 'interrupted');
   await assert.rejects(f.tasks.recover(f.host, root.taskId, { mode: 'resume' }, signed), errorCode('convener_reachable'));
-  assert.throws(() => f.tasks.takeOver(f.host, root.taskId, {}, signed), errorCode('convener_reachable'));
-  f.auth.release(m);
-  await assert.rejects(f.tasks.recover(f.host, root.taskId, { mode: 'resume' }, signed), errorCode('takeover_required'));
-  assert.throws(() => f.tasks.takeOver(f.host, root.taskId, {}, unsigned), errorCode('confirmation_required'));
-  await f.tasks.takeOver(f.host, root.taskId, {}, signed);
+  assert.throws(() => f.tasks.takeOver(f.host, root.taskId, { user: true, proof: signed }), errorCode('confirmation_required'));
+  const taken = f.tasks.takeOver(f.host, root.taskId, {}, signed);
+  assert.equal(typeof taken.then, 'undefined');
+  assert.equal(f.store.task(root.taskId).taken_over_from, m.principalId);
   await assert.rejects(f.tasks.recover(f.host, root.taskId, { mode: 'resume' }), e => e.code === 'confirmation_required' && e.details.action === 'agora.task.recover');
   await f.tasks.recover(f.host, root.taskId, { mode: 'resume' }, signed);
   await f.handle(root);
 });
 
-test('1c 活跃 ready child 的直接任务不能被 host 接管或恢复', async t => {
+test('1c 活跃 ready child 的任务须显式接管，可信 none proof 允许接管', async t => {
   const f = await setup(t), m = await f.main(), root = await f.spawn(m), p = await f.handle(root), child = await f.spawn(p.conn), c = await f.handle(child);
   await c.stop(); await f.tasks.flush();
   await assert.rejects(f.tasks.recover(f.host, child.taskId, { mode: 'resume' }, signed), errorCode('convener_reachable'));
-  assert.throws(() => f.tasks.takeOver(f.host, child.taskId, {}, signed), errorCode('convener_reachable'));
+  f.tasks.takeOver(f.host, child.taskId, {}, unsigned);
+  assert.equal(f.store.task(child.taskId).taken_over_from, p.conn.principalId);
+  await f.tasks.recover(f.host, child.taskId, { mode: 'resume' }, unsigned);
+  await f.handle(child);
+});
+
+test('1c 接管统一阻断旧 Agent 管理子树，任务 runtime 仍可管理自己的下级', async t => {
+  const f = await setup(t), m = await f.main(), root = await f.spawn(m), p = await f.handle(root);
+  const child = await f.spawn(p.conn), c = await f.handle(child), grandchild = await f.spawn(c.conn), g = await f.handle(grandchild);
+  await f.tasks.flush();
+  p.emit(usage('parent')); c.emit(usage('child'));
+  const grants = f.store.get('SELECT SUM(tokens) AS n FROM budget_grants').n;
+  f.tasks.takeOver(f.host, child.taskId, {}, signed);
+  assert.equal(f.store.task(child.taskId).parent_task_id, root.taskId);
+  assert.equal(f.store.usage(root.taskId, true).inputTokens, 20);
+  c.emit(usage('child-after-takeover'));
+  assert.equal(f.store.usage(root.taskId, true).inputTokens, 30);
+  assert.equal(f.store.get('SELECT SUM(tokens) AS n FROM budget_grants').n, grants);
+  for (const actor of [m, p.conn]) for (const task of [child, grandchild]) {
+    for (const action of ['steer', 'cleanup', 'recover', 'stop']) {
+      await assert.rejects(f.tasks[action](actor, task.taskId, { message: '旧召集人', mode: 'resume', expectedRevision: 0 }), errorCode('task_taken_over'));
+    }
+    assert.throws(() => f.tasks.limits(actor, task.taskId, { maxTokens: 500 }), errorCode('task_taken_over'));
+    assert.throws(() => f.tasks.status(actor, task.taskId), errorCode('task_taken_over'));
+  }
+  assert.equal(f.tasks.status(c.conn, child.taskId).prompt, undefined);
+  await f.tasks.steer(f.host, child.taskId, { message: '用户管理接管任务' });
+  await f.tasks.steer(c.conn, grandchild.taskId, { message: 'runtime 管理下级' });
+  f.tasks.limits(c.conn, grandchild.taskId, { maxTokens: 900 });
+  await g.stop(); await f.tasks.flush();
+  await f.tasks.recover(c.conn, grandchild.taskId, { mode: 'resume' });
+  const resumed = await f.handle(grandchild);
+  await f.tasks.stop(c.conn, grandchild.taskId, {});
+  await f.tasks.cleanup(c.conn, grandchild.taskId, {});
+  assert.equal(resumed.stopped, true);
+  const next = await f.spawn(c.conn); await f.handle(next);
+  assert.equal(f.store.task(next.taskId).parent_task_id, child.taskId);
+});
+
+test('1c 祖先停止和调低预算在副作用前拒绝跨接管边界', async t => {
+  const f = await setup(t), m = await f.main(), root = await f.spawn(m), p = await f.handle(root);
+  const child = await f.spawn(p.conn), c = await f.handle(child), sibling = await f.spawn(p.conn), s = await f.handle(sibling);
+  await f.tasks.flush();
+  f.tasks.takeOver(f.host, child.taskId, {}, signed);
+  const revision = f.store.task(root.taskId).revision;
+  await assert.rejects(f.tasks.stop(m, root.taskId, {}), errorCode('task_taken_over'));
+  await assert.rejects(f.tasks.recover(m, root.taskId, { mode: 'abandon' }), errorCode('task_taken_over'));
+  assert.throws(() => f.tasks.limits(m, root.taskId, { maxTokens: 1 }), errorCode('task_taken_over'));
+  assert.equal(f.store.task(root.taskId).revision, revision);
+  for (const task of [root, child, sibling]) {
+    assert.equal(f.store.task(task.taskId).status, 'running');
+    assert.equal(f.store.session(task.agoraSessionId).control_state, null);
+  }
+  for (const h of [p, c, s]) {
+    assert.equal(h.stopped, false);
+    assert.equal(h.commands.some(c => ['abort', 'clear_queue'].includes(c.type)), false);
+  }
+  f.tasks.limits(m, root.taskId, { maxTokens: 1100 }, signed);
+  await f.tasks.stop(p.conn, sibling.taskId, {});
+  assert.equal(s.stopped, true);
+  await f.tasks.stop(f.host, root.taskId, {});
+  assert.equal(c.stopped, true);
+});
+
+test('1c 已排队的旧 Agent 控制及祖先停止在接管后重新检查权限', async t => {
+  const f = await setup(t), m = await f.main(), root = await f.spawn(m), p = await f.handle(root);
+  const child = await f.spawn(p.conn), c = await f.handle(child);
+  await f.tasks.flush();
+  const pending = Promise.allSettled([
+    f.tasks.steer(p.conn, child.taskId, { message: '已排队返工' }),
+    f.tasks.cleanup(p.conn, child.taskId, {}),
+    f.tasks.recover(p.conn, child.taskId, { mode: 'resume' }),
+    f.tasks.stop(p.conn, child.taskId, {}),
+    f.tasks.stop(m, root.taskId, {}),
+  ]);
+  f.tasks.takeOver(f.host, child.taskId, {}, signed);
+  for (const result of await pending) {
+    assert.equal(result.status, 'rejected'); assert.equal(result.reason.code, 'task_taken_over');
+  }
+  assert.equal(c.stopped, false); assert.equal(p.stopped, false);
+  assert.equal(c.commands.some(c => c.message?.includes('已排队返工')), false);
+});
+
+test('1c 嵌套接管阻断上级 runtime，内部 runtime 保留管理权限', async t => {
+  const f = await setup(t), m = await f.main(), root = await f.spawn(m), p = await f.handle(root);
+  const child = await f.spawn(p.conn), c = await f.handle(child), grandchild = await f.spawn(c.conn), g = await f.handle(grandchild);
+  const leaf = await f.spawn(g.conn); await f.handle(leaf); await f.tasks.flush();
+  f.tasks.takeOver(f.host, child.taskId, {}, signed);
+  f.tasks.takeOver(f.host, grandchild.taskId, {}, signed);
+  await assert.rejects(f.tasks.stop(c.conn, leaf.taskId, {}), errorCode('task_taken_over'));
+  assert.throws(() => f.tasks.limits(c.conn, grandchild.taskId, { maxTokens: 500 }), errorCode('task_taken_over'));
+  await f.tasks.steer(g.conn, leaf.taskId, { message: '内层 runtime 继续管理' });
+  await f.tasks.stop(g.conn, leaf.taskId, {});
+  assert.equal(f.store.task(leaf.taskId).status, 'stopped');
+});
+
+test('1c 接管保留祖先预算归属，正常用量耗尽仍暂停整树', async t => {
+  const f = await setup(t), m = await f.main(), root = await f.spawn(m, { maxTokens: 60 }), p = await f.handle(root);
+  const child = await f.spawn(p.conn), c = await f.handle(child); await f.tasks.flush();
+  f.tasks.takeOver(f.host, child.taskId, {}, signed);
+  p.emit(usage('parent')); c.emit(usage('child'));
+  await f.tasks.flush();
+  assert.equal(f.store.task(root.taskId).status, 'budget_paused');
+  assert.equal(f.store.task(child.taskId).status, 'budget_paused');
+  assert.equal(f.store.usage(root.taskId, true).inputTokens, 20);
+  assert.equal(f.store.get('SELECT COUNT(*) AS n FROM budget_grants').n, 1);
+});
+
+test('1c 接管遇到正在执行的控制操作时拒绝，操作结束后允许重试', async t => {
+  const f = await setup(t), m = await f.main(), root = await f.spawn(m), h = await f.handle(root);
+  let release;
+  h.barrier = { type: 'clear_queue', promise: new Promise(resolve => { release = resolve; }) };
+  const pending = f.tasks.steer(m, root.taskId, { message: '中断返工', interrupt: true });
+  await until(() => h.commands.some(c => c.type === 'clear_queue'));
+  assert.throws(() => f.tasks.takeOver(f.host, root.taskId, {}, signed), errorCode('task_busy'));
+  assert.equal(f.store.task(root.taskId).convener_id, m.principalId);
+  release(); await pending;
+  f.tasks.takeOver(f.host, root.taskId, {}, signed);
+  assert.equal(f.store.task(root.taskId).convener_id, 'user');
+});
+
+test('1c 接管与 outbox 同步复用签名事务，回滚不唤醒且通知可重投', async t => {
+  const f = await setup(t), m = await f.main(), root = await f.spawn(m), p = await f.handle(root);
+  const child = await f.spawn(p.conn); await f.handle(child); await f.tasks.flush();
+  const wakes = [];
+  f.tasks.wake = principal => wakes.push(principal);
+  const revision = f.store.task(child.taskId).revision;
+  assert.throws(() => f.store.transaction(() => {
+    const taken = f.tasks.takeOver(f.host, child.taskId, { expectedRevision: revision }, signed);
+    assert.equal(typeof taken.then, 'undefined');
+    assert.equal(f.store.get("SELECT COUNT(*) AS n FROM outbox WHERE kind='task:taken_over'").n, 1);
+    assert.equal(wakes.length, 0);
+    throw new Error('模拟接管事务回滚');
+  }), /模拟接管事务回滚/);
+  await delay(0);
+  assert.equal(wakes.length, 0);
+  assert.equal(f.store.task(child.taskId).taken_over_from, null);
+  assert.equal(f.store.task(child.taskId).convener_id, p.conn.principalId);
+  assert.equal(f.store.get("SELECT COUNT(*) AS n FROM outbox WHERE kind='task:taken_over'").n, 0);
+  // 同一轮事件循环内回滚再提交，回滚回调不得借用重试的通知唤醒。
+  assert.throws(() => f.store.transaction(() => {
+    f.tasks.takeOver(f.host, child.taskId, {}, signed);
+    throw new Error('立即重试前回滚');
+  }), /立即重试前回滚/);
+  f.store.transaction(() => f.tasks.takeOver(f.host, child.taskId, { expectedRevision: revision }, unsigned));
+  assert.equal(wakes.length, 0);
+  await delay(0);
+  assert.deepEqual(wakes, [p.conn.principalId]);
+  const notice = f.store.takeInbox(p.conn.principalId, 0).find(n => n.kind === 'task:taken_over');
+  assert.equal(JSON.parse(notice.payload).summary, '任务已被用户接管');
+  assert.equal(JSON.parse(notice.payload).triggerTurn, true);
+  assert.equal(f.store.takeInbox(p.conn.principalId, 0).find(n => n.id === notice.id).id, notice.id);
+  f.tasks.takeOver(f.host, child.taskId, {}, signed);
+  await delay(0);
+  assert.deepEqual(wakes, [p.conn.principalId]);
+  assert.equal(f.store.get("SELECT COUNT(*) AS n FROM outbox WHERE kind='task:taken_over'").n, 1);
+  assert.equal(f.store.get('SELECT COUNT(*) AS n FROM security_audit').n, 0);
+});
+
+test('1c 不可达召集人仍需显式接管，祖先替换不能收回已接管下级', async t => {
+  const f = await setup(t), m = await f.main(), root = await f.spawn(m), p = await f.handle(root);
+  const child = await f.spawn(p.conn); await f.handle(child); await f.tasks.flush();
+  f.tasks.takeOver(f.host, child.taskId, {}, signed);
+  await p.stop(); await f.tasks.flush();
+  await f.tasks.recover(m, root.taskId, { mode: 'replace' });
+  const replacement = await f.handle(f.tasks.status(m, root.taskId));
+  assert.equal(f.store.task(child.taskId).convener_id, 'user');
+  assert.equal(f.store.task(child.taskId).taken_over_from, p.conn.principalId);
+  await assert.rejects(f.tasks.stop(replacement.conn, child.taskId, {}), errorCode('task_taken_over'));
+  const other = await f.spawn(m), h = await f.handle(other); await h.stop(); await f.tasks.flush();
+  f.auth.release(m);
+  await assert.rejects(f.tasks.recover(f.host, other.taskId, { mode: 'resume' }, signed), errorCode('takeover_required'));
+  f.tasks.takeOver(f.host, other.taskId, {}, unsigned);
+  await f.tasks.recover(f.host, other.taskId, { mode: 'resume' }, unsigned); await f.handle(other);
 });
 
 test('1c 多 principal 并发授予共用日账本，none proof 不能绕过封顶', async t => {
@@ -343,7 +509,7 @@ test('1c 尚未启动的预算暂停任务恢复仍发送原任务书', async t 
 test('1c 重启读取持久日账本，日键使用本地日历日', async t => {
   const home = await mkdtemp(join(tmpdir(), 'agora-budget-restart-'));
   t.after(() => rm(home, { recursive: true, force: true }));
-  let store = await openStore(home); fixtureSchema(store);
+  let store = await openStore(home);
   const options = { taskLimitDefaults: { maxTokens: 100 }, agentLimitCap: { perTaskFactor: 2, dailyTokens: 100 } };
   const conn = { type: 'agent:main', principalId: 'main-one' };
   store.transaction(() => new Budgets(store, options).grant(conn, 'first', 70, 70, {}, 'spawn'));

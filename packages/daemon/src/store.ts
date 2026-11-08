@@ -114,6 +114,7 @@ CREATE TABLE usage_records (
 CREATE INDEX usage_task ON usage_records(task_id,generation,seq);
 `, String.raw`
 ALTER TABLE tasks ADD COLUMN max_tokens INTEGER NOT NULL DEFAULT 2000000;
+ALTER TABLE tasks ADD COLUMN taken_over_from TEXT;
 ALTER TABLE requests ADD COLUMN answer_proof TEXT;
 CREATE TABLE budget_grants (
   id TEXT PRIMARY KEY, resource_id TEXT NOT NULL, principal_id TEXT NOT NULL,
@@ -156,7 +157,7 @@ export interface TaskRow {
   parent_task_id: string | null; depth: number; depth_limit: number; child_limit: number | null;
   recovery_attempts: number; pending_message: string | null;
   skills: string; skill_paths: string; quota_resume_at: string | null; quota_notified_at: string | null;
-  max_tokens: number;
+  max_tokens: number; taken_over_from: string | null;
 }
 export interface SessionRow {
   id: string; task_id: string; principal_id: string; session_file: string;
