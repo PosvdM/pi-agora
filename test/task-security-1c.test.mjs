@@ -656,6 +656,132 @@ test('1c 祖先预算暂停取消 quota 自动恢复，增额不会唤醒下级'
   assert.equal(f.store.task(child.taskId).status, 'budget_paused');
 });
 
+for (const reclaimed of [false, true]) test(`1c 静默预算事件唤醒单名额 waiting_children 父回合（已回收=${reclaimed}）`, async t => {
+  const f = await setup(t, { maxConcurrentRuns: 1, idleReclaimMs: reclaimed ? 10 : 60_000 }), m = await f.main();
+  const parent = await f.spawn(m), p = await f.handle(parent);
+  const child = await f.spawn(p.conn, { maxTokens: 30, notify: 'silent' });
+  await f.settle(p);
+  const c = await f.handle(child);
+  assert.equal(f.store.task(parent.taskId).status, 'waiting_children');
+  assert.equal(f.tasks.activeCount(), 1);
+  if (reclaimed) await until(() => p.stopped);
+  const pendingStop = new Promise(resolve => { c.releaseStop = resolve; });
+  c.barrier = { type: 'clear_queue', promise: pendingStop };
+  c.emit(usage('budget-child'));
+  await until(() => c.commands.some(command => command.type === 'clear_queue'));
+  // 子运行未释放唯一名额时，父回合只能排队。
+  assert.equal(f.store.task(parent.taskId).status, 'waiting_children');
+  assert.equal(f.tasks.activeCount(), 1);
+  c.releaseStop();
+  await until(() => f.store.task(parent.taskId).status === 'running');
+  const parentRun = reclaimed ? await until(() => f.driver.handles.findLast(h => h.spec.agoraSessionId === parent.agoraSessionId && h.ready && !h.stopped)) : p;
+  assert.equal(f.driver.handles.filter(h => h.spec.agoraSessionId === parent.agoraSessionId).length, reclaimed ? 2 : 1);
+  assert.equal(f.tasks.inboxSilentOnly(parentRun.conn), false);
+  const notice = f.store.takeInbox(parentRun.conn.principalId, 0).find(n => n.kind === 'task:budget_paused');
+  assert.ok(notice);
+  const payload = JSON.parse(notice.payload);
+  assert.equal(payload.notify, 'wake'); assert.equal(payload.triggerTurn, true);
+  assert.equal(f.store.task(child.taskId).status, 'budget_paused');
+  assert.equal(f.tasks.activeCount(), 1);
+  await f.tasks.stop(parentRun.conn, child.taskId, {});
+  await f.settle(parentRun);
+  assert.equal(f.store.task(parent.taskId).status, 'completed');
+});
+
+test('1c 下级预算事件保留通知但不能自动恢复 quota_paused 父任务', async t => {
+  const f = await setup(t, { quotaRecovery: 'auto' }), m = await f.main(), parent = await f.spawn(m), p = await f.handle(parent);
+  const child = await f.spawn(p.conn, { maxTokens: 30, notify: 'silent' }), c = await f.handle(child);
+  p.emit({ type: 'quota_exhausted', resumeAt: null, reason: '等待用户处理额度' });
+  await f.settle(p);
+  assert.equal(f.store.task(parent.taskId).status, 'quota_paused');
+  c.emit(usage('child-cap')); await f.tasks.flush();
+  assert.equal(f.store.task(parent.taskId).status, 'quota_paused');
+  assert.equal(f.store.task(child.taskId).status, 'budget_paused');
+  assert.equal(f.driver.handles.length, 2); assert.equal(f.tasks.activeCount(), 0);
+  const notice = f.store.takeInbox(p.conn.principalId, 0).find(n => n.kind === 'task:budget_paused');
+  assert.equal(JSON.parse(notice.payload).triggerTurn, true);
+});
+
+test('1c 同代两次预算暂停分别投递确认，重复用量和尾量去重，重启保留事件', async t => {
+  const f = await setup(t), m = await f.main(), root = await f.spawn(m, { maxTokens: 30 });
+  const firstRun = await f.handle(root);
+  firstRun.onAbort = () => { firstRun.emit(usage('first-tail')); firstRun.emit(usage('first-tail')); };
+  firstRun.emit(usage('first')); firstRun.emit(usage('first'));
+  await f.tasks.flush();
+  const first = f.store.takeInbox(m.principalId, 0).find(n => n.kind === 'task:budget_paused');
+  assert.ok(first);
+  f.store.run("UPDATE outbox SET acked_at=datetime('now') WHERE id=?", first.id);
+  f.tasks.limits(m, root.taskId, { maxTokens: 100 });
+  await f.tasks.recover(m, root.taskId, { mode: 'resume' });
+  const secondRun = await f.handle(root);
+  secondRun.onAbort = () => { secondRun.emit(usage('second-tail')); secondRun.emit(usage('second-tail')); };
+  secondRun.emit(usage('second')); secondRun.emit(usage('second'));
+  await f.tasks.flush();
+  const second = f.store.takeInbox(m.principalId, 0).find(n => n.kind === 'task:budget_paused');
+  assert.ok(second); assert.notEqual(second.id, first.id); assert.notEqual(second.dedupe_key, first.dedupe_key);
+  const firstPayload = JSON.parse(first.payload), secondPayload = JSON.parse(second.payload);
+  assert.equal(firstPayload.generation, 1); assert.equal(secondPayload.generation, 1);
+  assert.equal(f.store.task(root.taskId).generation, 1);
+  assert.ok(secondPayload.revision > firstPayload.revision);
+  for (const notice of [first, second]) {
+    const payload = JSON.parse(notice.payload);
+    assert.equal(notice.dedupe_key, `task:${root.taskId}:1:budget:${root.taskId}:${payload.revision}`);
+    assert.equal(payload.exhaustedTaskId, root.taskId);
+  }
+  assert.equal(f.store.get("SELECT COUNT(*) AS n FROM outbox WHERE kind='task:budget_paused'").n, 2);
+  assert.equal(f.store.usage(root.taskId).requests, 4);
+  await f.tasks.shutdown(true, 1000);
+  // 用新的 Store、Auth 和 TaskManager 读取持久记录，不继承运行内存。
+  const store = await openStore(f.home), auth = await Auth.create(store, 'restart-budget'), driver = new Driver();
+  const tasks = new TaskManager(store, auth, driver, { home: f.home, instanceId: 'restart-budget', url: 'http://test' });
+  driver.auth = auth; driver.tasks = tasks;
+  try {
+    await tasks.recoverPreviousRuns(); tasks.startQueue(); await tasks.flush();
+    assert.equal(driver.handles.length, 0);
+    assert.equal(store.task(root.taskId).status, 'budget_paused');
+    const remaining = store.takeInbox(m.principalId, 0).filter(n => n.kind === 'task:budget_paused');
+    assert.deepEqual(remaining.map(n => n.id), [second.id]);
+    assert.equal(store.takeInbox(m.principalId, 0).find(n => n.id === second.id).dedupe_key, second.dedupe_key);
+    store.run("UPDATE outbox SET acked_at=datetime('now') WHERE id=?", second.id);
+    tasks.reconcileBudgets(); await tasks.flush();
+    assert.equal(store.get("SELECT COUNT(*) AS n FROM outbox WHERE kind='task:budget_paused'").n, 2);
+    assert.equal(store.takeInbox(m.principalId, 0).filter(n => n.kind === 'task:budget_paused').length, 0);
+  } finally { await tasks.shutdown(true, 1000); store.close(); }
+  const reopened = await openStore(f.home);
+  try {
+    assert.equal(reopened.get("SELECT COUNT(*) AS n FROM outbox WHERE kind='task:budget_paused' AND acked_at IS NOT NULL").n, 2);
+    assert.equal(reopened.takeInbox(m.principalId, 0).filter(n => n.kind === 'task:budget_paused').length, 0);
+  } finally { reopened.close(); }
+});
+
+test('1c 预算签名事务回滚不唤醒、不停止，立即重试仅提交事件生效', async t => {
+  const f = await setup(t), m = await f.main(), parent = await f.spawn(m), p = await f.handle(parent);
+  const child = await f.spawn(p.conn, { maxTokens: 100, notify: 'silent' }), c = await f.handle(child);
+  c.emit(usage('before-limits')); await f.settle(p);
+  const wakes = [];
+  f.tasks.wake = principal => wakes.push(principal);
+  const pause = () => f.tasks.limits(p.conn, child.taskId, { maxTokens: 10 }, signed);
+  const rollback = () => assert.throws(() => f.store.transaction(() => {
+    pause();
+    assert.equal(f.store.task(child.taskId).status, 'budget_paused');
+    assert.equal(f.store.get("SELECT COUNT(*) AS n FROM outbox WHERE kind='task:budget_paused'").n, 1);
+    assert.equal(c.stopped, false); assert.equal(wakes.length, 0);
+    throw new Error('预算事务回滚');
+  }), /预算事务回滚/);
+  rollback(); await delay(0); await f.tasks.flush();
+  assert.equal(c.stopped, false); assert.deepEqual(wakes, []);
+  assert.equal(f.store.task(child.taskId).status, 'running');
+  assert.equal(f.store.get("SELECT COUNT(*) AS n FROM outbox WHERE kind='task:budget_paused'").n, 0);
+  assert.equal(f.tasks.inboxAllowed(c.conn), true);
+  rollback();
+  f.store.transaction(pause);
+  assert.equal(c.stopped, false); assert.deepEqual(wakes, []);
+  await delay(0); await f.tasks.flush();
+  assert.equal(c.stopped, true);
+  assert.deepEqual(wakes, [p.conn.principalId]);
+  assert.equal(f.store.get("SELECT COUNT(*) AS n FROM outbox WHERE kind='task:budget_paused'").n, 1);
+});
+
 test('1c child 不能用 proof 放宽祖先预算、权限或跨级恢复', async t => {
   const f = await setup(t), m = await f.main(), root = await f.spawn(m, { maxTokens: 60 }), p = await f.handle(root), child = await f.spawn(p.conn), c = await f.handle(child);
   await assert.rejects(f.spawn(p.conn, { maxTokens: 61 }, signed), errorCode('budget_limit_exceeded'));
