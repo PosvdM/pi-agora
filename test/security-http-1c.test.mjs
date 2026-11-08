@@ -133,6 +133,29 @@ test('待确认按发起主会话隔离，host 可拒绝 CLI 的待确认且不�
   assert.ok(audit.items.some(row => row.outcome === 'cancelled'));
 });
 
+test('用户签名接管同事务转交旧提问，旧 Agent 与旧 revision 的答复均不能执行', async t => {
+  const f = await setup(t), device = signer();
+  await f.pair(device);
+  const task = await f.main.request('POST', '/v1/tasks', { model: 'test/model', profile: 'explore', prompt: '接管提问接口核对', cwd: f.home });
+  await f.daemon.tasks.flush();
+  const session = f.daemon.store.session(task.agoraSessionId), main = f.daemon.auth.authenticate(`Bearer ${f.main.token}`);
+  const at = new Date().toISOString(), requestId = `rq_${randomUUID()}`;
+  f.daemon.store.run('INSERT INTO requests(id,asker_id,target_id,task_id,questions,created_at,updated_at) VALUES(?,?,?,?,?,?,?)', requestId, session.principal_id, main.principalId, task.taskId, JSON.stringify(questions), at, at);
+  const staleAnswer = (await f.cli.request('POST', `/v1/requests/${requestId}/answer`, { answers, expectedRevision: 1 })).confirmation;
+  const takeover = (await f.cli.request('POST', `/v1/tasks/${task.taskId}/takeover`, {})).confirmation;
+  const taken = await f.http(f.pane, 'POST', `/v1/confirmations/${takeover.confirmationId}/sign`, device.sign(takeover.challenge));
+  assert.equal(taken.status, 200, JSON.stringify(taken.body));
+  const row = await f.cli.request('GET', `/v1/requests/${requestId}`);
+  assert.equal(row.targetId, 'user'); assert.equal(row.state, 'escalated'); assert.equal(row.revision, 2);
+  const old = await f.http(f.main, 'POST', `/v1/requests/${requestId}/answer`, { answers, expectedRevision: 1 });
+  assert.equal(old.status, 403); assert.equal(old.body.error.code, 'task_taken_over');
+  assert.equal((await f.http(f.pane, 'POST', `/v1/confirmations/${staleAnswer.confirmationId}/sign`, device.sign(staleAnswer.challenge))).status, 409);
+  const current = (await f.cli.request('POST', `/v1/requests/${requestId}/answer`, { answers, expectedRevision: row.revision })).confirmation;
+  const signed = await f.http(f.pane, 'POST', `/v1/confirmations/${current.confirmationId}/sign`, device.sign(current.challenge));
+  assert.equal(signed.status, 200, JSON.stringify(signed.body));
+  assert.equal(signed.body.answeredBy, 'user');
+});
+
 test('主会话租约接管必须先确认，旧签名不能覆盖已变化的租约', async t => {
   const f = await setup(t), device = signer();
   await f.pair(device);

@@ -379,6 +379,7 @@ export class Security {
   }
   private verified(row: ConfirmationRow | undefined, body: SignatureBody) {
     if (!row) fail("not_found", "待确认不存在", 404);
+    if (row.state === "expired") fail("confirmation_expired", "待确认已过期", 410);
     if (row.state !== "pending" || row.consumed_at !== null) fail("already_handled", "待确认已处理", 409);
     if (row.expires_at <= now()) fail("confirmation_expired", "待确认已过期", 410);
     const params = record(JSON.parse(row.params)), challenge = JSON.parse(row.challenge) as UserChallenge;

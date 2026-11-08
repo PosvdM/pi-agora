@@ -170,7 +170,10 @@ test('D15 额度暂停不失败、不占名额，到期通知上级并附上下�
   p.emit(usage('p')); c.emit(usage('c', 2));
   const reset = new Date(Date.now() + 200).toISOString(); await pause(f, c, reset); await pause(f, p, reset);
   assert.equal(f.daemon.store.task(parent.taskId).status, 'quota_paused'); assert.equal(f.daemon.store.task(child.taskId).status, 'quota_paused'); assert.equal(f.daemon.tasks.activeCount(), 0);
-  await assert.rejects(main.request('POST', `/v1/tasks/${parent.taskId}/recover`, { mode: 'resume' }), err => err.code === 'quota_not_reset');
+  // 两次 HTTP 暂停在慢 runner 上可能超过 200ms；边界断言固定业务时钟，不放宽生产等待。
+  const clock = t.mock.method(Date, 'now', () => Date.parse(reset) - 1);
+  try { await assert.rejects(main.request('POST', `/v1/tasks/${parent.taskId}/recover`, { mode: 'resume' }), err => err.code === 'quota_not_reset'); }
+  finally { clock.mock.restore(); }
   await until(() => f.daemon.store.get("SELECT id FROM outbox WHERE recipient_id=? AND kind='task:quota_ready'", f.daemon.store.task(parent.taskId).convener_id));
   const notices = await main.request('GET', '/v1/inbox'); assert.equal(notices.items[0].kind, 'task:quota_ready'); assert.equal(notices.items[0].payload.tasks[0].contextTokens, 33);
   assert.equal(f.driver.handles.length, 2);

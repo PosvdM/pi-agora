@@ -118,9 +118,12 @@ test('参数、目标、nonce、过期时间与挑战绑定，过期签名持久
     const confirmation = f.security.request(f.conn, external, 'rq_1', { answers: ['原答复'] });
     f.store.run(sql, value, confirmation.confirmationId);
     assert.throws(() => f.security.sign(f.conn, confirmation.confirmationId, device.body(confirmation), unavailable), denied(code));
-    if (code === 'confirmation_expired') assert.equal(f.security.confirmation(confirmation.confirmationId).state, 'expired');
+    if (code === 'confirmation_expired') {
+      assert.equal(f.security.confirmation(confirmation.confirmationId).state, 'expired');
+      assert.throws(() => f.security.sign(f.conn, confirmation.confirmationId, device.body(confirmation), unavailable), error => error.status === 410 && error.code === 'confirmation_expired');
+    }
   }
-  assert.equal(f.security.audit().filter(row => row.outcome === 'rejected').length, scenarios.length);
+  assert.equal(f.security.audit().filter(row => row.outcome === 'rejected').length, scenarios.length + 1);
 });
 
 test('同步执行失败回滚业务写入、nonce、确认和成功审计，拒绝审计独立保存', async t => {

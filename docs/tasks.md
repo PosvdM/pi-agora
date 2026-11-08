@@ -105,6 +105,8 @@ agora 对任务只提供“取消（含队列）”这一种停止。协作会�
 
 上限可由 `POST /v1/tasks/:id/limits`、`{ "maxTokens": <正整数> }` 或 `agora task limits <任务 ID> --max-tokens <数量>` 调整；召集人为 `user` 的任务增额走用户确认。预算配置、签名要求和接管边界见 [security.md](security.md#任务预算与设置)。
 
+用户接管后，尚交给子树外部 Agent 的提问同事务转给用户，保留原 requestId 与 asker 并增加 revision；子树内部的提问继续由内部直接接收方处理。旧 Agent 对这些问题不能继续读取、答复、取消或转交，问题列表也不再返回越过接管边界的记录。
+
 ### 额度暂停
 
 驱动识别模型额度用完后，任务在 settled 时进入 `quota_paused`，不记为失败。daemon 停止该进程、保留原会话和代数并释放推理名额；停止未确认时保留清理记录并拒绝恢复。`quotaResumeAt` 记录服务返回的重置时间。识别规则由 [architecture.md](architecture.md#用量与额度事件) 定义。
