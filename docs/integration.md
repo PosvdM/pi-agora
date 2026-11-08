@@ -33,6 +33,7 @@ pi-hostkit        ◄── daemon、extension（pi-pane 服务端也依赖它�
 
 - `daemon`、`extension`、`cli`、`archive`、`protocol` 都不依赖 pi-pane。不装 pi-pane 时 pi-agora 完整可用。
 - 只有 `packages/pane-plugin` 把 `@pi-pane/plugin-api` 作为 peer 依赖，负责把 agora 的数据翻译成 pane 协议。pane 协议升级时只需改这个包。
+- 插件固定使用 pi-pane 提交 `03f7916c1a7e3787fc4eaddbdfb10667a217fae7` 的协议源码。monorepo 子包通过只读 `vendor/plugin-api` 副本参与离线构建；来源记录、哈希、CI 比对和升级步骤见 [pane-plugin.md](pane-plugin.md#协议副本)。禁止手工修改副本。
 - `packages/archive` 同时提供“用户聊天视图”的投影函数，daemon 在线读取和 adapter 离线读取用同一份代码，保证返回同一种视图（见 [archive.md](archive.md#三种投影)）。
 
 ## 连接拓扑
@@ -266,12 +267,18 @@ data: {"cursor":{"epoch":"in_5f2c:pr_51d0","seq":1843},"sessionId":"as_c21e","ev
 
 ## 变更流
 
-`GET /v1/changes?epoch=<e>&afterSeq=<n>`（SSE）推送领域对象的变更：任务、协作会话、会议、提问、board 头序号、待确认、设备。pane 插件据此生成 `TreeChange`、刷新面板和表单。
+`GET /v1/changes?epoch=<e>&afterSeq=<n>`（SSE）推送领域对象的变更：任务、协作会话、会议、提问、board 头序号、待确认、设备。pane 插件据此生成 `TreeChange`、刷新面板和表单。当前只允许 `host:cli`、`host:pane` 读取全局变更流，主/子 Agent 不能用它取得无权读取的对象 ID。
+
+每条记录使用 `event: change`，data 为 `{ cursor: { epoch, seq }, objectType, objectId, tombstone }`。无效切点只返回一条 `event: reset`，data 为 `{ epoch }`，随后关闭连接。流保持期间持续检查 token，关闭 daemon、撤销或过期凭证都会终止连接。
 
 - 变更记录持久化在 `changes` 表，与业务状态变更同事务写入。每条记录带 `seq`（全局递增）、对象类型与 id；删除时带 `tombstone: true`。
 - `epoch` 是数据库级的标识，只在数据库被重建或从备份恢复时改变。
 - **保留与过期**：变更记录保留 7 天且至少保留最近 10 万条。请求的 `epoch` 不同、`afterSeq` 早于保留范围、或 `afterSeq` 大于当前 head 时，daemon 只返回一条 `event: reset`；客户端（pane 插件）丢弃本地状态，重新取快照。
 - **快照切点**：`GET /v1/sessions` 等列表接口的响应带 `changesCursor: { epoch, seq }`，与列表内容在同一个只读事务里读出，客户端用它订阅变更流即可不重不漏。
+
+会话列表的普通分页默认 50 条、最多 200 条；`parent=<nodeId>` 只返回直接子节点，游标绑定数据库 epoch、调用者和过滤条件，不能跨父节点复用。返回的 `parent?: SessionParent` 使用中立的 `task`、`main` 或 `user` 关系，节点 ID 由 pane 插件映射；无法确定主会话 ID 时省略关系，进入未归属。
+
+`GET /v1/sessions?snapshot=1&openNodeId=<可重复>&recentSince=<ISO时间>` 在同一切点返回全部热节点及祖先。树快照不分页、不接受 `cursor`，最多一万条；超限返回 `413 snapshot_too_large`，不静默截断。`snapshot=1` 不能与 `parent` 同时使用。
 
 ## agora 到 pane 协议的映射
 
@@ -304,7 +311,7 @@ agora:root:user-tasks            〔用户任务〕   用户通过 CLI 或 pi-pa
 
 #### 同步与按需加载
 
-- **修订号**：pane 插件的来源级 `revision` 直接用变更流的 `seq`，`epoch` 用变更流的 `epoch`。每条变更对应一条 `TreeChange`：`upsert` 的 `revision` 和 `node.revision` 为该变更的 `seq`。
+- **修订号**：pane 插件的来源级 `revision` 直接用变更流的 `seq`，`epoch` 用变更流的 `epoch`。每条变更对应一条 `TreeChange`：`upsert` 的 `revision` 和 `node.revision` 为该变更的 `seq`。提问、设备等非树对象以虚拟用户任务根的 `upsert` 推进来源水位，避免分页等待不会推送的修订号。
 - **删除**：`agora archive delete` 只删存档文件、保留元数据，节点仍可列出，插件发 `upsert`，节点的 `availability` 变为 `missing`。只有对象的元数据也被删除、不再能列出时，才发带 `revision` 的 `remove`（tombstone）；MVP 没有删除元数据的操作。
 - **订阅与重置**：`tree.subscribe` 以快照的 `{ epoch, revision }` 为起点（参数形状以 pi-pane `docs/plugin-api.md` 为准），插件用它作为变更流的 `epoch` 和 `afterSeq`。`epoch` 不符、`revision` 大于当前 head 或早于保留范围时，变更流返回 `reset`，插件向 pi-pane 发 `TreeChange` 的 `reset`。
 - **快照**：`tree.snapshot(req)` 只返回热节点及其祖先，热节点的定义以 pane 协议为准（`req.openNodeIds` 中的节点、`status` 为 `running`/`waiting`/`paused` 的节点、`lastActivityAt` 晚于 `req.recentSince` 的节点）。插件把这些条件转成 daemon 的列表查询，响应里的 `changesCursor.seq` 就是快照的 `revision`。
@@ -470,7 +477,7 @@ daemon 不在线时（`/v1/health` 连接失败），pane 插件和 CLI 改用 a
 - 不提供动作和用户级操作；“待处理”区中 agora 的表单保留显示，提交时提示“agora 未运行”。
 - 每 15 秒重试 `/v1/health`，daemon 恢复后发树 `reset` 并切回在线模式。
 
-pane 插件和 CLI 不直接读 SQLite 表，不解析 `AGORA_HOME` 下的文件布局，全部通过 adapter。
+pane 插件和 CLI 不直接读 SQLite 表，不解析 `AGORA_HOME` 下的文件布局，全部通过 adapter。插件的离线元数据扫描、任务面板结果范围及持久幂等文件上限见 [pane-plugin.md](pane-plugin.md#幂等与资源上限)。
 
 pane 插件与 pi-pane 服务端在同一进程里运行，pi-pane 对插件调用只做合作式的异步超时，同步的长时间计算会卡住整个服务端。所以插件和 adapter 都不做同步重计算：`node:sqlite` 的同步查询都带 `LIMIT`，会话文件用流式异步读取并分页，单次处理的条目数有上限。
 

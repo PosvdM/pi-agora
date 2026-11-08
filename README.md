@@ -92,7 +92,7 @@ packages/
   extension/     pi 扩展：装进主代理和每个协作会话，提供 agora_* 工具
   cli/           agora 命令行
   archive/       后续切片：只读存档读取库（daemon 不运行时也能用）
-  pane-plugin/   后续切片：pi-pane 插件
+  pane-plugin/   pi-pane 服务端数据插件（加载与边界见 docs/pane-plugin.md）
   protocol/      协议类型与 schema
 ```
 
@@ -101,7 +101,7 @@ packages/
 ## 开发
 
 ```sh
-npm run build    # tsc project references 构建四个工作区
+npm run build    # tsc project references 构建工作区
 npm test         # 构建后用 node --test 验证，真实 pi 测试要求 1.5.0
 ```
 
@@ -119,4 +119,5 @@ npm test         # 构建后用 node --test 验证，真实 pi 测试要求 1.5.
 | [docs/meetings.md](docs/meetings.md) | 会议：召集、定方案流程、认可、反对意见、阶段 fencing、僵局、预算、书记与纪要、插话、崩溃 |
 | [docs/archive.md](docs/archive.md) | 全量对话存档：存什么、存在哪、三种投影、继承关系、完整性校验、只读 adapter |
 | [docs/integration.md](docs/integration.md) | daemon HTTP API、会话视图与事件流、变更流、agora 到 pi-pane 插件接口的映射、离线存档读取、版本协商 |
+| [docs/pane-plugin.md](docs/pane-plugin.md) | pane 插件构建与加载、固定协议副本、模块、幂等、资源上限、安全横幅和测试边界 |
 | [docs/roadmap.md](docs/roadmap.md) | P0 验证项、MVP 切分、工程量、必须测试的故障、明确不做、主要风险 |

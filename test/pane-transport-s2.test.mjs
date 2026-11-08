@@ -27,6 +27,16 @@ test("结果未知只重发相同幂等请求，普通写入不自动重发", as
   api.close();
 });
 
+test("HTTP 拒绝和无效 JSON 不因原请求带幂等键而自动重发", async () => {
+  for (const status of [200, 403, 503]) {
+    let count = 0;
+    const api = createDaemonApi(client(), async () => { count++; return new Response("无效 JSON", { status }); });
+    await assert.rejects(api.request("POST", "/v1/tasks", {}, { idempotencyKey: "key" }));
+    assert.equal(count, 1);
+    api.close();
+  }
+});
+
 test("SSE 解析支持 UTF-8 与跨网络分片，取消订阅后不再回调", async () => {
   let controller;
   const api = createDaemonApi(client(), async (_url, options) => {

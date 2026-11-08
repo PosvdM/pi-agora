@@ -9,7 +9,8 @@ function fixture() {
   let online = true, broken = false, requests = [structuredClone(request)], confirmations = [], devices = [], decisions = [];
   const api = { async request(method, path, body) {
     if (broken) throw new Error("断线");
-    if (path.startsWith("/v1/requests?")) return { status: 200, body: { items: structuredClone(requests) } };
+    if (path.startsWith("/v1/requests?")) return { status: 200, body: { items: structuredClone(requests.filter(item => ["open", "escalated"].includes(item.state))) } };
+    if (path === "/v1/requests/rq-one") return requests.length ? { status: 200, body: structuredClone(requests[0]) } : { status: 404, body: {} };
     if (path.startsWith("/v1/confirmations?")) return { status: 200, body: { items: confirmations } };
     if (path.startsWith("/v1/devices?")) return { status: 200, body: { items: devices } };
     if (path.startsWith("/v1/tasks?")) return { status: 200, body: { items: decisions } };
@@ -58,6 +59,7 @@ test("取消持久提问走 cancel 并要求用户确认，不会被当作答案
   const result = await controller.forms.submit(submission("cancel", { status: "cancelled" }), origin);
   assert.equal(result.status, "accepted"); assert.ok(f.calls[0].path.endsWith("/cancel"));
   assert.equal(f.calls[0].body.answers, undefined); assert.equal(f.calls[0].options.actAsUser, true);
+  assert.equal(f.removed[0].reason, "cancelled");
   controller.dispose();
 });
 

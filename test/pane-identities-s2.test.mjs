@@ -20,6 +20,19 @@ test("操作身份在插件重启后仍拒绝同 key 不同内容，并保留最
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
+test("最终结果从完成时间起至少保留二十四小时", async t => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.parse("2026-01-01T00:00:00Z") });
+  const store = new OperationIdentities();
+  assert.equal(await store.check("long-operation", { a: 1 }), true);
+  t.mock.timers.tick(23 * 60 * 60_000);
+  await store.finish("long-operation", { status: "accepted" });
+  t.mock.timers.tick(2 * 60 * 60_000);
+  assert.equal(await store.check("long-operation", { a: 2 }), false);
+  assert.deepEqual(store.result("long-operation"), { status: "accepted" });
+  t.mock.timers.tick(23 * 60 * 60_000);
+  assert.equal(await store.check("long-operation", { a: 2 }), true);
+});
+
 test("并发登记在写盘前串行，不能让同 key 的两个不同身份通过", async () => {
   const store = new OperationIdentities();
   const result = await Promise.all([store.check("same-key", { a: 1 }), store.check("same-key", { a: 2 })]);

@@ -41,13 +41,14 @@ export function createDaemonApi(client: AgoraClient, fetcher: typeof fetch = fet
         ...(options.idempotencyKey ? { "Idempotency-Key": options.idempotencyKey } : {}), ...(options.actAsUser ? { "Agora-Act-As": "user" } : {}) };
       const payload = body === undefined ? undefined : JSON.stringify(body);
       for (let attempt = 0; ; attempt++) {
+        let response: Response | undefined;
         try {
-          const response = await fetcher(url, { method: verb, headers: requestHeaders, body: payload, signal, redirect: "error" });
+          response = await fetcher(url, { method: verb, headers: requestHeaders, body: payload, signal, redirect: "error" });
           const data = JSON.parse(await boundedText(response));
           return { status: response.status, body: data as T };
         } catch (error) {
           // 同一请求只使用同一个身份和幂等键；HTTP 拒绝不进入重试。
-          if (attempt >= 1 || signal.aborted || !(verb === "GET" || options.idempotencyKey)) throw error;
+          if (attempt >= 1 || signal.aborted || response && !response.ok || !(error instanceof TypeError) || !(verb === "GET" || options.idempotencyKey)) throw error;
         }
       }
     },

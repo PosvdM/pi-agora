@@ -54,17 +54,27 @@ export function createForms(runtime: PluginRuntime, security: Security) {
           { id: "model", label: "换人时的模型", type: "text" }, { id: "profile", label: "换人时的权限档位", type: "select", options: ["explore", "review", "implement"] }] }));
     }
     if (disposed) return [];
+    const removals: { id: string; reason: FormRemovedReason }[] = [];
+    for (const [id, previous] of current) if (!next.has(id)) {
+      let reason: FormRemovedReason = "handled";
+      let object = previous.kind === "request" ? requests.find(item => item.id === previous.id) : previous.kind === "confirmation" ? confirmations.find(item => (item.confirmationId ?? item.id) === previous.id) : undefined;
+      if (previous.kind === "request" && !object) {
+        const detail = await runtime.api.request("GET", `/v1/requests/${encoded(previous.id)}`);
+        if (detail.status === 200) object = detail.body;
+        else if (detail.status === 404) reason = "withdrawn";
+        else throw new Error("暂时无法核实提问的终态，保留待处理表单");
+      }
+      if (disposed) return [];
+      if (object?.state === "cancelled") reason = "cancelled";
+      else if (object?.state === "expired") reason = "expired";
+      removals.push({ id, reason });
+    }
+    if (disposed) return [];
     for (const item of next.values()) {
       const previous = current.get(item.form.id);
       if (!previous || item.form.revision > previous.form.revision) runtime.context.formAdded(item.form);
     }
-    for (const [id, previous] of current) if (!next.has(id)) {
-      let reason: FormRemovedReason = "handled";
-      const object = previous.kind === "request" ? requests.find(item => item.id === previous.id) : previous.kind === "confirmation" ? confirmations.find(item => (item.confirmationId ?? item.id) === previous.id) : undefined;
-      if (object?.state === "cancelled") reason = "cancelled";
-      else if (object?.state === "expired") reason = "expired";
-      runtime.context.formRemoved(id, reason);
-    }
+    for (const { id, reason } of removals) runtime.context.formRemoved(id, reason);
     current.clear(); for (const [id, item] of next) current.set(id, item);
     return [...current.values()].map(item => item.form).sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
   }
@@ -79,8 +89,10 @@ export function createForms(runtime: PluginRuntime, security: Security) {
     if (code === "idempotency_mismatch") return { status: "idempotencyConflict", message: message(response) };
     if (code === "already_handled") return { status: "alreadyHandled", message: message(response) };
     if (["conflict", "stale", "revision_mismatch"].includes(code)) {
+      if (refresh) await refresh;
       const latest = (await pending()).find(form => form.id === req.formId);
       if (latest && latest.revision !== req.revision) return { status: "stale", form: latest };
+      if (!latest) return { status: "alreadyHandled", message: "该事项已在其他标签页处理" };
     }
     return { status: "failed", message: message(response) };
   }
@@ -105,6 +117,10 @@ export function createForms(runtime: PluginRuntime, security: Security) {
             const response = await runtime.api.request("GET", `/v1/confirmations/${encoded(id)}`);
             if (response.status !== 200) return mapped(response, req);
             if (response.body.state !== "pending") return { status: "alreadyHandled" };
+            if ((response.body.revision ?? 1) !== req.revision) {
+              const latest = (await pending()).find(form => form.id === req.formId);
+              return latest ? { status: "stale", form: latest } : { status: "alreadyHandled" };
+            }
             const confirmation = confirmationOf({ confirmation: response.body });
             if (!confirmation) return { status: "failed", message: "待确认内容无效" };
             result = await security.confirm(confirmation, origin);

@@ -34,10 +34,11 @@ export class OperationIdentities {
     const operation = this.queue.then(async () => {
       const entry = this.entries.get(key);
       if (!entry) throw new Error("操作身份尚未登记");
-      const previous = entry.result;
+      const previous = { result: entry.result, at: entry.at };
       entry.result = result;
+      entry.at = Date.now();
       try { await this.persist(); }
-      catch (error) { entry.result = previous; throw error; }
+      catch (error) { entry.result = previous.result; entry.at = previous.at; throw error; }
     });
     this.queue = operation.catch(() => {});
     return operation;
