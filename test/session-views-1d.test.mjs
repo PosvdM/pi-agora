@@ -183,6 +183,8 @@ function emitText(driver, text = '回复', timestamp = 2, end = true) {
 
 test('会话视图：全新实例读取历史快照，回放后 EOF；未确认 run 保留 stopping 流', async t => {
   for (const [status, run, ended] of [
+    ['created', undefined, false],
+    ['running', { id: 'old', state: 'exited', exited_at: '2026-01-01', cleanup_error: null }, false],
     ['completed', undefined, true],
     ['stopped', { id: 'old', state: 'exited', exited_at: '2026-01-01', cleanup_error: null }, true],
     ['completed', { id: 'old', state: 'ready', exited_at: null, cleanup_error: null }, false],
@@ -196,13 +198,14 @@ test('会话视图：全新实例读取历史快照，回放后 EOF；未确认 
       fixtures.get(f.home).run = run;
       const snapshot = await f.views.snapshot('s1');
       assert.deepEqual(snapshot.entries.map(value => value.id), ['history']);
-      assert.equal(snapshot.inFlight.phase, ended ? 'idle' : 'stopping');
+      const unconfirmed = run && (run.state !== 'exited' || !run.exited_at || run.cleanup_error);
+      assert.equal(snapshot.inFlight.phase, unconfirmed ? 'stopping' : 'idle');
       const { response } = stream(f.views, { ...snapshot.cursor, seq: 0 });
       assert.deepEqual(response.values().map(value => value.event.type), ['agora_entries']);
       assert.equal(response.writableEnded, ended);
       assert.equal(stream(f.views, snapshot.cursor).response.writableEnded, ended);
       if (!ended) {
-        await f.views.begin('s1', run.id, f.driver);
+        await f.views.begin('s1', run?.id ?? 'r1', f.driver);
         assert.equal(response.writableEnded, true);
         const live = stream(f.views, (await f.views.snapshot('s1')).cursor).response;
         emitText(f.driver, '迟到数据', 2, false);
@@ -626,6 +629,43 @@ test('会话视图：删除准备重试旧运行片段，失败保留状态，�
     await assert.rejects(readdir(f.directory), error => error.code === 'ENOENT');
   } finally { release(); }
 });
+for (const finish of ['flush', 'resume', 'close', 'delete']) test(`会话视图：仅诊断失败时 ${finish} 屏障可恢复，无需新片段清除旧错误`, async t => {
+  const f = await setup(t);
+  await f.views.begin('s1', 'r1', f.driver);
+  const blocked = path.join(f.directory, 'runs');
+  await writeFile(blocked, '阻挡诊断目录');
+  await assert.rejects(f.views.ended('s1', 'r1', '测试退出'));
+  const previous = f.views.states.get('s1');
+  assert.equal(previous.pending.length, 0);
+  assert.equal(previous.diagnosticsDirty, true);
+  const barrier = async () => {
+    if (finish === 'resume') return f.views.begin('s1', 'r2', handle());
+    if (finish === 'delete') return f.views.prepareArchiveDeletion('s1');
+    return f.views[finish]();
+  };
+  await assert.rejects(barrier());
+  await rm(blocked);
+  const release = await barrier();
+  try {
+    assert.equal(previous.diagnosticsDirty, false);
+    const saved = JSON.parse(await readFile(path.join(blocked, 'r1.json'), 'utf8'));
+    assert.equal(saved.ended, true);
+    assert.ok(saved.diagnostics.some(issue => issue.kind === 'archive_io'));
+  } finally { if (typeof release === 'function') release(); }
+});
+
+test('会话视图：无 run 的排队任务停止后发送终态再 EOF', async t => {
+  const f = await setup(t);
+  f.row.status = 'created';
+  const snapshot = await f.views.snapshot('s1');
+  const { response } = stream(f.views, snapshot.cursor);
+  assert.equal(response.writableEnded, false);
+  f.row.status = 'stopped';
+  f.views.status('s1');
+  assert.equal(response.values().at(-1).event.status, 'stopped');
+  assert.equal(response.writableEnded, true);
+});
+
 test('会话视图：片段写入失败可见且不伪装为 flush 成功', async t => {
   const f = await setup(t);
   await f.views.begin('s1', 'r1', f.driver);
