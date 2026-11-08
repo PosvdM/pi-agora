@@ -2,7 +2,13 @@ import { createHash, randomUUID } from "node:crypto";
 import { setImmediate as yieldTurn } from "node:timers/promises";
 import type { NodeStatus, PanePlugin, SessionRef, SessionSnapshot, TreeNode } from "@pi-pane/plugin-api";
 
-/** Structural boundary until the archive adapter's v1 types are available. */
+/** 归档关系使用领域标识符，由插件映射为树节点 ID。 */
+export type ArchivedSessionParent =
+  | { kind: "task"; taskId: string; sessionId: string }
+  | { kind: "main"; piSessionId: string }
+  | { kind: "user" };
+
+/** 归档读取器的结构边界，供适配器对齐会话元数据。 */
 export interface ArchivedSessionSummary {
   agoraSessionId: string;
   kind: "task" | "meeting-seat" | "secretary";
@@ -19,8 +25,7 @@ export interface ArchivedSessionSummary {
   inheritsFrom?: string;
   createdAt: string;
   endedAt?: string;
-  /** Enhanced adapter metadata: a pane node ID, not a pi session ID. */
-  parentId?: string | null;
+  parent?: ArchivedSessionParent;
   lastActivityAt?: string;
   statusDetail?: string;
 }
@@ -50,7 +55,7 @@ const USER_TASKS = "agora:root:user-tasks";
 const USER_MEETINGS = "agora:root:user-meetings";
 const statuses: Record<string, NodeStatus> = {
   idle: "idle", created: "waiting", running: "running", waiting: "waiting", paused: "paused",
-  waiting_decision: "waiting", waiting_children: "waiting", quota_paused: "paused",
+  waiting_decision: "waiting", waiting_children: "waiting", quota_paused: "paused", budget_paused: "paused",
   completed: "done", done: "done", failed: "failed", stopped: "stopped", interrupted: "interrupted",
   convening: "waiting", queued: "waiting", sealed: "running", critique: "running", merging: "running",
   reviewing: "running", minuting: "running", ended: "done",
@@ -58,13 +63,13 @@ const statuses: Record<string, NodeStatus> = {
 
 function status(value: string): NodeStatus {
   const result = Object.hasOwn(statuses, value) ? statuses[value] : undefined;
-  if (!result) throw new Error(`Unsupported archived session status: ${value}`);
+  if (!result) throw new Error(`不支持的归档会话状态：${value}`);
   return result;
 }
 
 function pageLimit(limit: number): number {
   if (!Number.isInteger(limit) || limit < 1 || limit > OFFLINE_LIMITS.pageSize) {
-    throw new Error(`Offline page limit must be between 1 and ${OFFLINE_LIMITS.pageSize}`);
+    throw new Error(`离线分页条数必须是 1 到 ${OFFLINE_LIMITS.pageSize} 之间的整数`);
   }
   return limit;
 }
@@ -79,19 +84,19 @@ interface Index {
   revision: number;
 }
 
-/** Owns a single reader and a bounded, immutable metadata cut for this offline epoch. */
+/** 每个离线周期持有一个读取器和有界、固定的元数据快照。 */
 export function createOfflineViews(reader: ArchiveReader, epoch = `offline:${randomUUID()}`): OfflineViews {
   const abort = new AbortController();
   let pendingIndex: Promise<Index> | undefined;
 
   function check(): void {
-    if (abort.signal.aborted) throw new DOMException("Offline archive reader was disposed", "AbortError");
+    if (abort.signal.aborted) throw new DOMException("离线归档读取器已释放", "AbortError");
   }
 
   function run<T>(work: () => Promise<T>): Promise<T> {
     check();
     return new Promise<T>((resolve, reject) => {
-      const cancelled = () => reject(new DOMException("Offline archive reader was disposed", "AbortError"));
+      const cancelled = () => reject(new DOMException("离线归档读取器已释放", "AbortError"));
       abort.signal.addEventListener("abort", cancelled, { once: true });
       Promise.resolve().then(() => { check(); return work(); }).then(resolve, reject).finally(() => {
         abort.signal.removeEventListener("abort", cancelled);
@@ -110,17 +115,17 @@ export function createOfflineViews(reader: ArchiveReader, epoch = `offline:${ran
     let cursor: string | undefined;
     for (let page = 0; ; page++) {
       check();
-      if (page >= OFFLINE_LIMITS.scanPages) throw new Error(`Offline metadata scan exceeds ${OFFLINE_LIMITS.scanPages} pages`);
+      if (page >= OFFLINE_LIMITS.scanPages) throw new Error(`离线元数据扫描超过 ${OFFLINE_LIMITS.scanPages} 页`);
       await pause();
       const result = await run(() => reader.listSessions({ limit: OFFLINE_LIMITS.scanPageSize, ...(cursor ? { cursor } : {}) }));
-      if (result.items.length > OFFLINE_LIMITS.scanPageSize) throw new Error("Archive adapter exceeded the requested metadata page size");
+      if (result.items.length > OFFLINE_LIMITS.scanPageSize) throw new Error("归档适配器返回的元数据超过请求的分页条数");
       for (const item of result.items) {
-        if (summaries.has(item.agoraSessionId)) throw new Error(`Duplicate archived session metadata: ${item.agoraSessionId}`);
-        summaries.set(item.agoraSessionId, { ...item });
+        if (summaries.has(item.agoraSessionId)) throw new Error(`归档会话元数据重复：${item.agoraSessionId}`);
+        summaries.set(item.agoraSessionId, { ...item, ...(item.parent ? { parent: { ...item.parent } } : {}) });
       }
-      if (summaries.size > OFFLINE_LIMITS.sessions) throw new Error(`Offline metadata scan exceeds ${OFFLINE_LIMITS.sessions} sessions`);
+      if (summaries.size > OFFLINE_LIMITS.sessions) throw new Error(`离线元数据扫描超过 ${OFFLINE_LIMITS.sessions} 个会话`);
       if (!result.nextCursor) break;
-      if (cursors.has(result.nextCursor)) throw new Error("Archive adapter returned a repeated metadata cursor");
+      if (cursors.has(result.nextCursor)) throw new Error("归档适配器返回了重复的元数据游标");
       cursors.add(result.nextCursor);
       cursor = result.nextCursor;
     }
@@ -129,7 +134,7 @@ export function createOfflineViews(reader: ArchiveReader, epoch = `offline:${ran
     function group(id: string, title: string, parentId: string | null, sortKey: string, badge?: string): void {
       const previous = nodes.get(id);
       if (previous) {
-        if (previous.parentId !== parentId) throw new Error(`Conflicting archived group parent: ${id}`);
+        if (previous.parentId !== parentId) throw new Error(`归档分组的父节点冲突：${id}`);
         if (sortKey < previous.sortKey) previous.sortKey = sortKey;
         return;
       }
@@ -141,22 +146,24 @@ export function createOfflineViews(reader: ArchiveReader, epoch = `offline:${ran
     for (const summary of summaries.values()) {
       if (processed++ % 64 === 0) await pause();
       let item = summary;
-      // parentPiSessionId also appears on nested tasks; it cannot identify their direct parent.
-      if (item.parentId === undefined && item.convenerId !== "user") {
+      // 列表缺少直接父级时查询详情；parentPiSessionId 也出现在嵌套任务中，不能据此推断。
+      if (item.parent === undefined) {
         const detail = await run(() => reader.getSession(item.agoraSessionId));
         if (detail) {
-          if (detail.agoraSessionId !== item.agoraSessionId) throw new Error("Archive adapter returned a mismatched session ID");
-          item = { ...item, parentId: detail.parentId };
+          if (detail.agoraSessionId !== item.agoraSessionId) throw new Error("归档适配器返回的会话 ID 不匹配");
+          item = { ...item, ...(detail.parent ? { parent: { ...detail.parent } } : {}) };
         }
       }
-      let parentId = item.parentId ?? null;
+      let parentId = item.parent?.kind === "task" ? `${SESSION}${item.parent.sessionId}`
+        : item.parent?.kind === "main" ? `pane:session:${item.parent.piSessionId}`
+        : item.parent?.kind === "user" ? USER_TASKS : null;
       if (item.kind === "task") {
-        if (item.parentId === undefined && item.convenerId === "user") parentId = USER_TASKS;
         if (parentId === USER_TASKS) group(USER_TASKS, "用户任务", null, "");
       } else if (item.meetingId) {
         const meetingId = `${MEETING}${item.meetingId}`;
-        // A seat's parentId names the meeting, not the meeting's convener.
-        const meetingParent = item.convenerId === "user" ? USER_MEETINGS : null;
+        // 席位挂在会议分组下，会议分组挂在召集方下；用户会议使用独立根节点。
+        const meetingParent = item.parent?.kind === "user" || (item.parent === undefined && item.convenerId === "user")
+          ? USER_MEETINGS : parentId;
         group(meetingId, `会议 ${item.meetingId}`, meetingParent, item.createdAt, "会议");
         if (meetingParent === USER_MEETINGS) group(USER_MEETINGS, "用户会议", null, "");
         parentId = meetingId;
@@ -186,7 +193,7 @@ export function createOfflineViews(reader: ArchiveReader, epoch = `offline:${ran
       siblings.sort(compare);
     }
     const hash = createHash("sha256");
-    // Sorting and hashing operate only on the explicitly bounded metadata cut, never archive entries.
+    // 排序和哈希只处理有明确上限的元数据快照，不读取归档条目。
     const ordered = [...nodes.values()].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
     processed = 0;
     for (const node of ordered) {
@@ -214,24 +221,24 @@ export function createOfflineViews(reader: ArchiveReader, epoch = `offline:${ran
   }
 
   function validateRef(ref: SessionRef): void {
-    if (ref.source !== "agora" || !ref.id) throw new Error("Offline sessions require an agora session reference");
+    if (ref.source !== "agora" || !ref.id) throw new Error("离线会话必须使用 agora 会话引用");
   }
 
   async function session(ref: SessionRef): Promise<ArchivedSessionSummary> {
     validateRef(ref);
     const item = await run(() => reader.getSession(ref.id));
-    if (!item) throw new Error(`Archived session metadata is unavailable: ${ref.id}`);
-    if (item.agoraSessionId !== ref.id) throw new Error("Archive adapter returned a mismatched session ID");
-    if (item.archiveState === "missing") throw new Error(`Archived session file is missing: ${ref.id}`);
+    if (!item) throw new Error(`归档会话元数据不可用：${ref.id}`);
+    if (item.agoraSessionId !== ref.id) throw new Error("归档适配器返回的会话 ID 不匹配");
+    if (item.archiveState === "missing") throw new Error(`归档会话文件缺失：${ref.id}`);
     return item;
   }
 
   return {
     tree: {
       snapshot: req => run(async () => {
-        if (req.openNodeIds.length > OFFLINE_LIMITS.sessions) throw new Error("Too many open nodes for an offline snapshot");
+        if (req.openNodeIds.length > OFFLINE_LIMITS.sessions) throw new Error("离线快照的打开节点数超过上限");
         const recentSince = Date.parse(req.recentSince);
-        if (!Number.isFinite(recentSince)) throw new Error("Invalid offline snapshot recentSince");
+        if (!Number.isFinite(recentSince)) throw new Error("离线快照的 recentSince 时间无效");
         const data = await index();
         const selected = new Set<string>();
         const open = new Set(req.openNodeIds);
@@ -266,7 +273,7 @@ export function createOfflineViews(reader: ArchiveReader, epoch = `offline:${ran
               || cursor.offset < 0 || cursor.offset > siblings.length) throw new Error();
             offset = cursor.offset;
           } catch {
-            throw new Error("Invalid offline children cursor");
+            throw new Error("离线子节点分页游标无效");
           }
         }
         const next = offset + limit;
@@ -282,7 +289,7 @@ export function createOfflineViews(reader: ArchiveReader, epoch = `offline:${ran
           run(() => reader.readUserView(ref.id, { limit: OFFLINE_LIMITS.pageSize })),
           run(() => reader.readPartials(ref.id)),
         ]);
-        if (view.entries.length > OFFLINE_LIMITS.pageSize) throw new Error("Archive adapter exceeded the requested history page size");
+        if (view.entries.length > OFFLINE_LIMITS.pageSize) throw new Error("归档适配器返回的历史记录超过请求的分页条数");
         return { ref: { ...ref }, cursor: { epoch, seq: 0 }, leafId: view.leafId, entries: view.entries,
           historyBefore: view.historyBefore, unfinishedPartials: partials,
           status: status(item.status), readonly: true, readonlyReason: "archived" };
@@ -291,7 +298,7 @@ export function createOfflineViews(reader: ArchiveReader, epoch = `offline:${ran
         const limit = pageLimit(page.limit);
         await session(ref);
         const view = await run(() => reader.readUserView(ref.id, { before: page.before, limit }));
-        if (view.entries.length > limit) throw new Error("Archive adapter exceeded the requested history page size");
+        if (view.entries.length > limit) throw new Error("归档适配器返回的历史记录超过请求的分页条数");
         return { entries: view.entries, historyBefore: view.historyBefore };
       }),
       subscribe: () => { check(); return () => {}; },
