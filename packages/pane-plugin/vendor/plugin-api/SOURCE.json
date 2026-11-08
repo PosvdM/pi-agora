@@ -1,0 +1,9 @@
+{
+  "repository": "https://github.com/PosvdM/pi-pane.git",
+  "commit": "03f7916c1a7e3787fc4eaddbdfb10667a217fae7",
+  "files": {
+    "package.json": "e2c3b9d6b17cad871b78475f4f13df01530984c61159f92d27afc99d6cd6e393",
+    "src/index.ts": "2aac66f75a6bcf6990d2b83ffb61d0b6b8bc464bc3c31914af73d7316c4c6db4",
+    "tsconfig.json": "8362482b1b200dbceea41ab7d28cefcddae11f3e796d82ceb8f62a3f97a8b031"
+  }
+}

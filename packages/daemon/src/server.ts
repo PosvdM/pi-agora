@@ -3,10 +3,13 @@ import { createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { Auth, type Connection } from "./auth.js";
 import { AgoraError, invalid, object, optionalBoolean, stableJson, text } from "./errors.js";
+import { Store, id } from "./store.js";
+import { pruneChanges, streamChanges } from "./changes.js";
+import { listSessions, sessionDetail } from "./session-list.js";
 import { archiveStorageBytes } from "./archive-verification.js";
 import { deleteArchiveOnline } from "./archive-maintenance.js";
 import { confirmationRequired } from "./acl.js";
-import { Store, id, type SessionRow } from "./store.js";
+
 import { TaskManager } from "./tasks.js";
 import { Requests } from "./requests.js";
 import { Security, type SignatureBody } from "./security.js";
@@ -54,16 +57,7 @@ function positive(value: string | null, fallback: number, max: number, zero = fa
 function hostOnly(conn: Connection): void {
   if (conn.type !== "host:cli") throw new AgoraError(403, "forbidden", "此操作仅允许 CLI 执行");
 }
-function sessionView(session: SessionRow, store: Store) {
-  return { agoraSessionId: session.id, taskId: session.task_id, piSessionId: session.pi_session_id,
-    profile: session.profile, model: session.model, thinking: session.thinking, cwd: session.cwd,
-    ...store.sessionMetadata(session.id),
-    status: session.status, revision: session.revision, createdAt: session.created_at,
-    archiveState: session.archive_state === "live" ? "partial" : session.archive_state, archiveHash: session.archive_hash, archiveBytes: session.archive_bytes,
-    archiveVerifiedAt: session.archive_verified_at, archiveError: session.archive_error,
-    ...(session.ended_at ? { endedAt: session.ended_at } : {}),
-    ...(session.task_id ? { treeUsage: store.usage(session.task_id, true) } : {}) };
-}
+
 
 function hostClient(auth: Auth, conn: Connection): void {
   auth.requireMain(conn);
@@ -224,7 +218,20 @@ export function createHttpServer(context: ServerContext) {
       reply(response, result.status, result.body);
     } catch (error) { const result = asError(error); reply(response, result.status, result.body); }
   });
-  server.once('close', () => context.requests.close());
+  pruneChanges(context.store);
+  const retention = setInterval(() => {
+    if (context.closing.aborted) return;
+    try { pruneChanges(context.store); }
+    catch { console.error("变更记录清理失败，将在下一周期重试"); }
+  }, 60_000);
+  retention.unref();
+  const stopRetention = () => clearInterval(retention);
+  context.closing.addEventListener("abort", stopRetention, { once: true });
+  server.once('close', () => {
+    stopRetention();
+    context.closing.removeEventListener("abort", stopRetention);
+    context.requests.close();
+  });
   server.requestTimeout = 35_000;
   server.headersTimeout = 10_000;
   server.keepAliveTimeout = 1000;
@@ -247,7 +254,8 @@ async function route(context: ServerContext, method: string, url: URL, conn: Con
   if (pathname === "/v1/confirmations" && method === "GET") {
     auth.requireMain(conn);
     const limit = positive(url.searchParams.get("limit"), 50, 200), cursor = positive(url.searchParams.get("cursor"), 0, Number.MAX_SAFE_INTEGER, true);
-    const rows = security.listConfirmations(limit + 1, cursor, conn.type.startsWith("host:") ? undefined : conn.principalId);
+    const states = url.searchParams.getAll("state");
+    const rows = security.listConfirmations(limit + 1, cursor, conn.type.startsWith("host:") ? undefined : conn.principalId, states.length ? states : undefined);
     return ok({ items: rows.slice(0, limit), nextCursor: rows.length > limit ? String(rows[limit - 1]!.cursor) : null });
   }
   const confirmation = pathname.match(/^\/v1\/confirmations\/([^/]+)(?:\/(sign|cancel))?$/);
@@ -326,7 +334,7 @@ async function route(context: ServerContext, method: string, url: URL, conn: Con
   }
   if (pathname === "/v1/requests") {
     if (method === "POST") return { status: 201, body: context.requests.ask(conn, body) };
-    if (method === "GET") return ok(context.requests.list(conn, url.searchParams.getAll("state"), positive(url.searchParams.get("limit"), 50, 200), positive(url.searchParams.get("cursor"), 0, Number.MAX_SAFE_INTEGER, true)));
+    if (method === "GET") return ok(context.requests.list(conn, url.searchParams.getAll("state"), positive(url.searchParams.get("limit"), 50, 200), positive(url.searchParams.get("cursor"), 0, Number.MAX_SAFE_INTEGER, true), url.searchParams.get("taskId") ?? undefined));
   }
   const question = pathname.match(/^\/v1\/requests\/([^/]+)(?:\/(answer|escalate|cancel))?$/);
   if (question) {
@@ -353,12 +361,14 @@ async function route(context: ServerContext, method: string, url: URL, conn: Con
     auth.requireMain(conn);
     return ok({ daemonVersion: VERSION, instanceId: context.instanceId, protocol: PROTOCOL_RANGE, draining: tasks.draining, activeRuns: tasks.activeCount(), archiveBytes: await archiveStorageBytes(store.home), security: security.state(), taskCounts: store.all("SELECT status,COUNT(*) AS count FROM tasks GROUP BY status LIMIT 20") });
   }
+  if (pathname === "/v1/changes" && method === "GET") {
+    await streamChanges(store, auth, conn, url, request, response, context.closing);
+    return ok(null);
+  }
   if (pathname === "/v1/sessions" && method === "GET") {
     auth.requireMain(conn);
-    const limit = positive(url.searchParams.get("limit"), 50, 200), cursor = positive(url.searchParams.get("cursor"), 0, Number.MAX_SAFE_INTEGER, true);
-    const rows = tasks.acl.sessions(conn, cursor, limit + 1);
-    return ok({ items: rows.slice(0, limit).map(row => sessionView(row, store)), nextCursor: rows.length > limit ? String(rows[limit - 1]!.cursor) : null,
-      changesCursor: { epoch: store.get<{ value: string }>("SELECT value FROM settings WHERE key='epoch'")!.value, seq: store.get<{ seq: number }>("SELECT COALESCE(MAX(seq),0) AS seq FROM changes")!.seq } });
+    return ok(listSessions(store, conn, url.searchParams, positive(url.searchParams.get("limit"), 50, 200)));
+
   }
   const archiveDelete = pathname.match(/^\/v1\/sessions\/([^/]+)\/archive\/delete$/);
   if (archiveDelete && method === "POST") {
@@ -433,7 +443,7 @@ async function route(context: ServerContext, method: string, url: URL, conn: Con
     auth.requireMain(conn);
     const row = store.session(session[1]!);
     tasks.acl.session(conn, row);
-    return ok(sessionView(row, store));
+    return ok(sessionDetail(store, row.id));
   }
   if (pathname === "/v1/admin/shutdown" && method === "POST") {
     hostOnly(conn);

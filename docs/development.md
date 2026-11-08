@@ -2,15 +2,17 @@
 
 ## 实现范围
 
-切片 1c 提供任务核心与安全层，1d 提供存档和会话视图。六个 workspace 为 protocol、harness-pi、archive、daemon、extension、cli，不依赖 pi-pane。任务动作包括 spawn、list、status、result、steer、stop、cleanup 和 recover；权限档位为 explore、review、implement。子代理可以继续派出下级，daemon 强制核对 principal、直接召集关系、任务树、层数、下级数和档位。
+切片 1c 提供任务核心与安全层，1d 提供存档与会话视图；protocol、harness-pi、archive、daemon、extension、cli 不依赖 pi-pane。切片 2 的 pane-plugin 单独承担 pane 协议映射；daemon 提供持久变更流、按父分页和原子热节点快照。任务动作包括 spawn、list、status、result、steer、stop、cleanup 和 recover；权限档位为 explore、review、implement。子代理可以继续派出下级，daemon 强制核对 principal、直接召集关系、任务树、层数、下级数和档位。
+
 
 提问由 `agora_request` 创建、答复、逐级转交或取消；CLI 提供 pending 和 answer。父任务有未完成下级时进入 `waiting_children`，有未答复提问时进入 `waiting_decision`。两者 settled 后都释放推理名额，可空闲回收。需要推理的通知重新排队取得名额，必要时拉起原会话，再由扩展注入持久通知；静默投递与等待下级时的强制唤醒规则见 [tasks.md](tasks.md#工具一览)。
 
-安全层提供任务与提问的资源 ACL、任务树软预算、用户接管、设备配对与签名确认、离线安全命令、持久警告和审计。保护默认为 `device`，CLI 用户级操作生成待确认；1c 用独立 P-256 测试签名器验收真实 HTTP 通路，浏览器配对与确认界面在切片 2 接入。仅使用终端时，须停止 daemon 后执行 `agora offline set userConfirmation off`；关闭后无法区分用户与 Agent，未签名预算封顶和强制签名的安全动作仍生效。
+安全层提供任务与提问的资源 ACL、任务树软预算、用户接管、设备配对与签名确认、离线安全命令、持久警告和审计。保护默认为 `device`，CLI 用户级操作生成待确认；1c 用独立 P-256 测试签名器验收真实 HTTP 通路，pane 插件接入浏览器配对与确认的数据通路，浏览器界面由 pane M3 联调验收。仅使用终端时，须停止 daemon 后执行 `agora offline set userConfirmation off`；关闭后无法区分用户与 Agent，未签名预算封顶和强制签名的安全动作仍生效。
 
 存档查询包括快照、历史分页、SSE、流片段、运行诊断和完整性校验；daemon 离线时通过只读 adapter 查询。在线删除接入设备签名异步确认，保护关闭也须签名；只有显式 `--offline` 才使用独立维护入口。无任务关联的存档在线删除返回 `archive_offline_required`。
 
-尚未提供：board、会议和 pane 插件。可选扩展 / MCP 白名单及 `implement.projectTrust: "saved"` 推迟至 [#10](https://github.com/PosvdM/pi-agora/issues/10)；生产子会话固定 `-ne --no-mcp --no-approve`，只显式加载 agora，不引入 SDK 或额外 pi 依赖。测试 driver 可以独立注入假 provider，不开放生产 HTTP 注入。
+尚未提供：board 和会议；pane 插件不包含浏览器前端。可选扩展 / MCP 白名单及 `implement.projectTrust: "saved"` 推迟至 [#10](https://github.com/PosvdM/pi-agora/issues/10)；生产子会话固定 `-ne --no-mcp --no-approve`，只显式加载 agora，不引入 SDK 或额外 pi 依赖。测试 driver 可以独立注入假 provider，不开放生产 HTTP 注入。
+
 
 ## 环境与构建
 
@@ -44,6 +46,8 @@ npm test
 | `packages/daemon/src/tasks.ts` | 控制队列、树限制、调度、返工、恢复、软预算暂停、接管、回收和看门狗 |
 | `packages/daemon/src/sessions.ts`、`archive-verification.ts`、`archive-maintenance.ts` | 会话内存模型与 SSE、流片段与诊断、可信校验基线、磁盘统计及在线签名 / 显式离线删除 |
 | `packages/daemon/src/requests.ts`、`worktrees.ts` | 提问及逐级转交、按仓库串行的 worktree 操作 |
+| `packages/daemon/src/changes.ts`、`session-list.ts` | 持久变更游标、保留与 reset、背压、原子会话树列表及父关系投影 |
+| `packages/pane-plugin/src/` | pane 服务端数据插件，模块与持久化边界见 [pane-plugin.md](pane-plugin.md) |
 | `packages/daemon/src/driver.ts` | 既有导出的兼容入口，转出 pi 驱动实现 |
 | `packages/daemon/src/harness/types.ts` | 中立的启动规格、技能结果、逐请求用量 / 额度事件和最终消息观察 |
 | `packages/daemon/src/harness/pi/` | daemon 独用的 pi RPC、会话写锁、停止、UI、心跳、skill、参数、用量 / 额度及流式事件重建和最终消息适配 |
@@ -51,7 +55,8 @@ npm test
 | `packages/extension/src/notifications.ts` | 在途去重、完整磁盘记录核对和确认 |
 | `packages/cli/src/index.ts`、`main.ts`、`archive.ts` | CLI 参数、任务控制、在线与离线存档查询、SSE tail |
 
-扩展的路径检查只加载 `pi-hostkit/paths`，不加载原生模块。pane-plugin 在切片 2 创建；archive 不反向依赖 daemon，跨包 pi 解析由 harness-pi 提供。Harness 适配层边界及高成本保留项见 [总体架构](architecture.md#harness-适配层) 和 [耦合清单](harness-portability.md)。
+扩展的路径检查只加载 `pi-hostkit/paths`，不加载原生模块。archive 不反向依赖 daemon，跨包 pi 解析由 harness-pi 提供；pane-plugin 的协议副本、离线构建及测试入口见 [pane-plugin.md](pane-plugin.md)。Harness 适配层边界及高成本保留项见 [总体架构](architecture.md#harness-适配层) 和 [耦合清单](harness-portability.md)。
+
 
 ## 启动与配置
 
@@ -106,9 +111,12 @@ node packages/cli/dist/main.js config get --home <目录>
 node packages/cli/dist/main.js shutdown --timeout 600 --home <目录>
 ```
 
+`agora confirmations` 默认保留全状态的分页列表，不隐式隐藏终态。HTTP `GET /v1/confirmations` 可重复指定 `state`，允许 `pending`、`executing`、`confirmed`、`failed`、`cancelled`、`expired`；非法或空状态返回 400。pane 仅请求前两种活动状态，避免历史记录挤满待处理读取上限。
+
 只有 daemon start 自动启动 daemon。存档查询仅在没有发现记录或健康连接传输不可达时降级，不因身份、权限、协议或业务错误读取本地库。`tail` 在 `resync` 后重新取快照，凭证到期前按最后 cursor 续期重订阅；确认退出且流排空后退出，不明 cleanup 保持 `stopping`。离线只显示快照。CLI 输出 JSON，命令错误返回非零；校验结论以结果 `state` 为准，离线校验不写数据库。无 ID 的 `verify-archive` 自动跟随分页；在线端点接受 `limit` / `cursor`，默认及上限为 200，返回 `nextCursor`。
 
 用户级命令默认生成待确认，`--wait` 超时后应查询原确认，不应重新发起。`archive delete` 默认只连接已运行的 daemon 请求确认，`--wait` 默认等待 600 秒，可用 `--timeout` 调整；即使关闭保护仍需设备签名。显式 `--offline` 才进入维护，在线连接、鉴权或业务错误不会自动离线删除。host 可读取全部待确认，主 Agent 只能读取自己的；host 可取消其他 host / 主 Agent 发起的待确认，主 Agent 只能取消自己的。原生 PowerShell 中 JSON 参数按当前 shell 的引号规则传入；机器可直接使用 HTTP API，避免 shell 转义。
+
 
 shutdown 默认排空，超时后保留 daemon；force 中断并清理运行。停止固定先 clear_queue，再 abort 和 hostkit 清理；无法确认时保锁和诊断，不自动 assumeNoWriter。成功的重复 stop 不改已有终态结果、业务 revision 和更新时间。
 
@@ -120,15 +128,16 @@ shutdown 默认排空，超时后保留 daemon；force 中断并清理运行。�
 - **请求重试**：安全 GET、可幂等续期及带原 Idempotency-Key 的业务写入最多三次，共用一个总期限、原 token、参数与 key；间隔 50 / 100ms。取消、关闭、HTTP 拒绝、协议不兼容、无效 JSON 和一次性认证兑换不重试。子会话短暂续期传输错误不立即 fatal。`AgoraConnectionError.cause` 保留捕获的底层异常，message 附可获得的底层错误码；诊断提取不参与重试分类，不能将错误信息增强视为偶发 loopback 失败根因已解决。
 - **退出确认**：hostkit 在停止返回前确认已知身份退出可见；driver 在有效 StopReport 后单次独立核对写者身份，不设 Windows 专属轮询，也不补杀；alive / unknown 立即保锁。driver 的失败 stop 可显式重试，只复查原报告、身份和 release，不重放清队列或底层停止；已有失败报告不能变成新成功报告。TaskManager 重试仍核对版本与租约。
 - **任务软预算**：根任务授予受单树和共享日封顶限制，`none` 不免除封顶，子树不重复占日授予；用量按请求去重并计入祖先。达到任一祖先上限先持久化对应子树的 `budget_paused`，再 clear_queue、abort、停止进程；合法尾量可超过上限。调度、返工、唤醒、额度自动恢复和 recover 都不能绕过；增额不自动恢复任何任务，显式恢复父任务也不恢复下级。计数与授予规则见 [tasks.md](tasks.md#任务树软预算)。
-- **用户接管**：显式接管允许目标召集人仍可达；普通 host 不能直接 recover Agent 资源。持久化 `taken_over_from` 与 outbox，保留 parent_task_id 和用量归属。原 Agent 的目标 / 子树管理返回 task_taken_over；祖先停止和调低预算在副作用前检查边界，相关控制执行中返回 task_busy，排队请求重新授权。内部任务运行时保留管理自身下级的权限。
+- **用户接管**：显式接管允许目标召集人仍可达；普通 host 不能直接 recover Agent 资源。持久化 `taken_over_from` 与 outbox，保留 parent_task_id 和用量归属；展示挂载则移到用户任务根，并在事务内用持久 tree/all marker 使原父、用户根及子树重建。pane 的显式接管表单说明后果并请求设备签名，未接管的 Agent 任务不开放输入和恢复。原 Agent 的目标 / 子树管理返回 task_taken_over；祖先停止和调低预算在副作用前检查边界，相关控制执行中返回 task_busy，排队请求重新授权。内部任务运行时保留管理自身下级的权限。
 - **签名事务**：同步的 takeover、limits、提问及安全动作与 sign 共用业务 / nonce / 确认 / 审计事务；spawn、recover、archive delete 使用 signAsync，先提交 executing 和 nonce，再执行异步操作。重启将遗留 executing 标为 failed，不重放。实际审计表为 security_audit，字段见 [security.md](security.md#审计)。
-- **迁移**：schema v3 为任务树、限制、返工、提问和 worktree 增加字段与表；v4 保存 skill、额度及逐请求用量；v5 保存设备、待确认、安全警告、审计与预算授予；v6 增加可信哈希、字节数、校验时间和消息观察账本。旧库依次升级到 v6，已有 v2 任务按第一层、默认两层回填。迁移前从同一 SQLite 连接做一致性 backup、只读 integrity_check，DDL 同事务，提交前 foreign_key_check；失败回滚原库。
+- **迁移**：schema v3 为任务树、限制、返工、提问和 worktree 增加字段与表；v4 保存 skill、额度及逐请求用量；v5 保存设备、待确认、安全警告、审计与预算授予；v6 增加可信哈希、字节数、校验时间和消息观察账本。v7 仅新增 changes 对象类型、对象 ID 与 seq 的查询索引。旧库依次升级到 v7，已有 v2 任务按第一层、默认两层回填。迁移前从同一 SQLite 连接做一致性 backup、只读 integrity_check，DDL 同事务，提交前 foreign_key_check；失败回滚原库。
 - **只读归档**：不用 `SessionManager.open()`，原会话文件哈希不变；v1 在内存迁移，ID 不持久化，raw 游标绑定 reader + generation，追加、新 reader 以及观察到的 A→B→A 变化使旧游标失效；中间与尾部截断不直接判为可疑。会话文件、附属文件和目录的真实路径必须位于 AGORA_HOME 内。读取和投影分批让出事件循环，adapter 页面默认 50、上限 200。
 - **会话元数据与 ACL**：在线和离线共用 `SessionMetadata` 形状；任务有接管来源列时返回 `takenOver`，普通任务为 `false`，缺列旧库及非任务省略。`convenerId = user` 优先展示用户父节点，保留预算的 `parent_task_id`。host 全读，主 Agent 只读自己的会话与任务树且不跨接管边界，child 没有 full-view 权限；列表、详情、快照、历史、诊断、SSE、verify 使用同一 ACL。
 - **显式删除**：在线仅接受 `expectedRevision`，强制设备签名，经任务控制队列排空归档并设置视图删除屏障。在线与离线都核验终态、全部 run 已退出且 cleanup 无误、写锁释放与真实路径；部分文件删除失败记录 suspect / archive_delete_failed。离线还持有实例锁，不停止未知写者，不自动清理。
 - **流与校验**：`message_end` 只记录匹配证据，取得 RPC entryId 且磁盘完整换行和内容相等才关闭片段。停止未确认时继续归档迟到流；I/O 失败保留旧 run 的 pending，切换 run 和服务 close 前重试持久化，失败不能宣称 flush 成功。可疑或缺失结果不覆盖可信前缀基线，在线与离线校验复用相同证据。
 - **SSE 生命周期**：实时队列上限 1 MiB，等待 drain 解除背压，历史逐帧惰性序列化；普通 ended / resync 排空后结束，显式服务 close 可取消回放。历史 EOF 要求终态、无控制操作且全部 run 确认退出；created 等待启动时保持订阅，证据不明时保持 stopping。
 - **旁车提交**：片段与诊断分别保留重试职责。片段批次先复制已提交文件到同目录独占临时文件，在固定句柄中追加完整批次并 sync，最后 rename；部分写入失败不能污染可见 JSONL，重试不能重复增量。复制每批旧文件有累计 I/O 成本，reader 忽略崩溃遗留 `.tmp`，不自动回收。
+
 - **恢复**：旧 run 未确认退出不能拉起写者；resume 代数不变，reopen / replace 新建继承会话并增加代数，历史 result 指向所属代数的会话。连续 resume 失败两次后需重开、换人或放弃，不自动重放副作用。
 
 ### 通知事件身份
@@ -179,6 +188,8 @@ shutdown 默认排空，超时后保留 daemon；force 中断并清理运行。�
 | `test/notification-clear-1b.test.mjs`、`claim-fork-1b.test.mjs` | 真实主 pi 清队列 / abort 后重投、同代只唤醒一次与返工再次唤醒；fork 与原会话并发认领、同 sessionId 并发租约 |
 | `test/extension-client.test.mjs`、`extension-wire.test.mjs` | 双向认证、协议与发现记录故障，Windows 原子发布重试 |
 | `test/cli.test.mjs`、`protocol-cli.test.mjs` | 独立 CLI 进程、单实例复用、参数和协议 |
+| `test/changes-s2.test.mjs`、`pane-daemon-s2.test.mjs` | daemon 重启与变更流 reset、原子热快照、按父分页、持续鉴权和背压；真实 HTTP 插件树重新收敛 |
+| `test/pane-*-s2.test.mjs`、`pane-api-vendor.test.mjs` | 插件在线/离线映射、动态动作、持久表单、确认与横幅、重启幂等和生命周期；详细映射见 [pane-plugin.md](pane-plugin.md#测试) |
 
 CI 在 Windows、macOS、Linux auto / snapshot 四个组合执行 npm test。Linux auto 要求真实 cgroup 可用。Windows 完整测试后额外重复 shell 后代退出核对十次；每次在停止报告返回后立即查询独立 oracle 的已知身份，保留完整 StopReport 和单次观测诊断，不设置额外观察窗口，也不补杀。driver-faults 在 Windows 与 Linux 隔离 worker 中均断言单次核对、失败保锁及显式重试不重放底层停止。
 

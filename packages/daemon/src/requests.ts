@@ -114,13 +114,14 @@ export class Requests {
     this.acl.question(conn, row, 'read');
     return this.view(row);
   }
-  list(conn: Connection, states: string[] = [], limit = 50, cursor = 0) {
+  list(conn: Connection, states: string[] = [], limit = 50, cursor = 0, taskId?: string) {
     const actor = this.actor(conn);
     this.expire();
+    if (taskId !== undefined) text(taskId, 'taskId', 128);
     const visible: (RequestRow & { cursor: number })[] = [];
     let scan = cursor;
     while (visible.length <= limit) {
-      const rows = this.store.all<RequestRow & { cursor: number }>(`SELECT rowid AS cursor,* FROM requests WHERE rowid>? AND (?='user' OR asker_id=? OR target_id=?) ${states.length ? `AND state IN (${states.map(() => '?').join(',')})` : ''} ORDER BY rowid LIMIT ?`, scan, isHost(conn) ? 'user' : actor, actor, actor, ...states, limit + 1);
+      const rows = this.store.all<RequestRow & { cursor: number }>(`SELECT rowid AS cursor,* FROM requests WHERE rowid>? AND (?='user' OR asker_id=? OR target_id=?) AND (? IS NULL OR task_id=?) ${states.length ? `AND state IN (${states.map(() => '?').join(',')})` : ''} ORDER BY rowid LIMIT ?`, scan, isHost(conn) ? 'user' : actor, actor, actor, taskId ?? null, taskId ?? null, ...states, limit + 1);
       for (const row of rows) {
         scan = row.cursor;
         try { this.acl.question(conn, row, 'read'); }

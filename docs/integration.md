@@ -34,7 +34,9 @@ pi-hostkit        ◄── daemon、extension（pi-pane 服务端也依赖它�
 
 - `daemon`、`extension`、`cli`、`archive`、`protocol` 都不依赖 pi-pane。不装 pi-pane 时 pi-agora 完整可用。
 - 只有 `packages/pane-plugin` 把 `@pi-pane/plugin-api` 作为 peer 依赖，负责把 agora 的数据翻译成 pane 协议。pane 协议升级时只需改这个包。
+- 插件固定使用 pi-pane 提交 `03f7916c1a7e3787fc4eaddbdfb10667a217fae7` 的协议源码。monorepo 子包通过只读 `vendor/plugin-api` 副本参与离线构建；来源记录、哈希、CI 比对和升级步骤见 [pane-plugin.md](pane-plugin.md#协议副本)。禁止手工修改副本。
 - `packages/archive` 提供 `projectUserView` 和 `projectPartials`，在线与离线共用用户聊天分支和中断块投影（见 [archive.md](archive.md#三种投影)）。pi 专有文件解析位于共享的 `packages/harness-pi`，archive 不依赖 daemon。
+
 
 ## 连接拓扑
 
@@ -124,7 +126,7 @@ HTTP 签名入口的同步动作（包括 task takeover、limits、提问答复�
 
 `POST /v1/tasks` 接受可选 `maxTokens`；`POST /v1/tasks/:id/limits` 使用 `{ maxTokens, expectedRevision? }` 调整子树软预算。`spawn`、详情、结果和 limits 响应的 `budget` 含当前上限、累计用量、剩余量、计数口径与祖先上限 / 用量 / 暂停标志。计数、共享日授予、默认值及 `budget_paused` 的显式恢复规则见 [tasks.md](tasks.md#任务树软预算)。
 
-`POST /v1/tasks/:id/takeover` 是用户级显式接管，可接管召集人仍可达的任务；普通 host 不能直接 recover Agent 资源。原 Agent 的目标 / 子树管理返回 `403 task_taken_over`，相关控制执行中的接管返回 `409 task_busy`；接管不改变父子关系或用量归属。完整边界见 [tasks.md](tasks.md#用户接管)。
+`POST /v1/tasks/:id/takeover` 是用户级显式接管，可接管召集人仍可达的任务；普通 host 不能直接 recover Agent 资源。原 Agent 的目标 / 子树管理返回 `403 task_taken_over`，相关控制执行中的接管返回 `409 task_busy`；接管保留预算父链和用量归属，展示挂载移到用户任务根。完整边界见 [tasks.md](tasks.md#用户接管)。
 
 `POST /v1/tasks` 接受可选的 `skills: string[]`，省略时按权限档位配置默认值，未配置时为空；显式数组覆盖默认值，下级只能取上级名单的子集。错误为 `400 skill_not_found`（未找到、歧义或不可访问）和 `403 skill_upgrade`（越出上级名单）。名字格式遵守 pi skill 规范：至多 64 字符，小写字母、数字和单个连接号，不以连接号开头或结尾。
 
@@ -164,7 +166,7 @@ HTTP 签名入口的同步动作（包括 task takeover、limits、提问答复�
 | 主会话 | `POST /v1/principals/register`、`/reclaim` | 注册、恢复后认领 principal | 主会话扩展 |
 | | `POST /v1/lease/renew`、`/release` | 每 30 秒续控制租约及连接 token；关闭或切换主会话时释放租约 | 主会话扩展 |
 | | `POST /v1/principals/:id/takeover` | 强制转移租约（用户级） | CLI、pane 插件 |
-| 用户确认 | `GET /v1/confirmations`、`GET /v1/confirmations/:id` | 待确认列表与详情（状态、发起方、挑战、过期时间和执行结果） | CLI、pane 插件 |
+| 用户确认 | `GET /v1/confirmations`、`GET /v1/confirmations/:id` | 确认列表与详情（状态、发起方、挑战、过期时间和执行结果）；重复 state 参数过滤活动状态，省略时保留全状态列表 | CLI、pane 插件 |
 | | `POST /v1/confirmations/:id/sign` | 提交设备签名 `{ deviceId, publicKey, alg, signature }`，验签后执行 | pane 插件 |
 | | `POST /v1/confirmations/:id/cancel` | 用户拒绝 | pane 插件、CLI |
 | 设备 | `POST /v1/devices/pair` | 取配对挑战（`action: "agora.device.pair"`），新设备用自己的密钥签名后提交。同一事务内按三种情况处理：`everPaired = false` → TOFU 直接配对；`reTofuArmed = true`（离线重置后）→ 直接配对并消费该状态；其他 → 进入待批准。规则见 [security.md](security.md#配对状态) | pane 插件 |
@@ -179,7 +181,7 @@ HTTP 签名入口的同步动作（包括 task takeover、limits、提问答复�
 | | `GET /v1/tasks`、`GET /v1/tasks/:id`、`GET /v1/tasks/:id/result?generation=` | 列表、当前详情、指定代结果 | 同上 |
 | | `POST /v1/tasks/:id/steer`、`/stop`、`/cleanup`、`/recover`、`/limits`、`/takeover` | 返工、停止、清理 worktree、中断后的处理、调整任务树软预算、接管 | 同上 |
 | 提问 | `POST /v1/requests` | 提问 | 协作会话扩展 |
-| | `GET /v1/requests`、`GET /v1/requests/:id` | 当前身份可见提问，支持重复 state 参数及 limit / cursor 分页 | 全部 |
+| | `GET /v1/requests`、`GET /v1/requests/:id` | 当前身份可见提问，支持 taskId、重复 state 参数及 limit / cursor 分页 | 全部 |
 | | `POST /v1/requests/:id/answer`、`/escalate`、`/cancel` | 答复、逐级转交、取消；保留原 requestId，答案回原提问者 | 直接接收方、未转给用户前的提问者取消、host 发起用户确认 |
 | board | `GET /v1/boards/:id`、`GET /v1/boards/:id/entries?afterSeq=` | 元数据、公开条目 | 成员、`host:*` |
 | | `POST /v1/boards/:id/entries` | 发条目（`sealed` 仅会议密封阶段） | 成员、召集人、`host:*`（作者为 user，用户级） |
@@ -302,14 +304,21 @@ CLI `tail` 在连接凭证到期前续期，按最后收到的 `{ epoch, seq }` 
 
 ## 变更流
 
-本节为切片 2 的接口目标；切片 1d 只提供会话事件流，不开放 `/v1/changes`。
+`GET /v1/changes?epoch=<e>&afterSeq=<n>`（SSE）推送领域对象的变更：任务、协作会话、会议、提问、board 头序号、待确认、设备。pane 插件据此生成 `TreeChange`、刷新面板和表单。当前只允许 `host:cli`、`host:pane` 读取全局变更流，主/子 Agent 不能用它取得无权读取的对象 ID。
 
-`GET /v1/changes?epoch=<e>&afterSeq=<n>`（SSE）推送领域对象的变更：任务、协作会话、会议、提问、board 头序号、待确认、设备。pane 插件据此生成 `TreeChange`、刷新面板和表单。
+每条记录使用 `event: change`，data 为 `{ cursor: { epoch, seq }, objectType, objectId, tombstone }`。无效切点只返回一条 `event: reset`，data 为 `{ epoch }`，随后关闭连接。流保持期间持续检查 token，关闭 daemon、撤销或过期凭证都会终止连接。
+
+`objectType: "tree", objectId: "all"` 是持久的结构失效标记。会话重开、换人等结构迁移在同一事务里写入该标记；插件将其映射为树 `reset`，不改变数据库 epoch。重建后的节点 revision 至少达到最近结构标记的 seq；标记被保留清理移走后，其水位仍保存在对象 head 中。
+
 
 - 变更记录持久化在 `changes` 表，与业务状态变更同事务写入。每条记录带 `seq`（全局递增）、对象类型与 id；删除时带 `tombstone: true`。
 - `epoch` 是数据库级的标识，只在数据库被重建或从备份恢复时改变。
 - **保留与过期**：变更记录保留 7 天且至少保留最近 10 万条。请求的 `epoch` 不同、`afterSeq` 早于保留范围、或 `afterSeq` 大于当前 head 时，daemon 只返回一条 `event: reset`；客户端（pane 插件）丢弃本地状态，重新取快照。
 - **快照切点**：`GET /v1/sessions` 等列表接口的响应带 `changesCursor: { epoch, seq }`，与列表内容在同一个只读事务里读出，客户端用它订阅变更流即可不重不漏。
+
+会话列表的普通分页默认 50 条、最多 200 条；`parent=<nodeId>` 只返回直接子节点，游标绑定数据库 epoch、调用者和过滤条件，不能跨父节点复用。返回的 `parent?: SessionParent` 使用中立的 `task`、`main` 或 `user` 关系，节点 ID 由 pane 插件映射；无法确定主会话 ID 时省略关系，进入未归属。用户接管后 `convener = user` 的挂载优先于预算树的 `parentTaskId`，该任务连同子树移入用户任务根；预算和用量仍保留原父链，原召集人不能通过树查询继续读取接管子树。
+
+`GET /v1/sessions?snapshot=1&openNodeId=<可重复>&recentSince=<ISO时间>` 在同一切点返回全部热节点及祖先。树快照不分页、不接受 `cursor`，最多一万条；超限返回 `413 snapshot_too_large`，不静默截断。`snapshot=1` 不能与 `parent` 同时使用。
 
 ## agora 到 pane 协议的映射
 
@@ -344,7 +353,7 @@ agora:root:user-tasks            〔用户任务〕   用户通过 CLI 或 pi-pa
 
 #### 同步与按需加载
 
-- **修订号**：pane 插件的来源级 `revision` 直接用变更流的 `seq`，`epoch` 用变更流的 `epoch`。每条变更对应一条 `TreeChange`：`upsert` 的 `revision` 和 `node.revision` 为该变更的 `seq`。
+- **修订号**：pane 插件的来源级 `revision` 直接用变更流的 `seq`，`epoch` 用变更流的 `epoch`。普通对象变更对应一条 `TreeChange`：`upsert` 的 `revision` 和 `node.revision` 为该变更的 `seq`。提问、设备等非树对象以虚拟用户任务根的 `upsert` 推进来源水位，避免分页等待不会推送的修订号；`tree/all` 结构标记对应 `reset`，重建整棵来源树。
 - **删除**：`agora archive delete` 只删存档文件、保留元数据，节点仍可列出，插件发 `upsert`，节点的 `availability` 变为 `missing`。只有对象的元数据也被删除、不再能列出时，才发带 `revision` 的 `remove`（tombstone）；MVP 没有删除元数据的操作。
 - **订阅与重置**：`tree.subscribe` 以快照的 `{ epoch, revision }` 为起点（参数形状以 pi-pane `docs/plugin-api.md` 为准），插件用它作为变更流的 `epoch` 和 `afterSeq`。`epoch` 不符、`revision` 大于当前 head 或早于保留范围时，变更流返回 `reset`，插件向 pi-pane 发 `TreeChange` 的 `reset`。
 - **快照**：`tree.snapshot(req)` 只返回热节点及其祖先，热节点的定义以 pane 协议为准（`req.openNodeIds` 中的节点、`status` 为 `running`/`waiting`/`paused` 的节点、`lastActivityAt` 晚于 `req.recentSince` 的节点）。插件把这些条件转成 daemon 的列表查询，响应里的 `changesCursor.seq` 就是快照的 `revision`。
@@ -374,15 +383,19 @@ agora:root:user-tasks            〔用户任务〕   用户通过 CLI 或 pi-pa
 
 | 节点 | daemon 在线 | daemon 不在线 |
 | --- | --- | --- |
-| 运行中的任务 | `open`、`subscribe`、`send`、`abort`、`action:agora.task.steer`、`action:agora.task.stop` | `open` |
-| 已完成、失败的任务 | `open`、`send`、`action:agora.task.steer`（返工）、`action:agora.task.cleanup` | `open` |
-| 中断的任务 | `open`、`action:agora.task.recover` | `open` |
-| 额度暂停的任务 | `open`、`action:agora.task.recover`（resume）、`action:agora.task.stop` | `open` |
+| 用户管理的运行任务 | `open`、`subscribe`、`send`、`abort`、`action:agora.task.steer`、`action:agora.task.stop` | `open` |
+| 用户管理的已完成、失败任务 | `open`、`send`、`action:agora.task.steer`（返工）、`action:agora.task.cleanup` | `open` |
+| 用户管理的中断任务 | `open`、`action:agora.task.recover` | `open` |
+| 用户管理的额度或预算暂停任务 | `open`、`action:agora.task.recover`（resume）、`action:agora.task.stop` | `open` |
+| Agent 管理的当前任务 | `open`、`action:agora.task.takeover`；按状态保留订阅、停止和清理，不提供 `send`、steer 或 recover | `open` |
+| 历史任务会话 | `open`，`availability: archived` | `open` |
 | 参会者、书记 | `open`、`subscribe` | `open` |
 | 会议 | `action:agora.meeting.interject`、`action:agora.meeting.decide`、`action:agora.meeting.limits`、`action:agora.meeting.stop` | 无 |
 | board | 无（点击 resource 节点时 pi-pane 打开适用的 `agora.board` 面板；`open` 只用于 session 节点） | 无 |
 
-- `send`：任务节点同时填 `composer: { actionId: "agora.task.steer", placeholder: "对子代理补充说明或返工", images: false }`。pi-pane 把聊天输入框的提交转成该动作（文字在 `input.fields.message`），插件调用 `POST /v1/tasks/:id/steer`，保证有记录、有代数。`interrupt` 由动作表单的 checkbox 选择；输入框提交时为 `false`。
+Agent 管理的当前任务在状态说明里显示“由 Agent 管理，接管后可操作”。接管动作的表单与确认提示写明原 Agent 将不能继续管理任务及子树，并经设备签名；成功后才开放输入和恢复，不能自动替用户接管。结构 marker 同时使已打开的会话 resync，重新读取只读权限。排队的 `created` 任务尚不能返工。
+
+- `send`：用户管理的任务当前会话节点同时填 `composer: { actionId: "agora.task.steer", placeholder: "对子代理补充说明或返工", images: false }`。pi-pane 把聊天输入框的提交转成该动作（文字在 `input.fields.message`），不附动作表单的 id 或 revision；该受限通路只接受文字并固定 `interrupt: false`，仍保存固定请求快照。菜单里的返工表单保留版本校验，`interrupt` 由 checkbox 选择。两条通路都调用 `POST /v1/tasks/:id/steer`，保证有记录、有代数；`sessions.send` 也复用同一请求机制。`isCurrent: false` 的历史任务会话只有 `open` 能力，不能误控任务的当前运行。
 - `abort`：插件实现 `sessions.abort(ref, { clearQueue, origin })`，调用 `POST /v1/tasks/:id/stop`，语义是取消（先 `clear_queue` 再 `abort`，见 [tasks.md](tasks.md#agora_task-接口)）。`AbortResult.clearedText` 填被清掉的返工消息原文（去掉 agora 加的标注行），pi-pane 放回输入框。
 - 参会者和书记不带 `send`：会议中对参会者说话一律通过会议插话，进入 board。
 
@@ -395,7 +408,7 @@ pane 插件的 `sessions.snapshot`、`sessions.history`、`sessions.subscribe` �
 | 会话 id `as_…` | `SessionRef { source: "agora", id: "as_…" }` |
 | 快照的 `cursor`、`leafId`、`entries`、`historyBefore`、`inFlight`、`unfinishedPartials` | `SessionSnapshot` 的同名字段 |
 | `status` | 按“状态映射”转换 |
-| — | `readonly`：可以 steer 的任务为 `false`（输入框经 `composer` 转成 steer）；参会者、书记为 `true`（`readonlyReason: "noPermission"`）；daemon 不在线时为 `true`（`"archived"`） |
+| — | `readonly`：用户管理且可 steer 的当前任务为 `false`；Agent 管理的任务、参会者和书记为 `true`（`noPermission`）；历史任务会话或 daemon 不在线时为 `true`（`archived`） |
 | `GET .../history` | `sessions.history` 的 `HistoryPage` |
 | SSE 的 `cursor`、`event` | `SessionStreamEvent` 的 `cursor`、`event`；`agora_entries` 转为 `pane_entries`；`agora_status` 转为 `pane_status`（`status` 按映射转换，`phase` 原样，`statusDetail` 放入 `detail`）；`agora_run` 本身不转发，它引起的 `resync` 原样转发 |
 
@@ -434,7 +447,8 @@ pane 插件通过 `renderers.customMessages` 声明 agora 自定义消息的渲�
 | `agora.task.steer` | `["node"]` | 是 | textarea `message`，checkbox `interrupt` | `POST /v1/tasks/:id/steer` | 主 Agent 级 |
 | `agora.task.stop` | `["node"]` | 否，`confirm` | — | `POST /v1/tasks/:id/stop` | 主 Agent 级 |
 | `agora.task.cleanup` | `["node"]` | 是 | checkbox `discard` | `POST /v1/tasks/:id/cleanup` | 主 Agent 级 |
-| `agora.task.recover` | `["node"]` | 是 | 单选 resume / reopen / replace / abandon（选项随任务状态） | `POST /v1/tasks/:id/recover` | 见 [security.md](security.md#任务) |
+| `agora.task.recover` | `["node"]` | 是 | 单选 resume / reopen / replace / abandon（选项随任务状态） | `POST /v1/tasks/:id/recover` | 用户级；只用于用户管理的任务 |
+| `agora.task.takeover` | `["node"]` | 是，且 `confirm` | 说明接管后原 Agent 将不能再管理该任务及子树，无额外参数 | `POST /v1/tasks/:id/takeover` | 用户级，需显式设备确认 |
 | `agora.meeting.convene` | `["global", "node"]` | 是 | 议题、交付物、brief、参会者（`type: "group"`，`min: 2`、`max: 4`，子字段为名称、模型、角色）、合并人、上限 | `POST /v1/meetings` | 主 Agent 级；pane 召集的会议是用户召集，上限超出 `meetingLimitDefaults` 时用户级 |
 | `agora.meeting.interject` | `["node"]` | 是 | kind 单选 + 正文 | `POST /v1/meetings/:id/interject` | 用户级 |
 | `agora.meeting.decide` | `["node"]` | 是 | 由当前决策请求生成 | `POST /v1/meetings/:id/decide` | 见 [security.md](security.md#会议) |
@@ -514,6 +528,9 @@ daemon 不在线时（没有发现记录或 `/v1/health` 传输不可达），CL
 pane 插件和 CLI 的存档查询不直接读 SQLite 表，不解析 `AGORA_HOME` 文件布局，全部通过 adapter。显式离线删除单独调用 daemon 包的维护入口，不属于只读 adapter。
 
 离线 `verifySession(id)` 使用数据库保存的消息观察与可信前缀基线，但只返回结果；CLI 用 `persisted: false` 标明没有更新状态。CLI 命令退出码表示命令是否完成，完整性结论以结果的 `state` 为准。`tail` 在确认退出后的正常流排空后退出；历史会话的全部 run 都须确认退出，不明 cleanup 不视为 EOF。`resync` 则重新取快照；离线时只返回快照，不伪装为实时订阅。
+
+插件的离线扫描及持久文件上限见 [pane-plugin.md](pane-plugin.md#幂等与资源上限)。
+
 
 pane 插件与 pi-pane 服务端在同一进程里运行，pi-pane 对插件调用只做合作式的异步超时，同步的长时间计算会卡住整个服务端。所以插件和 adapter 都不做同步重计算：`node:sqlite` 的同步查询都带 `LIMIT`，会话文件用流式异步读取并分页，单次处理的条目数有上限。
 
