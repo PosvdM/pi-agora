@@ -1,6 +1,6 @@
 # 安全模型
 
-> 本文描述完整安全设计。切片 1b 实现 principal、租约、launch ticket、最终就绪、三档路径检查，以及任务树的直接召集关系与权限限制。完整用户级确认、设备配对、审计和资源 ACL 在 1c。1b 的 CLI 可以直接答复提问，尚不能区分用户与同一系统用户下的 Agent。
+> 切片 1c 提供任务与提问的资源访问控制、任务树软预算、待确认、设备签名、离线命令、安全状态与审计。浏览器确认界面在切片 2 接入；board、会议和存档的权限表仍是对应切片的约束，不表示端点已经开放。可选扩展 / MCP 与 saved 项目信任隔离推迟，见 [#10](https://github.com/PosvdM/pi-agora/issues/10)。
 
 本文定义 agora daemon 的身份、鉴权、用户确认、设备配对、资源访问控制、审计和剩余风险。进程与存储见 [architecture.md](architecture.md)，平台相关的实现（密钥目录权限、路径规范化）见 [pi-hostkit 设计文档](https://github.com/PosvdM/pi-hostkit/blob/main/docs/design.md)，HTTP 端点见 [integration.md](integration.md)。
 
@@ -91,8 +91,14 @@ CLI、pane 插件和主会话里的扩展用 `host.key` 与 daemon 双向握手�
 daemon 拉起协作会话时生成一次性 launch ticket，经环境变量 `AGORA_LAUNCH_TICKET` 传入。扩展启动后立即用 `POST /v1/auth/launch` 兑换连接 token，并从 `process.env` 删除该变量，避免 `bash` 子进程继承。ticket 绑定 runId，60 秒内有效、只能兑换一次；进程退出后对应 token 作废，重新拉起换新 ticket。环境变量在被删除之前对同一进程里的其他代码可见，实际暴露范围：
 
 - explore、review、会议席位和书记用 `-ne` 只加载 agora 扩展，进程里没有其他扩展。
-- implement 可能按配置加载白名单扩展和 `builtin:mcp`。agora 扩展排在 `-e` 的第一位，在工厂函数里同步读取并删除该变量。P0 实测证明：首位扩展删除该变量后，后续扩展工厂、MCP 服务器进程和 `bash` 子进程均无法读取 ticket；即使 `builtin:mcp` 排在前面，MCP 进程也是在变量删除后才启动。若排在前面的其他扩展读到 ticket 并抢先兑换，pi 会以退出码 1 退出，被宿主捕获为启动故障而不予重试。此外，为了防止未列入白名单的 MCP 服务器产生后台副作用，agora 会为每个子代理单独生成只包含白名单服务器的 MCP 配置文件。
+- 生产 implement 同样固定 `-ne --no-mcp --no-approve`，只显式加载 agora 扩展。可选扩展、`builtin:mcp` 和 saved 项目信任尚不接受配置。agora 扩展在工厂函数的首个异步操作之前读取并删除 ticket；P0 对可选扩展/MCP 的实测只能作为后续隔离设计的依据，不能代替生产配置隔离。
 - 读到 ticket 的代码最多抢先兑换它：ticket 只能兑换一次，被抢先后 agora 扩展兑换失败，就绪检查不通过，run 被结束（见 [architecture.md](architecture.md#受管扩展的就绪检查)）；抢到的 token 只有该协作会话自己的权限，且随进程退出作废。兑换之后还要完成受管扩展的就绪检查，见 [architecture.md](architecture.md#受管扩展的就绪检查)。
+
+## 可选扩展与 MCP 的隔离边界
+
+切片 1c 推迟可选扩展、MCP 白名单与 `implement.projectTrust: "saved"`，见 [#10](https://github.com/PosvdM/pi-agora/issues/10)。这与原设计在 1c 开放这些配置的范围不同：pi 1.5 CLI 没有独立 auth/models 路径；私有 `agentDir` 若复制 OAuth refresh token，会分叉凭证并可能使原登录失效。给 auth 文件建立链接也不能保证不同路径共用同一锁。只有 SDK 支持单独传入这些路径，采用它会扩大驱动和内部 API 的耦合，当前不引入第二种启动路径。
+
+生产配置保持 fail closed。工具白名单不会阻止未列入名单的 MCP 服务器启动，因此不能只添加 `mcp__<server>__*` 就声称实现隔离。待 pi CLI 提供独立凭证路径或 MCP 来源覆盖能力后，再考虑私有配置目录、白名单 MCP 配置和已保存信任的受控投影；当前不复制凭证、不投影配置、不改变项目文件。
 
 ## Skill 白名单
 
@@ -115,7 +121,7 @@ implement 档位可以用 shell 运行 skill 附带的脚本。shell 不做路�
 
 ## 用户确认
 
-本节是 1c 的设计目标。1b 只提供转交和 host:cli 直接答复通路，答复标注 confirmedBy: none；host:pane 不接受此直接执行路径。任何能取得 host.key 的同用户进程都能通过 CLI 身份答复，不能将 1b 声称为已实现用户防冒充。预算封顶、待确认、设备和安全审计尚未开放。
+保护默认为 `device`。`host:cli` 和 `host:pane` 都只能发起待确认，不能凭 `host.key` 直接以用户身份答复。请求体里的 `user`、`principalId`、`confirmedBy` 等字段没有授权作用。浏览器入口尚未接入时，自动化测试使用独立 P-256 签名器验证同一 HTTP 流程；只用终端的用户按“只用终端”一节离线关闭保护。
 
 用户级操作必须由已配对浏览器对 daemon 下发的一次性挑战签名，daemon 验签后才执行。pi-pane 服务端只转发，无法伪造签名；pi-pane 的 HTTP 接口没有任何 Agent 可用的凭证（pi-pane 的鉴权见其 `docs/architecture.md`）。
 
@@ -244,6 +250,8 @@ daemon 启动时、以及在线检测到状态变化时，检查以下情况，�
 
 ## 资源级访问控制
 
+统一入口按“动作 × 调用方级别 × 资源关系”授权：`packages/daemon/src/acl.ts` 处理任务/提问关系，任务与提问服务在读取、列表、状态迁移及异步操作后的复核中使用同一规则；HTTP 身份取自连接 token。下列任务、提问、设备与设置表对应已实现资源，board、会议和存档表对应后续切片的约束。
+
 `user` 没有连接 token，用户级操作都经 CLI 或 pane 插件（`host:*`，即 `host:cli` 和 `host:pane`）发起、确认后以 `user` 身份执行。下表中：✔ 为允许；✘ 为拒绝；“确认”为用户级操作，需要用户确认（见“用户确认”）；“召集人”指资源的 convener；“成员”指 board 成员或会议席位。
 
 ### 任务
@@ -271,9 +279,9 @@ daemon 启动时、以及在线检测到状态变化时，检查以下情况，�
 | answer（`open`，召集人为 agent:main） | 确认 | ✔ | ✘ |
 | answer、cancel（`escalated`，或召集人为 user） | 确认 | ✘ | ✘ |
 | escalate | ✘ | ✔，主代理转给用户 | 作为直接召集人时逐级向上转交 |
-| cancel（`open`，召集人为 agent:main） | ✘ | ✔ | ✔（自己提的） |
+| cancel（`open`，当前接收方为 Agent） | 确认 | ✔ | ✔（自己提的，且尚未转给用户） |
 
-### board
+### board（后续切片）
 
 | 操作 | host:* | 召集人（owner） | writer 成员 | reader 成员、书记 |
 | --- | --- | --- | --- | --- |
@@ -285,7 +293,7 @@ daemon 启动时、以及在线检测到状态变化时，检查以下情况，�
 | 新建独立 board | ✔ | ✔ | ✘ | ✘ |
 | 把 board 绑定到任务（spawn 的 `boardId`） | ✔ | ✔ | ✘ | ✘ |
 
-### 会议
+### 会议（后续切片）
 
 | 操作 | host:* | 召集人（agent:main） | 参会者 | 书记 |
 | --- | --- | --- | --- | --- |
@@ -300,7 +308,7 @@ daemon 启动时、以及在线检测到状态变化时，检查以下情况，�
 | stop | ✔ | ✔ | ✘ | ✘ |
 | endorse | ✘ | ✘ | ✔（自己的席位） | ✘ |
 
-### 存档
+### 存档（后续切片）
 
 | 操作 | host:* | 召集人 | agent:child |
 | --- | --- | --- | --- |
@@ -350,7 +358,7 @@ daemon 启动时、以及在线检测到状态变化时，检查以下情况，�
 
 `packages/protocol/src/git.ts` 是 Git 的唯一进程入口。`gitRead` 只接受 `status`、`diff`、`log`、`show` 及固定的参数白名单；`gitExec` 供 daemon 内部使用，参数不能来自工具调用方。worktree 管理使用 `rev-parse`、`worktree add --no-checkout`、`reset --hard`、`ls-files --stage -z`、`worktree remove`；配置探测使用 `config --null`。流式索引检查与缓冲执行器共用安全前缀、环境和 filter 探测，逐条只保留 7 字节的 mode，不受查询输出的 1 MiB 限制。
 
-安全层先从任务 cwd 的真实路径向上查找最近的 `.git` 文件或目录，独立确定仓库根，再将加固 `rev-parse --show-toplevel` 的真实路径与其比较（Windows 不区分大小写）。结果不一致时返回 `EAGORA_GIT_WORKTREE_MISMATCH`，不执行配置探测、查询、索引检查或 worktree 操作；无法找到布局时返回 `EAGORA_GIT_WORKTREE_LAYOUT`。gitfile 和 `commondir` 的 linked worktree 可以使用；`core.worktree` 包括 `extensions.worktreeConfig` 下的 `config.worktree` 也必须指向同一仓库根。清理同时核验主仓库与目标 worktree，不将主仓库根强制传播给内部子 Git。
+安全层先从任务 cwd 的真实路径向上查找最近的 `.git` 文件或目录，独立确定仓库根，再将加固 `rev-parse --show-toplevel` 的真实路径与其比较（Windows 不区分大小写）。结果不一致时返回 `EAGORA_GIT_WORKTREE_MISMATCH`，不执行配置探测、查询、索引检查或 worktree 操作；无法找到布局时返回 `EAGORA_GIT_WORKTREE_LAYOUT`。gitfile 和 `commondir` 的 linked worktree 可以使用；`core.worktree` 包括 `extensions.worktreeConfig` 下的 `config.worktree` 也必须指向同一仓库根。核验返回文件系统确定的根，后续配置探测、直接查询、流式索引检查和检出均用命令行 `--work-tree=<已核验根>` 固定执行根，避免核验后修改 `core.worktree` 改变执行范围。清理同时核验主仓库与目标 worktree，并按目标 linked worktree 固定内部 status 的上下文；不在共用前缀或环境中设置父仓库根。并发替换目录、`.git`、gitfile 等文件系统结构仍属 TOCTOU 剩余风险。
 
 每次启动 Git 都移除继承的所有大小写 `GIT_*` 变量，以及 `SSH_ASKPASS`、`EDITOR`、`VISUAL`，禁止系统和用户配置，使用非交互、无 pager、无可选锁的环境。仓库和条件 include 仍会读取；不能依赖环境清理来覆盖仓库配置。固定 `-c` 通过 Git 的命令作用域传播到内部子 Git；Windows 的 `core.unsetenvvars` 固定为空，禁止它删除这些安全变量。
 
@@ -394,7 +402,7 @@ daemon 启动时、以及在线检测到状态变化时，检查以下情况，�
 | 30 | `mailmap.blob`、`mailmap.file`、`.mailmap`、`log.mailmap` | 作者映射可以输出任意 blob/file 中的姓名。清空两个配置，固定 log.mailmap=false，log/show 再固定 --no-mailmap。 | S 的受保护映射 blob/file 正负控。 |
 | 31 | `log.follow`、rename/copy 检测、魔术 pathspec | follow 会越过重命名前的路径。固定 log.follow=false、diff.renames=false、status.renames=false，不接受 --follow/-M/-C；使用 --literal-pathspecs 和 -- 分隔。 | S 的重命名正负控；P 的 glob/cwd 正负控；A 的选项及 pathspec 拒绝。 |
 | 32 | `GIT_EXEC_PATH`、`GIT_CONFIG_*`、`GIT_DIR/WORK_TREE/INDEX_FILE/OBJECT_DIRECTORY/ALTERNATE_OBJECT_DIRECTORIES`、trace 环境及 Windows `core.unsetenvvars` | 继承变量可换 helper、配置、仓库或输出目标，全部 GIT_* 先清理再固定安全值。core.unsetenvvars 固定为空，避免内部子 Git 丢掉空协议白名单或命令配置。 | A 的环境/argv 断言；S 的 Windows 删除限制变量正控和固定配置负控。 |
-| 33 | 仓库 `core.worktree`、`extensions.worktreeConfig` 与 `config.worktree` | 配置可将通过路径权限检查的相对路径重定向到另一工作树。每个配置上下文先由文件系统确定最近仓库根，再核验 Git 的真实工作树根，不一致时拒绝。查询、配置探测、流式索引、创建、检出和清理共用核验，清理也核验目标。 | L 的普通 Git 受保护标记正控、真实 agora_git 拒绝负控、子目录与 linked worktree 正常查询，以及 config.worktree 的检出/清理拒绝和合法非 force 清理。 |
+| 33 | 仓库 `core.worktree`、`extensions.worktreeConfig` 与 `config.worktree` | 配置可将通过路径权限检查的相对路径重定向到另一工作树。每个配置上下文先由文件系统确定最近仓库根，再核验 Git 的真实工作树根，不一致时拒绝。查询、配置探测、流式索引、创建、检出和清理共用核验并固定已核验的执行根；清理核验父与目标，实际使用目标上下文。 | L 的布局正负控、子目录和 linked worktree 查询、config.worktree 的检出/清理拒绝、合法非 force 清理，以及核验后修改普通/worktree 配置的查询、索引、检出故障注入。 |
 
 测试文件与运行约束：
 

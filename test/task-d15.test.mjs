@@ -214,11 +214,11 @@ test('D15 配置 auto 到期只续跑该任务，未知重置时间不编造定�
   assert.equal(f.daemon.store.task(errorTask.taskId).status, 'failed');
 });
 
-test('D15 schema v3 到 v4 迁移前一致性备份，保留数据和默认空名单', async t => {
+test('D15 schema v3 到当前版本迁移前一致性备份，保留数据和默认空名单', async t => {
   const home = await mkdtemp(join(tmpdir(), 'agora-d15-migrate-')); t.after(() => rm(home, { recursive: true, force: true }));
   const db = new DatabaseSync(join(home, 'agora.db')); for (const migration of schemaMigrations.slice(0, 3)) db.exec(migration);
   db.exec("CREATE TABLE schema_version(version INTEGER,migrated_at TEXT); INSERT INTO schema_version VALUES(3,'v3'); INSERT INTO principals(id,type,created_at) VALUES('main','agent:main','time'); PRAGMA journal_mode=WAL;"); db.close();
-  const store = await openStore(home); assert.equal(store.get('SELECT version FROM schema_version').version, 4); assert.equal(store.principal('main').type, 'agent:main'); assert.deepEqual(store.all('PRAGMA foreign_key_check'), []);
+  const store = await openStore(home); assert.equal(store.get('SELECT version FROM schema_version').version, 5); assert.equal(store.principal('main').type, 'agent:main'); assert.deepEqual(store.all('PRAGMA foreign_key_check'), []);
   assert.equal(store.all('PRAGMA table_info(tasks)').find(column => column.name === 'skills').dflt_value, "'[]'");
   assert.equal(store.all('PRAGMA table_info(tasks)').find(column => column.name === 'skill_paths').dflt_value, "'[]'");
   store.close();

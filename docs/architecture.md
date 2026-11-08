@@ -123,10 +123,10 @@ node <pi>/dist/bundle/cli.js --mode rpc
 
 #### 项目信任
 
-1b 所有档位固定使用 `--no-approve`。下列 `implement.projectTrust: "saved"` 和可选扩展 / MCP 白名单是后续设计目标，当前配置不接受这些字段。pi 1.5.0 没有独立的 MCP 配置参数；受信任项目与用户配置的隔离方式尚未确定，不能只靠工具白名单防止服务器启动。1b 用 `-ne --no-mcp` 关闭相关加载；真实测试同时放置用户和受信任项目 MCP 配置，验证无服务器或自动发现扩展启动。
+所有档位固定使用 `--no-approve`，并用 `-ne --no-mcp` 关闭可选扩展和 MCP。`implement.projectTrust: "saved"` 与可选扩展 / MCP 白名单推迟至 [#10](https://github.com/PosvdM/pi-agora/issues/10)，当前配置不接受这些字段。pi 1.5.0 CLI 不能独立指定 auth/models 路径，私有配置目录不能安全复制 OAuth 凭证，链接凭证也不能保证共用刷新锁；不引入自定义 SDK launcher。生产继续使用原 pi CLI RPC，真实测试同时放置用户和受信任项目 MCP 配置，验证无服务器或自动发现扩展启动。
 
 - explore、review、会议席位和书记固定加 `--no-approve`，不加载需要项目信任的本地配置和资源（依据：`docs/cli.md` 的 `--no-approve`、`docs/security.md` 的 Understand project trust）。
-- implement 默认也加 `--no-approve`；配置 `implement.projectTrust: "saved"` 后不加该参数，改按用户已保存的信任决定（`~/.pi/agent/trust.json`）。RPC 模式不能弹出信任提示，没有保存决定时按 `defaultProjectTrust` 处理（依据：`docs/security.md` 的 Project trust without an interactive prompt）。不加 `--approve`。注意：即使目录里没有需要信任的项目资源，如果 `trust.json` 中记为 false，仍按不信任处理。
+- implement 同样加 `--no-approve`，不因 `trust.json` 中保存了信任就加载项目资源。后续若能安全隔离配置，saved 模式也应由适配层按已保存决定受控投影，避免真实项目 MCP 和资源绕过白名单；不统一加 `--approve`。
 - `AGENTS.md`、`CLAUDE.md` 等上下文文件不受项目信任控制，仍会加载（依据同上）。agora 不加 `-nc`，因为项目约定对子代理有用；任务书提醒子代理把仓库里的指令当作不可信输入。
 
 ### 用量与额度事件
@@ -247,7 +247,7 @@ pi 专有的 skill 参数、用量字段和错误解析集中在 `packages/daemo
 | 对话 | pi JSONL | 由 pi 自己写，daemon 不复制到数据库 |
 | 流片段、退出诊断 | `sessions/<id>/` 下的文件 | 见 [archive.md](archive.md) |
 
-数据库 schema v4 保留 v2 的多会话继承与每代所属会话关系、v3 的任务树与限制（parent_task_id、depth、depth_limit、child_limit）、恢复计数和待发送消息，以及 steer_messages、requests、worktrees 表。v4 在任务记录中保存 skill 名单、解析路径和额度恢复信息，`usage_records` 按请求保存任务、代、会话及运行关联和 token 用量。旧库按 v1→v2→v3→v4 顺序迁移，已有任务按第一层、默认两层回填。迁移前执行一致性备份，保留数据、显式索引和触发器，提交前执行 foreign_key_check；失败回滚。首代分配会话时即写入代数到会话的关联。
+数据库 schema v5 保留多会话继承、每代所属会话、任务树限制、恢复计数、steer、提问、worktree、skill 和逐请求用量。v5 保存任务软预算、预算授予、提问确认来源、设备、待确认、安全警告和审计；安全设置保存在 `settings`。旧库按 v1→v2→v3→v4→v5 顺序迁移，已有任务按第一层、默认两层回填。迁移前执行一致性备份，保留数据、显式索引和触发器，提交前执行 foreign_key_check；失败回滚。首代分配会话时即写入代数到会话的关联。
 
 不做通用事件溯源：业务状态用普通表，board 条目追加，状态变更和 outbox 在同一事务里完成。代价是不能重放任意历史时刻的业务状态；需要追溯的信息（board、对话、状态变更时间）都单独保存。
 
@@ -282,7 +282,7 @@ pi 专有的 skill 参数、用量字段和错误解析集中在 `packages/daemo
 | --- | --- | --- |
 | `explore` | `read`、`grep`、`find`、`ls` | agora 工具；无 MCP；只加载 agora 扩展；`--no-approve` |
 | `review` | 同 explore | 另加只读 git 查询工具 `agora_git`（见下文“`agora_git` 的加固”）；不能跑测试 |
-| `implement` | `read`、`bash`、`edit`、`write`、`grep`、`find`、`ls`；Windows 上按配置可加 `powershell` | agora 工具；MCP 按配置白名单开启；其他扩展按配置白名单加载 |
+| `implement` | `read`、`bash`、`edit`、`write`、`grep`、`find`、`ls`；Windows 上按配置可加 `powershell` | agora 工具；可选扩展与 MCP 推迟，生产只加载 agora 扩展 |
 
 执行方式：
 

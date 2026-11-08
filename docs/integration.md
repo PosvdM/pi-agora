@@ -1,6 +1,6 @@
 # 集成协议
 
-> 本文描述完整集成设计。切片 1b 的实际任务、提问、最终就绪和 CLI 通路见 [development.md](development.md)。用户级确认为 1c 目标，存档 / 会话视图为 1d，pane 和其他领域接口按后续切片提供；下表列出的设计端点不表示全部已开放。
+> 切片 1c 开放任务、提问、最终就绪、待确认、设备签名、安全状态、设置与审计通路，浏览器交互在切片 2 接入。存档 / 会话视图为 1d，pane、board 和会议按后续切片提供；下表中对应后续切片的端点不表示已经开放。
 
 本文定义 pi-agora 自己对外的接口，以及 agora 如何接入 pi-pane：
 
@@ -86,13 +86,13 @@ pi-hostkit        ◄── daemon、extension（pi-pane 服务端也依赖它�
   | 426 | `protocol_unsupported` |
   | 503 | `draining`（daemon 正在排空，拒绝新任务） |
 
-### 1b 通路与边界
+### 任务通路与边界
 
-1b 的任务接口支持 list、status、result、steer、stop、cleanup、recover；recover 的 mode 为 resume / reopen / replace / abandon。任务返回 parentTaskId、depth、maxDepth 和 maxChildren，waiting_children 映射为 waiting。默认深度为两层，maxDepth 从新任务自身起计，拒绝使用 depth_exceeded、depth_limit_exceeded、children_exceeded、child_limit_exceeded、profile_upgrade 等错误码。
+任务接口支持 list、status、result、steer、stop、cleanup、recover、limits 和用户接管；recover 的 mode 为 resume / reopen / replace / abandon。任务返回 parentTaskId、depth、maxDepth 和 maxChildren，waiting_children 映射为 waiting。默认深度为两层，maxDepth 从新任务自身起计，拒绝使用 depth_exceeded、depth_limit_exceeded、children_exceeded、child_limit_exceeded、profile_upgrade 等错误码。
 
 cleanup 在有未提交改动且未指定 `discard` 时返回 `409 worktree_dirty`。含 gitlink（子模块）的 worktree 返回 `409 worktree_submodules`，包括指定 `discard` 的请求；需调用方手动验收和清理，不能以 `discard` 绕过 Git 子仓库配置的安全边界。
 
-提问返回 targetId（当前接收方）、route（逐级转交链）和 revision；答复始终送给 askerId。主代理也能 ask，直接面向 user。1b 的 host:cli 可直接答复任意提问，answeredVia.confirmedBy 为 none；不存在设备挑战或用户级签名，不发送 Agora-Act-As 请求头。完整用户级协议按下节目标在 1c 接入。
+提问返回 targetId（当前接收方）、route（逐级转交链）和 revision；答复始终送给 askerId。主代理也能 ask，直接面向 user。host 答复或取消必须通过用户确认；直接接收方 Agent 可答复发给自己的提问。已转交给 user 的提问不能由原提问者或原接收方 Agent 答复、取消。answeredVia 返回实际确认方式、发起方和设备信息，保护关闭时 CLI 答复的 confirmedBy 为 none。
 
 子会话 inbox 只向最终就绪、未停止的 run 返回通知。run 未持有推理名额时只返回静默通知；需要推理的通知必须等 run 获得名额后领取。父任务处于 waiting_children 时，下级终态通知不受 notify: silent 限制：daemon 为其排队或重新拉起，并在通知 payload 中设置 triggerTurn: true，扩展据此真正启动回合。静默投递不领取名额，启动恢复扫描也不因纯静默 outbox 唤醒任务。
 
@@ -135,22 +135,23 @@ cleanup 在有未提交改动且未指定 `discard` 时返回 `409 worktree_dirt
 | 主会话 | `POST /v1/principals/register`、`/reclaim` | 注册、恢复后认领 principal | 主会话扩展 |
 | | `POST /v1/lease/renew`、`/release` | 每 30 秒续控制租约及连接 token；关闭或切换主会话时释放租约 | 主会话扩展 |
 | | `POST /v1/principals/:id/takeover` | 强制转移租约（用户级） | CLI、pane 插件 |
-| 用户确认 | `GET /v1/confirmations` | 待确认列表（状态、发起方、过期时间） | CLI、pane 插件 |
+| 用户确认 | `GET /v1/confirmations`、`GET /v1/confirmations/:id` | 待确认列表与详情（状态、发起方、挑战、过期时间和执行结果） | CLI、pane 插件 |
 | | `POST /v1/confirmations/:id/sign` | 提交设备签名 `{ deviceId, publicKey, alg, signature }`，验签后执行 | pane 插件 |
 | | `POST /v1/confirmations/:id/cancel` | 用户拒绝 | pane 插件、CLI |
 | 设备 | `POST /v1/devices/pair` | 取配对挑战（`action: "agora.device.pair"`），新设备用自己的密钥签名后提交。同一事务内按三种情况处理：`everPaired = false` → TOFU 直接配对；`reTofuArmed = true`（离线重置后）→ 直接配对并消费该状态；其他 → 进入待批准。规则见 [security.md](security.md#配对状态) | pane 插件 |
 | | `GET /v1/devices` | 已配对和待批准设备 | CLI、pane 插件 |
 | | `POST /v1/devices/:id/approve`、`/revoke` | 批准、撤销（用户级，已配对设备签名） | CLI、pane 插件 |
 | | `POST /v1/devices/reset` | 在线重置配对（`agora pair --reset`，用户级，已配对设备签名）：保留签名设备，清掉其余。没有可用浏览器时用离线命令，不经 API | CLI、pane 插件 |
+| 安全状态 | `GET /v1/security/state` | 保护设置、everPaired、reTofuArmed、设备概要与持久警告；status 同时返回 security | CLI、pane 插件 |
 | 安全警告 | `GET /v1/security/alerts` | 当前的安全警告（`alertId`、类型、`revision`、内容、状态） | CLI、pane 插件 |
 | | `POST /v1/security/alerts/:alertId/acknowledge` | 带 `revision` 发起确认知悉，返回 `202` 和待确认；签名走 `/v1/confirmations/:id/sign`。只适用于 `devices-reset` | pane 插件 |
-| 配置 | `GET /v1/settings`、`PUT /v1/settings/:key` | 如 `userConfirmation`、`meetingLimitDefaults`、`agentLimitCap`；关闭保护、调高上限配置是用户级，开启保护、调低随时可以 | CLI |
+| 配置 | `GET /v1/settings`、`POST /v1/settings/:key`（也接受 `PUT`） | 如 `userConfirmation`、`meetingLimitDefaults`、`agentLimitCap`；关闭保护、调高上限配置是用户级，开启保护、调低随时可以 | CLI |
 | 任务 | `POST /v1/tasks` | spawn；maxDepth / maxChildren 逐层收紧，按 principal 与任务树授权 | 主 / 子会话扩展、CLI、pane 插件 |
 | | `GET /v1/tasks`、`GET /v1/tasks/:id`、`GET /v1/tasks/:id/result?generation=` | 列表、当前详情、指定代结果 | 同上 |
-| | `POST /v1/tasks/:id/steer`、`/stop`、`/cleanup`、`/recover`、`/takeover` | 返工、停止、清理 worktree、中断后的处理、接管 | 同上 |
+| | `POST /v1/tasks/:id/steer`、`/stop`、`/cleanup`、`/recover`、`/limits`、`/takeover` | 返工、停止、清理 worktree、中断后的处理、调整任务树软预算、接管 | 同上 |
 | 提问 | `POST /v1/requests` | 提问 | 协作会话扩展 |
 | | `GET /v1/requests`、`GET /v1/requests/:id` | 当前身份可见提问，支持重复 state 参数及 limit / cursor 分页 | 全部 |
-| | `POST /v1/requests/:id/answer`、`/escalate`、`/cancel` | 答复、逐级转交、取消；保留原 requestId，答案回原提问者 | 直接接收方、提问者取消、host:cli 答复 |
+| | `POST /v1/requests/:id/answer`、`/escalate`、`/cancel` | 答复、逐级转交、取消；保留原 requestId，答案回原提问者 | 直接接收方、未转给用户前的提问者取消、host 发起用户确认 |
 | board | `GET /v1/boards/:id`、`GET /v1/boards/:id/entries?afterSeq=` | 元数据、公开条目 | 成员、`host:*` |
 | | `POST /v1/boards/:id/entries` | 发条目（`sealed` 仅会议密封阶段） | 成员、召集人、`host:*`（作者为 user，用户级） |
 | | `POST /v1/boards` | 新建独立 board（非会议） | 主会话扩展、`host:*` |
@@ -318,7 +319,7 @@ agora:root:user-tasks            〔用户任务〕   用户通过 CLI 或 pi-pa
 | 任务 `created`（排队等名额或进程尚未就绪） | `waiting` |
 | 任务 `running` | `running` |
 | 任务 `waiting_decision`、`waiting_children` | `waiting` |
-| 任务 `quota_paused` | `paused` |
+| 任务 `quota_paused`、`budget_paused` | `paused` |
 | 任务 `completed` | `done` |
 | 任务 `failed` | `failed` |
 | 任务 `stopped` | `stopped` |

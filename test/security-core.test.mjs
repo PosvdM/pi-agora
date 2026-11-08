@@ -197,15 +197,21 @@ test('在线重置保留签名设备，撤销最后设备不恢复 TOFU，off �
   assert.equal(f.security.state().alerts.length, 0);
 });
 
-test('配置支持正整数和正整数字段，调高或形状变化须签名，调低无需签名', async t => {
+test('预算配置按实际字段校验，调高须签名，调低无需签名，计数口径受保护', async t => {
   const f = await setup(t), { device } = pair(f);
-  assert.equal(f.security.state().config.agentLimitCap, null);
-  confirm(f, device, 'agora.settings.set', 'agentLimitCap', { value: 100 });
-  f.security.apply(f.conn, 'agora.settings.set', 'agentLimitCap', { value: 50 });
-  assert.throws(() => f.security.apply(f.conn, 'agora.settings.set', 'agentLimitCap', { value: 51 }), denied('confirmation_required'));
-  confirm(f, device, 'agora.settings.set', 'meetingLimitDefaults', { value: { maxTokens: 10, durationMs: 100 } });
-  f.security.apply(f.conn, 'agora.settings.set', 'meetingLimitDefaults', { value: { maxTokens: 5, durationMs: 50 } });
-  for (const value of [{ maxTokens: 6, durationMs: 50 }, { maxTokens: 5 }, 5, { maxTokens: 5, durationMs: 50, extra: 1 }]) assert.throws(() => f.security.apply(f.conn, 'agora.settings.set', 'meetingLimitDefaults', { value }), denied('confirmation_required'));
+  assert.ok(f.security.state().config.agentLimitCap.dailyTokens > 0);
+  const cap = { perTaskFactor: 2, perMeetingFactor: 2, dailyTokens: 100 };
+  confirm(f, device, 'agora.settings.set', 'agentLimitCap', { value: cap });
+  f.security.apply(f.conn, 'agora.settings.set', 'agentLimitCap', { value: { ...cap, dailyTokens: 50 } });
+  assert.throws(() => f.security.apply(f.conn, 'agora.settings.set', 'agentLimitCap', { value: { ...cap, dailyTokens: 51 } }), denied('confirmation_required'));
+  const meeting = { maxTokens: 10, maxModelCalls: 3, maxDurationMinutes: 5, maxCycles: 1, diagnosticReserveTokens: 0 };
+  confirm(f, device, 'agora.settings.set', 'meetingLimitDefaults', { value: meeting });
+  f.security.apply(f.conn, 'agora.settings.set', 'meetingLimitDefaults', { value: { ...meeting, maxTokens: 5 } });
+  assert.throws(() => f.security.apply(f.conn, 'agora.settings.set', 'meetingLimitDefaults', { value: { ...meeting, maxTokens: 6 } }), denied('confirmation_required'));
+  for (const value of [{ maxTokens: 5 }, 5, { ...meeting, extra: 1 }]) assert.throws(() => f.security.request(f.conn, 'agora.settings.set', 'meetingLimitDefaults', { value }), denied('invalid_params'));
+  assert.throws(() => f.security.apply(f.conn, 'agora.settings.set', 'tokenAccounting', { value: 'uncached' }), denied('confirmation_required'));
+  confirm(f, device, 'agora.settings.set', 'tokenAccounting', { value: 'uncached' });
+  assert.equal(f.security.state().config.tokenAccounting, 'uncached');
   for (const value of [0, -1, 1.5, { maxTokens: 0 }, { nested: {} }]) assert.throws(() => f.security.request(f.conn, 'agora.settings.set', 'agentLimitCap', { value }), denied('invalid_params'));
   assert.throws(() => f.security.apply(f.conn, 'not.an.action', 'x', {}), denied('invalid_action'));
   assert.throws(() => f.security.apply(f.conn, 'agora.settings.set', 'everPaired', { value: false }), denied('invalid_params'));
@@ -352,8 +358,9 @@ test('HTTP 白名单的七个外部动作只交给 execute，设置动作使用�
     assert.equal(executed, true); assert.equal(result, action);
   }
   for (const action of ['agora.config.set', 'agora.board.post', 'agora.budget.grant']) assert.throws(() => f.security.request(f.conn, action, 'target', {}), denied('invalid_action'));
-  confirm(f, device, 'agora.settings.set', 'agentLimitCap', { value: 123 });
-  assert.equal(f.security.state().config.agentLimitCap, 123);
+  const cap = { perTaskFactor: 2, dailyTokens: 123 };
+  confirm(f, device, 'agora.settings.set', 'agentLimitCap', { value: cap });
+  assert.deepEqual(f.security.state().config.agentLimitCap, cap);
 });
 
 test('安全自身动作的审计失败回滚设备和 TOFU 状态，nonce 可重新提交', async t => {

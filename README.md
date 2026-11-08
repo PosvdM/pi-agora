@@ -2,7 +2,7 @@
 
 pi-agora 是 [pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) 编码智能体的协作引擎。主代理用它把任务派给子代理、召开多模型会议，所有协作会话的完整对话都会永久保存。
 
-> **当前状态：切片 1b（任务核心）。** 提供 daemon、pi 扩展和 CLI，支持多层子代理、三个权限档位、worktree、返工、提问与逐级转交、恢复和可靠通知；提供 skill 白名单、逐请求用量和任务树汇总、额度暂停及到期恢复通知。用户设备确认、可选扩展 / MCP 白名单、存档读取、board、会议和 pi-pane 插件属于后续范围；下方“功能”描述完整设计目标。
+> **当前状态：切片 1c（任务核心与安全）。** 提供多层子代理、三个权限档位、worktree、返工、提问与逐级转交、恢复、可靠通知、skill 白名单、用量和额度暂停；安全层提供资源访问控制、任务树软预算、待确认、设备签名、离线安全命令和审计。浏览器配对与确认界面在切片 2 接入，1c 用测试签名器验收；只用终端时需离线关闭保护。可选扩展 / MCP 白名单及 saved 项目信任的隔离推迟至 [#10](https://github.com/PosvdM/pi-agora/issues/10)，存档读取、board、会议和 pi-pane 插件仍属后续范围。
 
 ## 使用
 
@@ -36,10 +36,22 @@ node packages/cli/dist/main.js ls
 node packages/cli/dist/main.js show <任务或会话 ID>
 node packages/cli/dist/main.js pending
 node packages/cli/dist/main.js answer <提问 ID> --answers '<答复 JSON 数组>'
+node packages/cli/dist/main.js confirmations
+node packages/cli/dist/main.js devices
 node packages/cli/dist/main.js shutdown
 ```
 
 可用 `npm link --workspace @pi-agora/cli` 注册 `agora` 命令。默认数据目录为 `~/.pi/agora`；设置 `AGORA_HOME` 或给 CLI 传 `--home <目录>` 可改用其他本地目录。关闭主会话不会停止 daemon 或正在运行的子代理；恢复原主会话后会补收尚未确认的通知。通知只有在主会话文件中找到完整记录后才确认。
+
+用户级命令默认只生成待确认，不因 CLI 读到了 `host.key` 就执行。`confirmations <确认 ID> --wait` 可等待结果；浏览器确认界面尚未接入时，仅用终端的用户可执行：
+
+```sh
+node packages/cli/dist/main.js shutdown
+node packages/cli/dist/main.js offline set userConfirmation off
+node packages/cli/dist/main.js daemon start
+```
+
+**关闭保护后无法区分用户与 Agent。** 安全状态持续返回 `protection-off` 警告；运行 `config set userConfirmation device` 可重新开启。曾配对后，没有可用设备时必须停 daemon 再运行 `offline pair-reset`，不能凭磁盘凭证在线重置。详细规则和剩余风险见 [安全模型](docs/security.md)。
 
 `shutdown` 排空运行中的任务；`--timeout <秒>` 默认 600，超时后保留 daemon，需用户显式重试 `shutdown --force`。强制关闭会中断任务并清理受管进程。停止报告会说明覆盖范围：Windows Job Object、Linux cgroup，或 macOS / Linux 的进程快照；快照的空残留列表不能证明整棵进程树均已退出。中断任务可选择 `resume`、`reopen`、`replace` 或 `abandon`；恢复要求旧写者已经确认退出，不自动重放有副作用的工具。
 
@@ -82,7 +94,7 @@ pi-pane 不认识“子代理”“会议”这些概念。pi-agora 提供一个
 - 只有 `pane-plugin` 依赖 pi-pane 的插件接口包，其余包都不依赖 pi-pane。
 - 两者共用平台相关的包 [pi-hostkit](https://github.com/PosvdM/pi-hostkit)（定位 pi、RPC 传输、进程树终止、锁、路径规范化）。它是独立仓库，权威设计见其 [docs/design.md](https://github.com/PosvdM/pi-hostkit/blob/main/docs/design.md)。
 
-完整设计不依赖 pi-pane：Agent 功能通过 pi 扩展和 `agora` CLI 提供，用户级操作由已配对浏览器确认。**切片 1b 的转交和 CLI 答复通路尚无设备确认，daemon 无法区分用户与同一系统用户下的 Agent。** 用户确认和离线安全设置在 1c 实现，见 [docs/security.md](docs/security.md)。
+Agent 功能通过 pi 扩展和 `agora` CLI 提供，不依赖 pi-pane。保护开启时，用户级操作需要设备签名；浏览器侧入口在切片 2 接入。保护关闭时 CLI 可直接执行非强制签名的用户级操作；在线重置设备和关闭保护等安全动作仍受设备规则约束。见 [docs/security.md](docs/security.md)。
 
 ## 组成
 

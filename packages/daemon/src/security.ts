@@ -3,6 +3,7 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { acquireInstanceLock } from "pi-hostkit";
 import type { Connection } from "./auth.js";
+import { budgetConfig } from "./budgets.js";
 import { AgoraError, invalid, text } from "./errors.js";
 import { Store, id, now, openStore } from "./store.js";
 
@@ -32,7 +33,8 @@ interface AlertRow {
   acknowledged_by: string | null; created_at: string;
 }
 export type LimitSettings = number | Record<string, number>;
-export type ConfigKey = "userConfirmation" | "agentLimitCap" | "meetingLimitDefaults";
+export type ConfigKey = "userConfirmation" | "agentLimitCap" | "meetingLimitDefaults" | "taskLimitDefaults" | "tokenAccounting";
+const meetingDefaults = { maxTokens: 2_000_000, maxModelCalls: 200, maxDurationMinutes: 90, maxCycles: 6, diagnosticReserveTokens: 60_000 };
 const INTERNAL_ACTIONS = [
   "agora.device.pair", "agora.device.approve", "agora.device.revoke", "agora.device.reset",
   "agora.settings.set", "agora.security.acknowledge",
@@ -196,6 +198,9 @@ export class Security {
     const fingerprint = this.fingerprint();
     this.put("devicesFingerprint", fingerprint); this.put("devicesObservedFingerprint", fingerprint);
   }
+  recordExecution(action: string, target: string, requestedBy: string, confirmedBy: "none", outcome: "applied" | "rejected", reason?: string): void {
+    this.log(action, target, requestedBy, confirmedBy, outcome, { reason });
+  }
   private log(action: string, target: string, requestedBy: string, confirmedBy: string, outcome: string,
     options: { proof?: DeviceProof; reason?: string; via?: string; details?: unknown; confirmationId?: string } = {}): void {
     this.store.run("INSERT INTO security_audit(action,target,requested_by,confirmed_by,device_id,confirmation_id,outcome,reason,via,details,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
@@ -242,8 +247,10 @@ export class Security {
       })),
       config: {
         userConfirmation: this.setting<"device" | "off">("userConfirmation", "device"),
-        agentLimitCap: this.setting<LimitSettings | null>("agentLimitCap", null),
-        meetingLimitDefaults: this.setting<LimitSettings | null>("meetingLimitDefaults", null),
+        agentLimitCap: this.setting("agentLimitCap", { ...budgetConfig(this.store).cap, perMeetingFactor: 2 }),
+        taskLimitDefaults: budgetConfig(this.store).defaults,
+        tokenAccounting: budgetConfig(this.store).accounting,
+        meetingLimitDefaults: this.setting("meetingLimitDefaults", meetingDefaults),
       },
     };
   }
@@ -253,8 +260,16 @@ export class Security {
       label: row.label, state: row.state, createdAt: row.created_at,
     }));
   }
-  audit() { return this.store.all("SELECT * FROM security_audit ORDER BY seq"); }
-  private expire(): void { this.store.run("UPDATE pending_confirmations SET state='expired' WHERE state='pending' AND expires_at<=?", now()); }
+  audit(limit = 50, cursor = 0, target?: string) { return this.store.all("SELECT * FROM security_audit WHERE seq>? AND (? IS NULL OR target=?) ORDER BY seq LIMIT ?", cursor, target ?? null, target ?? null, limit); }
+  private expire(): void {
+    this.store.transaction(() => {
+      for (const row of this.store.all<ConfirmationRow>("SELECT * FROM pending_confirmations WHERE state='pending' AND expires_at<=? LIMIT 200", now())) {
+        this.store.run("UPDATE pending_confirmations SET state='expired' WHERE id=?", row.id);
+        this.log(row.action, row.target, row.requested_by, "none", "expired", { confirmationId: row.id, reason: "confirmation_expired" });
+        this.store.change("confirmation", row.id);
+      }
+    });
+  }
   private view(row: ConfirmationRow) {
     return { confirmationId: row.id, challenge: JSON.parse(row.challenge) as UserChallenge,
       title: this.title(row.action, row.target, JSON.parse(row.params)),
@@ -263,7 +278,7 @@ export class Security {
       expiresAt: row.expires_at, createdAt: row.created_at, confirmedBy: row.confirmed_by,
       result: row.result === null ? null : JSON.parse(row.result), failureReason: row.failure_reason };
   }
-  listConfirmations() { this.expire(); return this.store.all<ConfirmationRow>("SELECT * FROM pending_confirmations ORDER BY created_at,id").map(row => this.view(row)); }
+  listConfirmations(limit = 50, cursor = 0) { this.expire(); return this.store.all<ConfirmationRow>("SELECT rowid AS cursor,* FROM pending_confirmations WHERE rowid>? ORDER BY rowid LIMIT ?", cursor, limit).map(row => this.view(row)); }
   confirmation(confirmationId: string) {
     this.expire(); const row = this.store.get<ConfirmationRow>("SELECT * FROM pending_confirmations WHERE id=?", confirmationId);
     if (!row) fail("not_found", "待确认不存在", 404);
@@ -295,7 +310,15 @@ export class Security {
       case "agora.settings.set":
         exact(params, ["value"]);
         if (target === "userConfirmation") { if (params.value !== "off" && params.value !== "device") invalid("userConfirmation 必须是 off 或 device"); }
-        else if (target === "agentLimitCap" || target === "meetingLimitDefaults") limits(params.value);
+        else if (target === "tokenAccounting") { if (!["all", "uncached"].includes(String(params.value))) invalid("tokenAccounting 必须是 all 或 uncached"); }
+        else if (target === "agentLimitCap" || target === "meetingLimitDefaults" || target === "taskLimitDefaults") {
+          const value = record(params.value);
+          const fields = target === "agentLimitCap" ? ["perTaskFactor", "perMeetingFactor", "dailyTokens"] : target === "taskLimitDefaults" ? ["maxTokens"] : Object.keys(meetingDefaults);
+          const required = target === "agentLimitCap" ? ["perTaskFactor", "dailyTokens"] : fields;
+          if (Object.keys(value).some(key => !fields.includes(key)) || required.some(key => !Object.hasOwn(value, key))) invalid("预算配置字段不完整或不受支持");
+          for (const [key, number] of Object.entries(value)) if (typeof number !== "number" || !Number.isSafeInteger(number) || number < (key === "diagnosticReserveTokens" ? 0 : 1)) invalid("预算配置必须是有界整数");
+          if (target === "meetingLimitDefaults" && Number(value.diagnosticReserveTokens) > Number(value.maxTokens)) invalid("纪要预留不能超过会议总预算");
+        }
         else invalid("不支持此安全配置"); break;
     }
   }
@@ -309,6 +332,8 @@ export class Security {
       this.store.run("INSERT INTO pending_confirmations(id,action,target,params,challenge,nonce,expires_at,requested_by,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
         confirmationId, action, target, jcs(params), jcs(challenge), challenge.nonce, expiresAt, requestedBy, now());
       this.store.change("confirmation", confirmationId);
+      this.log(action, target, requestedBy, "none", "requested", { confirmationId });
+      this.store.notice("user", `confirmation:${confirmationId}:created`, "confirmation:created", { confirmationId, action, target, requestedBy, expiresAt });
     });
     return this.confirmation(confirmationId);
   }
@@ -475,8 +500,10 @@ export class Security {
   private canApplyWithoutSignature(action: string, target: string, params: Record<string, unknown>): boolean {
     if (action !== "agora.settings.set") return false;
     if (target === "userConfirmation") return params.value === "device";
-    const next = limits(params.value), current = this.setting<LimitSettings | null>(target, null);
-    if (current === null) return false;
+    if (target === "tokenAccounting") return params.value === this.setting("tokenAccounting", "all");
+    const config = this.state().config;
+    const fallback = target === "agentLimitCap" ? config.agentLimitCap : target === "taskLimitDefaults" ? config.taskLimitDefaults : config.meetingLimitDefaults;
+    const next = params.value as Record<string, number>, current = this.setting<LimitSettings>(target, fallback);
     if (typeof current === "number" || typeof next === "number") return typeof current === "number" && typeof next === "number" && next <= current;
     // 增加维度或移除限制都不能当作调低；默认预算由预算模块决定。
     return Object.keys(current).every(key => Object.hasOwn(next, key)) && Object.entries(next).every(([key, value]) => typeof current[key] === "number" && value <= current[key]);

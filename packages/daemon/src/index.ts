@@ -6,6 +6,7 @@ import { acquireInstanceLock, assertLocalFilesystem } from "pi-hostkit";
 import { Auth, proof } from "./auth.js";
 import { AgoraError } from "./errors.js";
 import { Requests } from "./requests.js";
+import { Security } from "./security.js";
 import { openStore, id, type Store } from "./store.js";
 import { TaskManager, type TaskOptions } from "./tasks.js";
 import { createHttpServer, VERSION, PROTOCOL_RANGE } from "./server.js";
@@ -19,7 +20,7 @@ export interface DaemonOptions extends Omit<TaskOptions, "home" | "url" | "insta
   driver?: SessionDriver;
 }
 export interface RunningDaemon {
-  url: string; instanceId: string; store: Store; auth: Auth; tasks: TaskManager;
+  url: string; instanceId: string; store: Store; auth: Auth; tasks: TaskManager; security: Security;
   close(options?: { force?: boolean; timeoutMs?: number }): Promise<void>;
 }
 export function childEnvironment(source: NodeJS.ProcessEnv = process.env): Record<string, string> {
@@ -92,6 +93,7 @@ export async function startDaemon(options: DaemonOptions): Promise<RunningDaemon
   try {
     store = await openStore(home);
     const auth = await Auth.create(store, instanceId);
+    const security = new Security(store);
     store.run("UPDATE operations SET state='failed',status=409,result=? WHERE state='in_progress'", JSON.stringify({ error: { code: "operation_interrupted", message: "操作被 daemon 重启中断，请核对任务状态" } }));
     const driver = options.driver ?? new RpcSubprocessDriver({ home, piPath: options.piPath,
       extensionPath: options.extensionPath ?? fileURLToPath(new URL("../../extension/dist/index.js", import.meta.url)),
@@ -119,7 +121,7 @@ export async function startDaemon(options: DaemonOptions): Promise<RunningDaemon
       })().catch(error => { closePromise = undefined; throw error; });
       return closePromise;
     };
-    server = createHttpServer({ store, auth, tasks, requests: new Requests(store, auth, tasks), instanceId, close, closing: closing.signal });
+    server = createHttpServer({ store, auth, tasks, security, requests: new Requests(store, auth, tasks), instanceId, close, closing: closing.signal });
     await new Promise<void>((resolve, reject) => {
       server!.once("error", reject);
       server!.listen(0, "127.0.0.1", () => { server!.off("error", reject); resolve(); });
@@ -131,7 +133,7 @@ export async function startDaemon(options: DaemonOptions): Promise<RunningDaemon
     await writeFile(temporaryFile, JSON.stringify({ port: address.port, pid: process.pid, instanceId, daemonVersion: VERSION, protocol: PROTOCOL_RANGE }), { flag: "wx", mode: 0o600 });
     await rename(temporaryFile, discoveryFile);
     tasks.startQueue();
-    return { url, instanceId, store, auth, tasks, close };
+    return { url, instanceId, store, auth, tasks, security, close };
   } catch (error) {
     closing.abort();
     if (server?.listening) await new Promise<void>(resolve => { server!.close(() => resolve()); server!.closeAllConnections(); });
@@ -145,5 +147,7 @@ export async function startDaemon(options: DaemonOptions): Promise<RunningDaemon
 export { Auth, proof } from "./auth.js";
 export { Store, openStore, consistentBackup, SCHEMA_VERSION } from "./store.js";
 export { AgoraError } from "./errors.js";
+export { Security } from "./security.js";
+export { offline } from "./offline.js";
 export { RpcSubprocessDriver } from "./driver.js";
 export type { DriverHandle, SessionDriver, LaunchSpec } from "./driver.js";
