@@ -12,7 +12,8 @@ import { Worktrees } from '../packages/daemon/dist/worktrees.js';
 import { extensionWire } from './fixtures/extension-wire.mjs';
 
 async function fixture(t) {
-  const root = await mkdtemp(path.join(tmpdir(), 'agora-git-layout-'));
+  // Windows runner 的 TEMP 可能含 8.3 短名，先规范化再与 Git 的真实根比较。
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'agora-git-layout-')));
   const repo = path.join(root, 'repo'), other = path.join(root, 'protected');
   for (const directory of [repo, other]) await mkdir(path.join(directory, 'public'), { recursive: true });
   const env = gitEnvironment();
