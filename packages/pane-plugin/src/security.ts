@@ -86,7 +86,7 @@ export function createSecurity(runtime: PluginRuntime, options: { waitMs?: numbe
       runtime.context.setBanner({ id: bannerId, persistent: true, level: "error",
         title: alert.kind === "protection-off" ? "用户确认已关闭，无法区分你和 Agent 的操作" : alert.kind === "devices-reset" ? "设备记录已被重置或修改" : "安全状态需要核实",
         body: `检测时间：${alert.createdAt ?? "未知"}\n\n警告版本：${alert.revision}\n\n${JSON.stringify(alert.details ?? {})}`,
-        actions: alert.kind === "devices-reset" ? ["agora.security.acknowledge"] : [] });
+        actions: alert.kind === "devices-reset" ? ["agora.security.acknowledge"] : alert.kind === "budget-config-changed" ? ["agora.security.acknowledge-budget"] : [] });
     }
     for (const banner of runtime.context.listBanners()) {
       if (banner.id.startsWith("agora:security:") && !activeIds.has(banner.id)) runtime.context.clearBanner(banner.id);
@@ -104,7 +104,7 @@ export function createSecurity(runtime: PluginRuntime, options: { waitMs?: numbe
   }
   return {
     execute, confirm, refreshAlerts, pair,
-    displayedAlert(): SecurityAlert | undefined { return [...alerts.values()].find(alert => alert.kind === "devices-reset"); },
+    displayedAlert(kind = "devices-reset"): SecurityAlert | undefined { return [...alerts.values()].find(alert => alert.kind === kind); },
     acknowledge: (alertId: string, revision: number, key: string, origin: RequestOrigin) => execute("POST", `/v1/security/alerts/${encoded(alertId)}/acknowledge`, { revision }, { idempotencyKey: key, origin, actAsUser: true }),
     dispose() { disposed = true; alerts.clear(); },
   };
