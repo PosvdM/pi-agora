@@ -117,8 +117,23 @@ export class Requests {
   list(conn: Connection, states: string[] = [], limit = 50, cursor = 0) {
     const actor = this.actor(conn);
     this.expire();
-    const rows = this.store.all<RequestRow & { cursor: number }>(`SELECT rowid AS cursor,* FROM requests WHERE rowid>? AND (?='user' OR asker_id=? OR target_id=?) ${states.length ? `AND state IN (${states.map(() => '?').join(',')})` : ''} ORDER BY rowid LIMIT ?`, cursor, isHost(conn) ? 'user' : actor, actor, actor, ...states, limit + 1);
-    return { items: rows.slice(0, limit).map(row => this.view(row)), nextCursor: rows.length > limit ? String(rows[limit - 1]!.cursor) : null };
+    const visible: (RequestRow & { cursor: number })[] = [];
+    let scan = cursor;
+    while (visible.length <= limit) {
+      const rows = this.store.all<RequestRow & { cursor: number }>(`SELECT rowid AS cursor,* FROM requests WHERE rowid>? AND (?='user' OR asker_id=? OR target_id=?) ${states.length ? `AND state IN (${states.map(() => '?').join(',')})` : ''} ORDER BY rowid LIMIT ?`, scan, isHost(conn) ? 'user' : actor, actor, actor, ...states, limit + 1);
+      for (const row of rows) {
+        scan = row.cursor;
+        try { this.acl.question(conn, row, 'read'); }
+        catch (error) {
+          if (error instanceof AgoraError && ['forbidden', 'task_taken_over'].includes(error.code)) continue;
+          throw error;
+        }
+        visible.push(row);
+        if (visible.length > limit) break;
+      }
+      if (rows.length < limit + 1) break;
+    }
+    return { items: visible.slice(0, limit).map(row => this.view(row)), nextCursor: visible.length > limit ? String(visible[limit - 1]!.cursor) : null };
   }
   ask(conn: Connection, body: Record<string, unknown>) {
     const asker = this.actor(conn);
@@ -150,27 +165,30 @@ export class Requests {
     this.actor(conn);
     this.expire();
     const actor = proof ? 'user' : conn.principalId!, row = this.get(requestId);
-    if (!['open', 'escalated'].includes(row.state)) throw new AgoraError(409, 'already_handled', '提问已经处理');
-    if (body.expectedRevision !== undefined && body.expectedRevision !== row.revision) throw new AgoraError(409, 'conflict', '提问状态已变化');
     if (action !== 'answer' && action !== 'escalate' && action !== 'cancel') invalid('提问动作无效');
     this.acl.question(conn, row, action, body, proof, requestId);
+    if (!['open', 'escalated'].includes(row.state)) throw new AgoraError(409, 'already_handled', '提问已经处理');
+    if (body.expectedRevision !== undefined && body.expectedRevision !== row.revision) throw new AgoraError(409, 'conflict', '提问状态已变化');
     const answers = action === 'answer' ? answersOf(JSON.parse(row.questions), body.answers) : undefined;
     let target = row.target_id;
     if (action === 'escalate') {
       target = this.store.get<{ convener_id: string }>('SELECT t.convener_id FROM agora_sessions s JOIN tasks t ON t.id=s.task_id WHERE s.principal_id=?', actor)?.convener_id ?? 'user';
     }
     const state = action === 'answer' ? 'answered' : action === 'cancel' ? 'cancelled' : 'escalated';
+    const recipient = action === 'escalate' ? target : row.asker_id;
+    const noticeKey = `request:${requestId}:${action === 'escalate' ? `escalated:${row.revision}` : state}`;
+    let noticeId: string;
     this.tasks.budgets.atomic(() => {
       const changed = this.store.run('UPDATE requests SET state=?,target_id=?,route=?,answers=?,answered_by=?,answer_proof=?,revision=revision+1,updated_at=? WHERE id=? AND revision=?', state, target, action === 'escalate' ? JSON.stringify([...JSON.parse(row.route), actor]) : row.route, answers ? JSON.stringify(answers) : null, action === 'answer' ? actor : null, proof ? JSON.stringify(proof) : null, now(), requestId, row.revision);
       if (!changed.changes) throw new AgoraError(409, 'already_handled', '提问已经处理');
-      const recipient = action === 'escalate' ? target : row.asker_id;
-      this.store.notice(recipient, `request:${requestId}:${action === 'escalate' ? `escalated:${row.revision}` : state}`, `request:${state}`, { requestId, taskId: row.task_id, state, questions: JSON.parse(row.questions), answers, summary: action === 'escalate' ? `提问 ${requestId} 已逐级转交，请答复或继续转交。` : action === 'cancel' ? `提问 ${requestId} 未获答复，取消不代表批准。请停在安全状态。` : `提问 ${requestId} 已答复：${JSON.stringify(answers)}` });
+      this.store.notice(recipient, noticeKey, `request:${state}`, { requestId, taskId: row.task_id, state, questions: JSON.parse(row.questions), answers, summary: action === 'escalate' ? `提问 ${requestId} 已逐级转交，请答复或继续转交。` : action === 'cancel' ? `提问 ${requestId} 未获答复，取消不代表批准。请停在安全状态。` : `提问 ${requestId} 已答复：${JSON.stringify(answers)}` });
+      noticeId = this.store.get<{ id: string }>('SELECT id FROM outbox WHERE recipient_id=? AND dedupe_key=?', recipient, noticeKey)!.id;
       this.store.run('UPDATE outbox SET processed_at=? WHERE dedupe_key=?', now(), `request:${requestId}:opened`);
       this.store.change('request', requestId);
     });
     this.arm();
     queueMicrotask(() => {
-      if (this.get(requestId).revision === row.revision + 1) this.tasks.wake(action === 'escalate' ? target : row.asker_id);
+      if (this.get(requestId).revision === row.revision + 1 && this.store.get('SELECT id FROM outbox WHERE id=? AND processed_at IS NULL', noticeId)) this.tasks.wake(recipient);
     });
     return this.view(this.get(requestId));
   }

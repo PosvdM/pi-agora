@@ -9,7 +9,7 @@ export function confirmationRequired(action: string, target: string, params: Rec
 export function isHost(conn: Connection): boolean { return conn.type.startsWith('host:'); }
 
 type TaskAction = 'status' | 'result' | 'steer' | 'cleanup' | 'stop' | 'recover' | 'limits' | 'takeover';
-interface QuestionResource { asker_id: string; target_id: string; state: string }
+interface QuestionResource { asker_id: string; target_id: string; state: string; task_id: string | null }
 export class AccessControl {
   constructor(readonly store: Store, readonly auth: Auth) {}
   actor(conn: Connection): string {
@@ -73,7 +73,12 @@ export class AccessControl {
   }
   question(conn: Connection, row: QuestionResource, action: 'read' | 'answer' | 'cancel' | 'escalate', body: Record<string, unknown> = {}, proof?: UserExecutionProof, target = ''): void {
     const actor = this.actor(conn);
-    if (action === 'read' && (isHost(conn) || actor === row.asker_id || actor === row.target_id)) return;
+    if (action === 'read' && (isHost(conn) || actor === row.asker_id)) return;
+    if (!isHost(conn)) {
+      const task = row.task_id ? this.store.task(row.task_id) : this.store.get<TaskRow>('SELECT t.* FROM tasks t JOIN agora_sessions s ON s.task_id=t.id WHERE s.principal_id=?', row.asker_id);
+      if (task) this.taskBoundary(conn, task);
+    }
+    if (action === 'read' && actor === row.target_id) return;
     if (proof && isHost(conn) && (action === 'answer' || action === 'cancel')) return;
     if (isHost(conn) && (action === 'answer' || action === 'cancel')) confirmationRequired(`agora.request.${action}`, target, body);
     if (!isHost(conn)) {
