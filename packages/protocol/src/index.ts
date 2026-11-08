@@ -1,5 +1,6 @@
 import type { ProtocolRange } from "./client.js";
 export * from "./client.js";
+export * from "./ports.js";
 export * from "./git.js";
 
 export const VERSION = "0.1.0";
