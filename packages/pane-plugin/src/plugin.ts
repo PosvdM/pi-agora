@@ -250,7 +250,17 @@ export default function createPlugin(options: PluginOptions = {}): PanePlugin {
       },
       async send(ref, input, req) {
         active(); if (!online) return { status: "rejected", message: offlineMessage };
-        return guarded(req.idempotencyKey, { type: "send", ref, input }, () => views.sessions.send!(ref, input, req));
+        if (ref.source !== "agora" || !ref.id) return { status: "rejected", message: "会话不属于 agora" };
+        if (input.images?.length || input.delivery === "followUp") return { status: "rejected", message: "agora 任务通过返工发送，只接受文字" };
+        if (req.expectedRevision !== undefined) return { status: "rejected", message: "agora 未提供会话控制修订号，请刷新后重试" };
+        return guarded(req.idempotencyKey, { type: "send", ref, input }, async () => {
+          const result = await actions.invoke({ actionId: "agora.task.steer", target: { type: "node", nodeId: `agora:session:${ref.id}` },
+            input: { answers: [], fields: { message: input.text } }, idempotencyKey: req.idempotencyKey }, req.origin);
+          if (result.status === "ok") return { status: "accepted" as const };
+          if (result.status === "pending") return { status: "pending" as const };
+          if (result.status === "idempotencyConflict") return { status: "idempotencyConflict" as const, message: result.message };
+          return { status: "rejected" as const, message: result.status === "failed" ? result.message : "此次发送需要重新读取任务状态" };
+        });
       },
       async abort(ref, req) { active(); if (!online) throw new Error(offlineMessage); return views.sessions.abort!(ref, req); },
     },

@@ -35,6 +35,7 @@ function treeSql(): string {
   return `WITH RECURSIVE allowed(id) AS (
     SELECT id FROM tasks WHERE $owner IS NULL OR convener_id=$owner
     UNION SELECT t.id FROM tasks t JOIN allowed a ON t.parent_task_id=a.id
+      WHERE t.convener_id NOT IN ('user','host:cli','host:pane')
   ), structure AS (
     SELECT MAX(COALESCE((SELECT seq FROM changes WHERE object_type='tree' AND object_id='all' ORDER BY seq DESC LIMIT 1),0),
       COALESCE((SELECT json_extract(value,'$.seq') FROM settings WHERE key='changes:object:tree:all'),0)) AS revision
@@ -44,7 +45,8 @@ function treeSql(): string {
       origin.value AS origin_call,
       CASE WHEN t.agora_session_id=s.id THEN t.status ELSE s.status END AS effective_status,
       CASE WHEN t.agora_session_id=s.id THEN 1 ELSE 0 END AS is_current,
-      CASE WHEN t.parent_task_id IS NOT NULL THEN 'agora:session:' || pt.agora_session_id
+      CASE WHEN t.convener_id IN ('user','host:cli','host:pane') THEN 'agora:root:user-tasks'
+        WHEN t.parent_task_id IS NOT NULL THEN 'agora:session:' || pt.agora_session_id
         WHEN COALESCE(s.convener_id,t.convener_id) IN ('user','host:cli','host:pane') OR p.type LIKE 'host:%' THEN 'agora:root:user-tasks'
         WHEN p.pi_session_id IS NOT NULL THEN 'pane:session:' || p.pi_session_id ELSE NULL END AS parent_id,
       MAX(s.created_at,t.updated_at,
@@ -68,9 +70,9 @@ export function sessionView(session: ListedSession) {
     profile: session.profile, model: session.model, thinking: session.thinking, cwd: session.cwd,
     status: session.effective_status ?? session.status, isCurrent: !!session.is_current, revision: session.tree_revision, createdAt: session.created_at,
     parentId: session.parent_id,
-    ...(session.task_parent_id && session.parent_session_id ? { parent: { kind: "task", taskId: session.task_parent_id, sessionId: session.parent_session_id } }
-      : session.convener_pi_session_id ? { parent: { kind: "main", piSessionId: session.convener_pi_session_id } }
-      : session.parent_id === "agora:root:user-tasks" ? { parent: { kind: "user" } } : {}),
+    ...(session.parent_id === "agora:root:user-tasks" ? { parent: { kind: "user" } }
+      : session.task_parent_id && session.parent_session_id ? { parent: { kind: "task", taskId: session.task_parent_id, sessionId: session.parent_session_id } }
+      : session.convener_pi_session_id ? { parent: { kind: "main", piSessionId: session.convener_pi_session_id } } : {}),
     title: session.title, kind: session.kind,
     hasChildren: session.child_count > 0, childCount: session.child_count,
     lastActivityAt: session.last_activity_at, statusDetail: session.status_detail, archiveState: session.archive_state,

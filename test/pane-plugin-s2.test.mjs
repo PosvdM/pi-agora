@@ -332,6 +332,27 @@ test("周期健康检测断线触发离线 reset，恢复在线再次 reset 并�
   assert.deepEqual(first.unexpected, []); assert.deepEqual(second.unexpected, []);
 });
 
+test("sessions.send 复用 composer 的固定请求机制，历史切换不污染 pending 查询", async t => {
+  let writes = 0;
+  const { a, plugin } = await activated(t, call => {
+    if (call.method === "GET" && call.path === `/v1/tasks/${session.taskId}`) return ok({ taskId: session.taskId, status: "running", generation: 1, revision: 7 });
+    if (call.method === "POST" && call.path === `/v1/tasks/${session.taskId}/steer`) {
+      writes++;
+      assert.deepEqual(call.body, { message: "固定返工", interrupt: false, expectedGeneration: 1, expectedRevision: 7 });
+      return writes === 1 ? { status: 202, body: { operation: { state: "in_progress" } } } : ok({});
+    }
+  });
+  const req = { idempotencyKey: "send-pending", origin };
+  assert.equal((await plugin.sessions.send(ref, { text: "固定返工" }, req)).status, "pending");
+  a.state.sessions[0].isCurrent = false;
+  a.state.sessions[0].status = "interrupted";
+  assert.equal((await plugin.sessions.send(ref, { text: "固定返工" }, req)).status, "accepted");
+  assert.equal(writes, 2);
+  assert.equal(a.calls.filter(call => call.method === "GET" && call.path === `/v1/tasks/${session.taskId}`).length, 1);
+  assert.equal((await plugin.sessions.send(ref, { text: "固定返工" }, { ...req, idempotencyKey: "new-history-send" })).status, "rejected");
+  assert.equal(writes, 2);
+});
+
 test("领域变更流过期必发树 reset，宿主据此重新对齐持久表单", async t => {
   const { h, a, plugin } = await activated(t, call => call.path === `/v1/requests/${question.id}` ? ok({ ...question, state: "answered" }) : undefined);
   const events = [];

@@ -147,6 +147,24 @@ test('按父节点分页绑定 parent、snapshot、openNodeId、recentSince 和�
   assert.throws(() => listSessions(store, host, params({ snapshot: '1', recentSince: OLD, cursor: page.nextCursor }), 1), /游标/);
 });
 
+test('用户接管的子任务优先挂用户根，保留预算父链但切断原召集人树读取', async t => {
+  const store = await database(t);
+  main(store);
+  seed(store, 'old-parent');
+  seed(store, 'taken', { parent: 'old-parent', convener: 'user', status: 'running' });
+  seed(store, 'descendant', { parent: 'taken', status: 'running' });
+  const taken = sessionDetail(store, 'taken');
+  assert.deepEqual(taken.parent, { kind: 'user' });
+  assert.equal(taken.parentId, 'agora:root:user-tasks');
+  assert.deepEqual(sessionDetail(store, 'descendant').parent, { kind: 'task', taskId: 'task-taken', sessionId: 'taken' });
+  assert.equal(store.task('task-taken').parent_task_id, 'task-old-parent', '预算和用量父链不因显示挂载改变');
+  assert.equal(sessionDetail(store, 'old-parent').childCount, 0);
+  const original = listSessions(store, { type: 'agent:main', principalId: 'main' }, params('snapshot=1&recentSince=2019-01-01T00:00:00Z'), 50);
+  assert.deepEqual(original.items.map(item => item.agoraSessionId), ['old-parent']);
+  const user = listSessions(store, host, params('snapshot=1'), 50);
+  assert.deepEqual(user.items.map(item => item.agoraSessionId), ['taken', 'descendant']);
+});
+
 test('热快照在单个切点返回超过默认页大小的全部节点', async t => {
   const store = await database(t);
   main(store);

@@ -45,7 +45,7 @@ node scripts/vendor-pane-api.mjs generate <pi-pane仓库路径>
 
 ## 同步与离线
 
-在线树使用数据库级变更游标。普通子节点分页按父节点读取；热快照在同一事务内返回热节点及其祖先，不截断成默认列表的第一页。非树对象的变更以虚拟用户任务根的更新推进来源水位，使分页的 revision 可以与订阅对齐。断流、后台恢复或 epoch 失配时向宿主发送 `reset`；会话流对应发送 `resync`。领域变更流过期也会触发树 `reset`，宿主据此调用 `forms.pending()` 对齐待处理区；对齐期间又到达变更时，插件继续执行一轮对齐，不能静默丢掉这次变化。
+在线树使用数据库级变更游标。普通子节点分页先核实当前 epoch，再传递 cursor；跨在线/离线或数据库周期时返回 reset，同周期的非法 cursor 仍报错。热快照在同一事务内返回热节点及其祖先，不截断成默认列表的第一页。结构迁移的持久 `tree/all` 标记使整个来源树重建，覆盖父关系、历史会话及父节点计数的派生变化。非树对象的变更以虚拟用户任务根的更新推进来源水位，使分页的 revision 可以与订阅对齐。断流、后台恢复或 epoch 失配时向宿主发送 `reset`；会话流对应发送 `resync`。领域变更流过期也会触发树 `reset`，宿主据此调用 `forms.pending()` 对齐待处理区；对齐期间又到达变更时，插件继续执行一轮对齐，不能静默丢掉这次变化。
 
 插件每 15 秒检查连接和认证状态。daemon 不运行时，通过 `openArchive({ home, apiVersion: 1 })` 只读读取，节点保留业务状态，只有 `open` 能力，会话标为只读。恢复在线时关闭 archive reader，并重置已订阅的树和会话。未知认证或协议错误不会在启用时冒充正常的离线状态。
 
@@ -53,7 +53,7 @@ node scripts/vendor-pane-api.mjs generate <pi-pane仓库路径>
 
 ## 幂等与资源上限
 
-完整 `ActionInvocation`、`FormSubmission` 和 `sessions.send` 的调用身份至少保留 24 小时；同 key 不同内容返回 `idempotencyConflict`。插件不缓存 `pending`。任务动作在发送副作用请求之前将方法、路径和请求体原子写入 `actions.json`；重启后同 key 使用原请求快照，避免随当前状态改变条件字段。最终插件结果保存在 `operation-identities.json`，从完成时间起至少保留 24 小时。待处理表单的展示快照保存在 `forms-cache.json`，插件重启后离线仍能列出；缓存不授权操作，也不因显示的过期时间到达而自行移除。
+完整 `ActionInvocation`、`FormSubmission` 和 `sessions.send` 的调用身份至少保留 24 小时；同 key 不同内容返回 `idempotencyConflict`。插件不缓存 `pending`。输入框 composer 与 `sessions.send` 复用任务返工机制，不要求菜单动作表单的标识，且只能发送文字、不能隐式中断。任务动作在发送副作用请求之前将方法、路径和请求体原子写入 `actions.json`；重启后同 key 使用原请求快照，避免随当前状态改变条件字段。最终插件结果保存在 `operation-identities.json`，从完成时间起至少保留 24 小时。待处理表单的展示快照保存在 `forms-cache.json`，插件重启后离线仍能列出；缓存不授权操作，也不因显示的过期时间到达而自行移除。
 
 这些文件位于宿主提供的插件专用 `dataDir`，不包含连接 token。每个目录只允许一个插件实例使用，不提供跨进程写锁。`actions.json` 上限为 16 MiB，每个索引最多 4096 项；未过期记录不能为了容纳新请求而被驱逐，容量耗尽或文件损坏时拒绝写操作。`forms-cache.json` 最多 8 MiB、4096 个事项，在线权威对齐并写盘完成后才更新宿主的待处理区；无效缓存和写盘失败不能伪造空列表。
 
@@ -63,7 +63,7 @@ HTTP JSON 响应最多 8 MiB，单个 SSE 事件最多 4 MiB。任务面板只�
 
 `devices-reset`、`budget-config-changed` 和 `protection-off` 都使用宿主落盘的 persistent 横幅。前两类的确认知悉绑定用户看到的 revision，并要求设备签名；保护关闭横幅只能通过重新开启保护清除。用户确认拒绝时取消待确认；超时、缺少设备或不支持签名都不表示授权，待确认留给 daemon 裁定。
 
-只有成功读取并验证 daemon 的当前安全警告列表后，插件才能清除已解除的横幅。断线、无效响应、插件启用尚未连上、停用或迟到的旧连接响应都不能静默清除横幅。来源不可用提示和跨 pi-pane 重启的保存由 pane 宿主实现。
+持久表单的移除按事项类型核对明确的合法状态；未知状态不能清空缓存，已签名但仍在执行的确认保持 pending。只有成功读取并验证 daemon 的当前安全警告列表后，插件才能清除已解除的横幅。断线、无效响应、插件启用尚未连上、停用或迟到的旧连接响应都不能静默清除横幅。来源不可用提示和跨 pi-pane 重启的保存由 pane 宿主实现。
 
 ## 测试
 
@@ -72,9 +72,9 @@ HTTP JSON 响应最多 8 MiB，单个 SSE 事件最多 4 MiB。任务面板只�
 | `changes-s2.test.mjs`、`pane-daemon-s2.test.mjs` | 重启、游标过期和缺口、保留范围、按父分页、热节点祖先、原子切点、鉴权、背压与关闭；真实 HTTP 变更流驱动插件树并在 daemon 重启后收敛 |
 | `pane-api-vendor.test.mjs` | 固定协议副本的来源与哈希 |
 | `pane-transport-s2.test.mjs` | 相对端点、协议与幂等头、受控重试、分片 SSE 与取消 |
-| `pane-views-s2.test.mjs` | 树水位、串行映射、会话流、composer/abort、任务用量和保活 |
+| `pane-views-s2.test.mjs`、`pane-cursor-s2.test.mjs`、`tree-projection-s2.test.mjs` | 树水位、串行映射、结构迁移重建、跨周期分页、会话流、composer/abort、历史只读、任务用量和保活 |
 | `pane-actions-s2.test.mjs`、`pane-action-store-s2.test.mjs`、`pane-action-daemon-s2.test.mjs` | 五个任务动作、动态表单、分步换人、pending 查询、跨重启固定请求、损坏和容量拒绝；真实 daemon 路径、创建目录及重复查询只执行一次 |
-| `pane-forms-s2.test.mjs`、`pane-form-cache-s2.test.mjs` | 表单排序、并发提交、取消、旧 revision、结果未知、跨插件重启的离线保留、容量、写入故障和停用竞态 |
+| `pane-forms-s2.test.mjs`、`pane-form-cache-s2.test.mjs`、`pane-form-states-s2.test.mjs` | 表单排序、并发提交、取消、旧 revision、结果未知、跨插件重启的离线保留、容量、写入故障和停用竞态 |
 | `pane-security-s2.test.mjs` | 用户拒绝/超时/缺少设备、去重确认、设备自签、旧警告 revision 和持久横幅 |
 | `pane-identities-s2.test.mjs` | 跨重启完整调用身份、最终结果与并发登记 |
 | `pane-offline-s2.test.mjs` | 离线热树与中立父关系、分页、只读内容、缺失文件、扫描上限与取消 |

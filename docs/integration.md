@@ -271,12 +271,14 @@ data: {"cursor":{"epoch":"in_5f2c:pr_51d0","seq":1843},"sessionId":"as_c21e","ev
 
 每条记录使用 `event: change`，data 为 `{ cursor: { epoch, seq }, objectType, objectId, tombstone }`。无效切点只返回一条 `event: reset`，data 为 `{ epoch }`，随后关闭连接。流保持期间持续检查 token，关闭 daemon、撤销或过期凭证都会终止连接。
 
+`objectType: "tree", objectId: "all"` 是持久的结构失效标记。会话重开、换人等结构迁移在同一事务里写入该标记；插件将其映射为树 `reset`，不改变数据库 epoch。重建后的节点 revision 至少达到最近结构标记的 seq；标记被保留清理移走后，其水位仍保存在对象 head 中。
+
 - 变更记录持久化在 `changes` 表，与业务状态变更同事务写入。每条记录带 `seq`（全局递增）、对象类型与 id；删除时带 `tombstone: true`。
 - `epoch` 是数据库级的标识，只在数据库被重建或从备份恢复时改变。
 - **保留与过期**：变更记录保留 7 天且至少保留最近 10 万条。请求的 `epoch` 不同、`afterSeq` 早于保留范围、或 `afterSeq` 大于当前 head 时，daemon 只返回一条 `event: reset`；客户端（pane 插件）丢弃本地状态，重新取快照。
 - **快照切点**：`GET /v1/sessions` 等列表接口的响应带 `changesCursor: { epoch, seq }`，与列表内容在同一个只读事务里读出，客户端用它订阅变更流即可不重不漏。
 
-会话列表的普通分页默认 50 条、最多 200 条；`parent=<nodeId>` 只返回直接子节点，游标绑定数据库 epoch、调用者和过滤条件，不能跨父节点复用。返回的 `parent?: SessionParent` 使用中立的 `task`、`main` 或 `user` 关系，节点 ID 由 pane 插件映射；无法确定主会话 ID 时省略关系，进入未归属。
+会话列表的普通分页默认 50 条、最多 200 条；`parent=<nodeId>` 只返回直接子节点，游标绑定数据库 epoch、调用者和过滤条件，不能跨父节点复用。返回的 `parent?: SessionParent` 使用中立的 `task`、`main` 或 `user` 关系，节点 ID 由 pane 插件映射；无法确定主会话 ID 时省略关系，进入未归属。用户接管后 `convener = user` 的挂载优先于预算树的 `parentTaskId`，该任务连同子树移入用户任务根；预算和用量仍保留原父链，原召集人不能通过树查询继续读取接管子树。
 
 `GET /v1/sessions?snapshot=1&openNodeId=<可重复>&recentSince=<ISO时间>` 在同一切点返回全部热节点及祖先。树快照不分页、不接受 `cursor`，最多一万条；超限返回 `413 snapshot_too_large`，不静默截断。`snapshot=1` 不能与 `parent` 同时使用。
 
@@ -311,7 +313,7 @@ agora:root:user-tasks            〔用户任务〕   用户通过 CLI 或 pi-pa
 
 #### 同步与按需加载
 
-- **修订号**：pane 插件的来源级 `revision` 直接用变更流的 `seq`，`epoch` 用变更流的 `epoch`。每条变更对应一条 `TreeChange`：`upsert` 的 `revision` 和 `node.revision` 为该变更的 `seq`。提问、设备等非树对象以虚拟用户任务根的 `upsert` 推进来源水位，避免分页等待不会推送的修订号。
+- **修订号**：pane 插件的来源级 `revision` 直接用变更流的 `seq`，`epoch` 用变更流的 `epoch`。普通对象变更对应一条 `TreeChange`：`upsert` 的 `revision` 和 `node.revision` 为该变更的 `seq`。提问、设备等非树对象以虚拟用户任务根的 `upsert` 推进来源水位，避免分页等待不会推送的修订号；`tree/all` 结构标记对应 `reset`，重建整棵来源树。
 - **删除**：`agora archive delete` 只删存档文件、保留元数据，节点仍可列出，插件发 `upsert`，节点的 `availability` 变为 `missing`。只有对象的元数据也被删除、不再能列出时，才发带 `revision` 的 `remove`（tombstone）；MVP 没有删除元数据的操作。
 - **订阅与重置**：`tree.subscribe` 以快照的 `{ epoch, revision }` 为起点（参数形状以 pi-pane `docs/plugin-api.md` 为准），插件用它作为变更流的 `epoch` 和 `afterSeq`。`epoch` 不符、`revision` 大于当前 head 或早于保留范围时，变更流返回 `reset`，插件向 pi-pane 发 `TreeChange` 的 `reset`。
 - **快照**：`tree.snapshot(req)` 只返回热节点及其祖先，热节点的定义以 pane 协议为准（`req.openNodeIds` 中的节点、`status` 为 `running`/`waiting`/`paused` 的节点、`lastActivityAt` 晚于 `req.recentSince` 的节点）。插件把这些条件转成 daemon 的列表查询，响应里的 `changesCursor.seq` 就是快照的 `revision`。
@@ -349,7 +351,7 @@ agora:root:user-tasks            〔用户任务〕   用户通过 CLI 或 pi-pa
 | 会议 | `action:agora.meeting.interject`、`action:agora.meeting.decide`、`action:agora.meeting.limits`、`action:agora.meeting.stop` | 无 |
 | board | 无（点击 resource 节点时 pi-pane 打开适用的 `agora.board` 面板；`open` 只用于 session 节点） | 无 |
 
-- `send`：任务节点同时填 `composer: { actionId: "agora.task.steer", placeholder: "对子代理补充说明或返工", images: false }`。pi-pane 把聊天输入框的提交转成该动作（文字在 `input.fields.message`），插件调用 `POST /v1/tasks/:id/steer`，保证有记录、有代数。`interrupt` 由动作表单的 checkbox 选择；输入框提交时为 `false`。
+- `send`：任务当前会话节点同时填 `composer: { actionId: "agora.task.steer", placeholder: "对子代理补充说明或返工", images: false }`。pi-pane 把聊天输入框的提交转成该动作（文字在 `input.fields.message`），不附动作表单的 id 或 revision；该受限通路只接受文字并固定 `interrupt: false`，仍保存固定请求快照。菜单里的返工表单保留版本校验，`interrupt` 由 checkbox 选择。两条通路都调用 `POST /v1/tasks/:id/steer`，保证有记录、有代数；`sessions.send` 也复用同一请求机制。`isCurrent: false` 的历史任务会话只有 `open` 能力，不能误控任务的当前运行。
 - `abort`：插件实现 `sessions.abort(ref, { clearQueue, origin })`，调用 `POST /v1/tasks/:id/stop`，语义是取消（先 `clear_queue` 再 `abort`，见 [tasks.md](tasks.md#agora_task-接口)）。`AbortResult.clearedText` 填被清掉的返工消息原文（去掉 agora 加的标注行），pi-pane 放回输入框。
 - 参会者和书记不带 `send`：会议中对参会者说话一律通过会议插话，进入 board。
 
