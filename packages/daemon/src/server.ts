@@ -3,7 +3,9 @@ import { createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { Auth, type Connection } from "./auth.js";
 import { AgoraError, invalid, object, optionalBoolean, stableJson } from "./errors.js";
-import { Store, id, type SessionRow } from "./store.js";
+import { Store, id } from "./store.js";
+import { pruneChanges, streamChanges } from "./changes.js";
+import { listSessions, sessionDetail } from "./session-list.js";
 import { TaskManager } from "./tasks.js";
 import { Requests } from "./requests.js";
 
@@ -49,11 +51,6 @@ function positive(value: string | null, fallback: number, max: number, zero = fa
 function hostOnly(conn: Connection): void {
   if (conn.type !== "host:cli") throw new AgoraError(403, "forbidden", "此操作仅允许 CLI 执行");
 }
-function sessionView(session: SessionRow) {
-  return { agoraSessionId: session.id, taskId: session.task_id, piSessionId: session.pi_session_id,
-    profile: session.profile, model: session.model, thinking: session.thinking, cwd: session.cwd,
-    status: session.status, revision: session.revision, createdAt: session.created_at };
-}
 
 export function createHttpServer(context: ServerContext) {
   const server = createServer(async (request, response) => {
@@ -97,7 +94,20 @@ export function createHttpServer(context: ServerContext) {
       reply(response, result.status, result.body);
     } catch (error) { const result = asError(error); reply(response, result.status, result.body); }
   });
-  server.once('close', () => context.requests.close());
+  pruneChanges(context.store);
+  const retention = setInterval(() => {
+    if (context.closing.aborted) return;
+    try { pruneChanges(context.store); }
+    catch { console.error("变更记录清理失败，将在下一周期重试"); }
+  }, 60_000);
+  retention.unref();
+  const stopRetention = () => clearInterval(retention);
+  context.closing.addEventListener("abort", stopRetention, { once: true });
+  server.once('close', () => {
+    stopRetention();
+    context.closing.removeEventListener("abort", stopRetention);
+    context.requests.close();
+  });
   server.requestTimeout = 35_000;
   server.headersTimeout = 10_000;
   server.keepAliveTimeout = 1000;
@@ -164,19 +174,19 @@ async function route(context: ServerContext, method: string, url: URL, conn: Con
     auth.requireMain(conn);
     return ok({ daemonVersion: VERSION, instanceId: context.instanceId, protocol: PROTOCOL_RANGE, draining: tasks.draining, activeRuns: tasks.activeCount(), taskCounts: store.all("SELECT status,COUNT(*) AS count FROM tasks GROUP BY status LIMIT 20") });
   }
+  if (pathname === "/v1/changes" && method === "GET") {
+    await streamChanges(store, auth, conn, url, request, response, context.closing);
+    return ok(null);
+  }
   if (pathname === "/v1/sessions" && method === "GET") {
     auth.requireMain(conn);
-    const limit = positive(url.searchParams.get("limit"), 50, 200), cursor = positive(url.searchParams.get("cursor"), 0, Number.MAX_SAFE_INTEGER, true);
-    const owner = conn.type === "agent:main" ? conn.principalId! : null;
-    const rows = store.all<SessionRow & { cursor: number }>("SELECT s.rowid AS cursor,s.* FROM agora_sessions s JOIN tasks t ON t.id=s.task_id WHERE s.rowid>? AND (? IS NULL OR t.convener_id=?) ORDER BY s.rowid LIMIT ?", cursor, owner, owner, limit + 1);
-    return ok({ items: rows.slice(0, limit).map(sessionView), nextCursor: rows.length > limit ? String(rows[limit - 1]!.cursor) : null,
-      changesCursor: { epoch: store.get<{ value: string }>("SELECT value FROM settings WHERE key='epoch'")!.value, seq: store.get<{ seq: number }>("SELECT COALESCE(MAX(seq),0) AS seq FROM changes")!.seq } });
+    return ok(listSessions(store, conn, url.searchParams, positive(url.searchParams.get("limit"), 50, 200)));
   }
   const session = pathname.match(/^\/v1\/sessions\/([^/]+)$/);
   if (method === "GET" && session) {
     const row = store.session(session[1]!);
     tasks.status(conn, row.task_id);
-    return ok(sessionView(row));
+    return ok(sessionDetail(store, row.id));
   }
   if (pathname === "/v1/admin/shutdown" && method === "POST") {
     hostOnly(conn);
