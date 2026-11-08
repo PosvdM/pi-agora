@@ -5,9 +5,10 @@ import { mkdtemp, mkdir, writeFile, appendFile, readFile, rm } from 'node:fs/pro
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { request as httpRequest } from 'node:http';
 import { startDaemon } from '../packages/daemon/dist/index.js';
 import { connectHost } from '../packages/protocol/dist/client.js';
-import { runArchiveCli } from '../packages/cli/dist/archive.js';
+import { runArchiveCli, readSse } from '../packages/cli/dist/archive.js';
 import { SessionViews } from '../packages/daemon/dist/sessions.js';
 import { assertIsolatedTestHome } from './fixtures/test-home.mjs';
 
@@ -214,6 +215,94 @@ test('tail 以短有效期跨越真实鉴权检查并持续续期，无小时级
   const events = output.slice(1).map(value => value.data);
   assert.ok(events.some(value => value.event.type === 'agora_run' && value.event.phase === 'exited'));
   assert.deepEqual(events.map(value => value.cursor.seq), [...new Set(events.map(value => value.cursor.seq))].sort((a, b) => a - b));
+});
+
+test('真实 HTTP 正常消费 128KiB message_end，write(false) 后继续送达后继事件', { timeout: 20_000 }, async t => {
+  const f = await setup(t);
+  const snapshot = await f.client.request('GET', f.base + '/snapshot');
+  const controller = new AbortController();
+  t.after(() => controller.abort());
+  const pending = fetch(f.daemon.url + f.base + `/stream?epoch=${encodeURIComponent(snapshot.cursor.epoch)}&afterSeq=${snapshot.cursor.seq}`, {
+    headers: { 'Agora-Protocol': '1', Authorization: `Bearer ${f.client.token}` }, signal: AbortSignal.any([controller.signal, AbortSignal.timeout(5000)]),
+  });
+  f.handle.emit({ type: 'thinking_level_changed', level: 'high' });
+  const response = await pending;
+  const state = f.daemon.tasks.sessions.states.get(f.task.agoraSessionId);
+  const serverResponse = [...state.clients][0].response;
+  const original = serverResponse.write;
+  let backpressure = 0;
+  serverResponse.write = function (...args) {
+    const writable = original.apply(this, args);
+    if (!writable && Buffer.byteLength(args[0]) >= 128 * 1024) backpressure++;
+    return writable;
+  };
+  const payload = 'x'.repeat(128 * 1024);
+  const messages = [];
+  const reading = (async () => {
+    for await (const event of readSse(response.body)) {
+      messages.push(event.data);
+      if (event.data.event.type === 'thinking_level_changed' && event.data.event.level === 'low') break;
+    }
+  })();
+  f.handle.emit({ type: 'message_end', message: { role: 'assistant', timestamp: 100, content: [{ type: 'text', text: payload }] } });
+  f.handle.emit({ type: 'thinking_level_changed', level: 'low' });
+  await reading;
+  assert.ok(backpressure > 0);
+  assert.equal(messages.find(value => value.event.type === 'message_end').event.message.content[0].text, payload);
+  assert.equal(messages.at(-1).event.level, 'low');
+  await until(() => state.clients.size === 0);
+  assert.equal(serverResponse.listenerCount('drain'), 0);
+});
+
+test('真实 HTTP 多 MiB 历史终态回放按序排空，所有大帧之后返回 EOF', { timeout: 20_000 }, async t => {
+  const f = await setup(t);
+  const snapshot = await f.client.request('GET', f.base + '/snapshot');
+  const payload = 'x'.repeat(128 * 1024);
+  for (let index = 0; index < 32; index++) f.handle.emit({ type: 'thinking_level_changed', level: 'high', index, payload });
+  await f.client.request('POST', `/v1/tasks/${f.task.taskId}/stop`, {}, { idempotencyKey: randomUUID() });
+  await f.daemon.tasks.flush();
+  const response = await fetch(f.daemon.url + f.base + `/stream?epoch=${encodeURIComponent(snapshot.cursor.epoch)}&afterSeq=${snapshot.cursor.seq}`, {
+    headers: { 'Agora-Protocol': '1', Authorization: `Bearer ${f.client.token}` }, signal: AbortSignal.timeout(5000),
+  });
+  const events = [];
+  for await (const event of readSse(response.body)) events.push(event.data);
+  const frames = events.filter(value => value.event.payload);
+  assert.deepEqual(frames.map(value => value.event.index), Array.from({ length: 32 }, (_, index) => index));
+  assert.ok(frames.every(value => value.event.payload === payload));
+  assert.ok(events.some(value => value.event.type === 'agora_run' && value.event.phase === 'exited'));
+  assert.equal(events.at(-1).event.type, 'agora_status');
+  assert.deepEqual(events.map(value => value.cursor.seq), [...new Set(events.map(value => value.cursor.seq))].sort((a, b) => a - b));
+});
+
+test('真实 HTTP 暂停读者的实时队列有界，主动取消移除 drain 和会话监听', { timeout: 20_000 }, async t => {
+  const f = await setup(t);
+  const payload = 'x'.repeat(128 * 1024);
+  for (const overflow of [false, true]) {
+    const snapshot = await f.client.request('GET', f.base + '/snapshot');
+    let request;
+    const pending = new Promise((resolve, reject) => {
+      request = httpRequest(f.daemon.url + f.base + `/stream?epoch=${encodeURIComponent(snapshot.cursor.epoch)}&afterSeq=${snapshot.cursor.seq}`, {
+        headers: { 'Agora-Protocol': '1', Authorization: `Bearer ${f.client.token}` },
+      }, response => { response.pause(); response.on('error', () => {}); resolve(response); });
+      request.on('error', reject);
+      request.end();
+    });
+    t.after(() => request.destroy());
+    f.handle.emit({ type: 'thinking_level_changed', level: 'high' });
+    const incoming = await pending;
+    const state = f.daemon.tasks.sessions.states.get(f.task.agoraSessionId);
+    const serverResponse = [...state.clients][0].response;
+    f.handle.emit({ type: 'thinking_level_changed', level: 'high', payload });
+    assert.equal(serverResponse.writableEnded, false);
+    assert.equal(serverResponse.listenerCount('drain'), 1);
+    for (let index = 0; index < (overflow ? 12 : 2); index++) f.handle.emit({ type: 'thinking_level_changed', level: 'high', payload, index });
+    if (overflow) assert.equal(serverResponse.destroyed, true);
+    else incoming.destroy();
+    await until(() => state.clients.size === 0);
+    assert.equal(serverResponse.listenerCount('drain'), 0);
+    assert.equal(serverResponse.listenerCount('error'), 0);
+    incoming.destroy(); request.destroy();
+  }
 });
 
 test('会话尾行截断的全量校验只读，并保留完整行', { timeout: 20_000 }, async t => {
