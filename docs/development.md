@@ -13,7 +13,7 @@
 ## 环境与构建
 
 - Node.js 24 及以上、npm、pi 1.5.x。真实进程测试固定 pi 1.5.0。
-- pi-hostkit 固定为 git 提交 `36f97ae683d5b0fb8ee495eecc04df7ab381f66a`，不引用相邻仓库工作区。安装会运行 prepare 构建；原生模块需要 Python 3 和 C/C++ 工具链，Windows 使用 Visual Studio Build Tools。
+- pi-hostkit 固定为 git 提交 `b6659ea30a63e7b35b8c7f16cdfa22e7dd5442a6`，不引用相邻仓库工作区。安装会运行 prepare 构建；原生模块需要 Python 3 和 C/C++ 工具链，Windows 使用 Visual Studio Build Tools。
 - 数据库使用内置 `node:sqlite`、WAL 和 FULL 同步级别。
 
 ```sh
@@ -105,7 +105,7 @@ shutdown 默认排空，超时后保留 daemon；force 中断并清理运行。�
 - **控制与名额**：发送、返工、停止、恢复、回收和唤醒经任务控制队列执行，写入时核对 generation / revision。停止在队列内重查租约与权限，拒绝过期请求前不改变停止标志。等待下级或提问的 settled 父任务不占名额，重新唤醒仍排队。启动恢复扫描只调度需要推理的 outbox，统一队列在旧运行核对和 HTTP 监听完成后才启动。
 - **可靠通知**：状态、结果和通知同事务；每批最多 200，扩展取到空批。完整磁盘行的 entryId、noticeId、dedupeKey 全部相符才 ack。继承的历史通知不能代替当前 inbox 的授权。被 clear_queue 清掉的在途通知在 settled 后可重投；每代完成有独立 key。
 - **请求重试**：安全 GET、可幂等续期及带原 Idempotency-Key 的业务写入最多三次，共用一个总期限、原 token、参数与 key；间隔 50 / 100ms。取消、关闭、HTTP 拒绝、协议不兼容、无效 JSON 和一次性认证兑换不重试。子会话短暂续期传输错误不立即 fatal。`AgoraConnectionError.cause` 保留捕获的底层异常，message 附可获得的底层错误码；诊断提取不参与重试分类，不能将错误信息增强视为偶发 loopback 失败根因已解决。
-- **Windows 退出可见性**：有效 StopReport 后最多 2 秒纯身份查询，不补杀；持续 alive / unknown 仍保锁。driver 的失败 stop 可显式重试，只复查原报告、身份和 release，不重放清队列或底层停止；已有失败报告不能变成新成功报告。TaskManager 重试仍核对版本与租约。
+- **退出确认**：hostkit 在停止返回前确认已知身份退出可见；driver 在有效 StopReport 后单次独立核对写者身份，不设 Windows 专属轮询，也不补杀；alive / unknown 立即保锁。driver 的失败 stop 可显式重试，只复查原报告、身份和 release，不重放清队列或底层停止；已有失败报告不能变成新成功报告。TaskManager 重试仍核对版本与租约。
 - **任务软预算**：根任务授予受单树和共享日封顶限制，`none` 不免除封顶，子树不重复占日授予；用量按请求去重并计入祖先。达到任一祖先上限先持久化对应子树的 `budget_paused`，再 clear_queue、abort、停止进程；合法尾量可超过上限。调度、返工、唤醒、额度自动恢复和 recover 都不能绕过；增额不自动恢复任何任务，显式恢复父任务也不恢复下级。计数与授予规则见 [tasks.md](tasks.md#任务树软预算)。
 - **用户接管**：显式接管允许目标召集人仍可达；普通 host 不能直接 recover Agent 资源。持久化 `taken_over_from` 与 outbox，保留 parent_task_id 和用量归属。原 Agent 的目标 / 子树管理返回 task_taken_over；祖先停止和调低预算在副作用前检查边界，相关控制执行中返回 task_busy，排队请求重新授权。内部任务运行时保留管理自身下级的权限。
 - **签名事务**：同步的 takeover、limits、提问及安全动作与 sign 共用业务 / nonce / 确认 / 审计事务；仅 spawn、recover 使用 signAsync，先提交 executing 和 nonce，再执行异步操作。重启将遗留 executing 标为 failed，不重放。实际审计表为 security_audit，字段见 [security.md](security.md#审计)。
@@ -138,7 +138,7 @@ shutdown 默认排空，超时后保留 daemon；force 中断并清理运行。�
 | `test/extension-client.test.mjs`、`extension-wire.test.mjs` | 双向认证、协议与发现记录故障，Windows 原子发布重试 |
 | `test/cli.test.mjs`、`protocol-cli.test.mjs` | 独立 CLI 进程、单实例复用、参数和协议 |
 
-CI 在 Windows、macOS、Linux auto / snapshot 四个组合执行 npm test。Linux auto 要求真实 cgroup 可用。Windows 完整测试后额外重复 shell 后代退出观测十次；保留 2 秒纯观察窗口和完整 StopReport / oracle 时间序列，仍不补杀。
+CI 在 Windows、macOS、Linux auto / snapshot 四个组合执行 npm test。Linux auto 要求真实 cgroup 可用。Windows 完整测试后额外重复 shell 后代退出核对十次；每次在停止报告返回后立即查询独立 oracle 的已知身份，保留完整 StopReport 和单次观测诊断，不设置额外观察窗口，也不补杀。driver-faults 在 Windows 与 Linux 隔离 worker 中均断言单次核对、失败保锁及显式重试不重放底层停止。
 
 macOS 完整测试后额外执行 25 次“忽略 abort 的 provider”真实用例；`CI` 环境下 `AGORA_STOP_PROVIDER_REPEATS` 控制该用例的注册次数（1–100，默认 1）。每次都保留原停止期限、报告校验和独立身份断言，单次失败即使后续成功也使测试失败。
 

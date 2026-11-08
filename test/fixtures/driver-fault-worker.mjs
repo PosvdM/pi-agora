@@ -132,43 +132,46 @@ for (const step of ["snapshot", "snapshot cleanup", "verify"]) test(`故障：${
   assert.equal(data.stopTrace.some(row => row.phase === 'identity_query_start'), false);
 });
 
-for (const first of ["alive", "unknown", new Error("暂时无法读取进程身份")]) test(`停止可见性：${first} 后 gone 仅在 Windows 预算内查询重试`, async () => {
+test("停止可见性：有效报告后单次身份核对即可确认退出，不轮询", async () => {
+  state.identityResults = ["gone", new Error("不得再次查询")];
+  const handle = await driver.start(spec);
+  await handle.stop();
+  assert.equal(state.calls.filter((call) => call === "isSameProcess").length, 1);
+  assert.equal((await handle.exited).cleanupConfirmed, true);
+  assert.equal(state.lockHeld, false);
+});
+
+for (const first of ["alive", "unknown", new Error("暂时无法读取进程身份")]) test(`停止可见性：${first} 单次核对失败即保锁，仅显式重试可再查询`, async () => {
   state.identityResults = [first, "gone"];
   const handle = await driver.start(spec);
   const stopping = handle.stop();
   assert.equal(handle.stop(), stopping, "并发调用必须返回同一个 Promise");
-  if (platform === "win32") {
-    await stopping;
-    assert.equal(state.calls.filter((call) => call === "isSameProcess").length, 2);
-    assert.equal((await handle.exited).cleanupConfirmed, true);
-    assert.equal(state.lockHeld, false);
-  } else {
-    await assert.rejects(stopping, { code: "EAGORA_STOP_INCOMPLETE", status: first instanceof Error ? "unknown" : first, attempts: 1, timeoutMs: 0 });
-    assert.equal(state.calls.filter((call) => call === "isSameProcess").length, 1);
-    assert.equal(state.lockHeld, true);
-    await handle.stop();
-    assert.equal((await handle.exited).cleanupConfirmed, true);
-  }
+  await assert.rejects(stopping, { code: "EAGORA_STOP_INCOMPLETE", status: first instanceof Error ? "unknown" : first, attempts: 1, timeoutMs: 0 });
+  assert.equal(state.calls.filter((call) => call === "isSameProcess").length, 1);
+  assert.equal(state.lockHeld, true);
+  await handle.stop();
+  assert.equal(state.calls.filter((call) => call === "isSameProcess").length, 2);
+  assert.equal((await handle.exited).cleanupConfirmed, true);
+  assert.equal(state.lockHeld, false);
   assert.equal(state.calls.filter((call) => call === "stop").length, 1, "可见性重试不能补杀");
 });
 
-test("停止可见性：持续 unknown 超时保锁，显式重试后刷新同一退出结果和诊断", async () => {
+test("停止可见性：unknown 单次核对失败保锁，显式重试后刷新同一退出结果和诊断", async () => {
   state.identityStatus = "unknown";
   const handle = await driver.start(spec);
   const exited = handle.exited;
   let notifications = 0;
   handle.onExit(() => { notifications++; });
-  const started = performance.now();
   await assert.rejects(handle.stop(), (error) => {
     assert.equal(error.code, "EAGORA_STOP_INCOMPLETE");
     assert.equal(error.status, "unknown");
     assert.equal(error.stopReport, state.report);
-    assert.equal(error.timeoutMs, platform === "win32" ? 2_000 : 0);
-    assert.ok(platform === "win32" ? error.attempts > 1 : error.attempts === 1);
+    assert.equal(error.timeoutMs, 0);
+    assert.equal(error.attempts, 1);
     assert.match(error.message, /unknown.*保留会话写锁/);
     return true;
   });
-  if (platform === "win32") assert.ok(performance.now() - started >= 1_900);
+  assert.equal(state.calls.filter((call) => call === "isSameProcess").length, 1);
   const failedExit = await exited;
   assert.equal(failedExit.cleanupConfirmed, false);
   assert.equal(state.lockHeld, true);
@@ -177,13 +180,13 @@ test("停止可见性：持续 unknown 超时保锁，显式重试后刷新同�
   assert.equal(failedData.cleanupConfirmed, false);
   assert.equal(failedData.stopFailure.verificationPhase, 'identity');
   assert.equal(failedData.stopFailure.status, 'unknown');
-  assert.equal(failedData.stopFailure.timeoutMs, platform === 'win32' ? 2000 : 0);
-  assert.ok(failedData.stopFailure.attempts >= 1);
+  assert.equal(failedData.stopFailure.timeoutMs, 0);
+  assert.equal(failedData.stopFailure.attempts, 1);
   assert.deepEqual(failedData.stopFailure.identity, identity); assert.deepEqual(failedData.stopFailure.stopReport, state.report);
   assert.ok(failedData.stopTrace.some(row => row.phase === 'report_validation_passed'));
   assert.ok(failedData.stopTrace.some(row => row.phase === 'identity_query_result' && row.detail.status === 'unknown'));
   assert.match(failedData.error, /unknown/);
-  if (platform === "win32") assert.match(failedData.error, /2000ms/);
+  assert.equal(failedData.stopTrace.filter(row => row.phase === "identity_query_start").length, 1);
 
   state.identityStatus = "gone";
   state.releaseBarrier = deferred();

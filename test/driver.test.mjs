@@ -129,16 +129,12 @@ test("真实 pi：shell 与脱离进程组的孙进程都退出，独立核对�
       observations.push({ at, elapsedMs, states });
       return states.every(row => row.state === 'gone');
     };
-    let gone = await observe();
-    // 观察窗口不发送任何额外终止信号；仅Windows允许退出可见性在2秒内收敛。
-    while (!gone && isWin && performance.now() - returnedClock < 2000) {
-      await delay(Math.min(50, Math.max(1, 2000 - (performance.now() - returnedClock))));
-      gone = await observe();
-    }
-    t.diagnostic(JSON.stringify({ kind: '停止后的独立退出可见性', stopReturnedAt, report, identities, observations, observationLimitMs: isWin ? 2000 : 0 }));
+    // 报告返回后立即独立核对，不设置额外退出观察窗口，也不补杀。
+    const gone = await observe();
+    t.diagnostic(JSON.stringify({ kind: '停止后的独立退出可见性', stopReturnedAt, report, identities, observations, observationLimitMs: 0 }));
     await assertCoverage(report);
     assert.equal(report.steps.find((step) => step.step === "abort").ok, false);
-    assert.equal(gone, true, 'StopReport返回后，独立oracle必须在覆盖范围与观察期限内确认退出；观察期间未补杀');
+    assert.equal(gone, true, 'StopReport 返回后，独立 oracle 必须立即确认覆盖范围内的已知身份退出');
   } finally {
     // 即使等待第二个 oracle 超时，也独立回收已经登记的后代，不向被测算法补记录。
     identities = records(oracle);

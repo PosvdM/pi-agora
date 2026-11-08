@@ -126,7 +126,7 @@ npm run build    # tsc project references 构建四个工作区
 npm test         # 构建后用 node --test 验证，真实 pi 测试要求 1.5.0
 ```
 
-依赖 pi-hostkit 的固定提交 `36f97ae`。测试使用本地假 provider，不访问模型服务，并把 HOME、agent 配置、数据和锁目录隔离到临时目录。CI 覆盖 Windows、macOS、Linux（cgroup 和快照两种模式）。构建、测试映射和限制见 [docs/development.md](docs/development.md)。
+依赖 pi-hostkit 的固定提交 `b6659ea30a63e7b35b8c7f16cdfa22e7dd5442a6`。测试使用本地假 provider，不访问模型服务，并把 HOME、agent 配置、数据和锁目录隔离到临时目录。CI 覆盖 Windows、macOS、Linux（cgroup 和快照两种模式）。构建、测试映射和限制见 [docs/development.md](docs/development.md)。
 
 ## 文档
 
