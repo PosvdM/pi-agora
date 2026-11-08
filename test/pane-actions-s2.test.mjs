@@ -5,6 +5,7 @@ import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createActions } from "../packages/pane-plugin/dist/actions.js";
+import { createViews } from "../packages/pane-plugin/dist/views.js";
 
 const origin = { client: "browser", connectionId: "tab-one", receivedAt: "2026-01-01T00:00:00.000Z" };
 const target = { type: "node", nodeId: "agora:session:as_original" };
@@ -69,6 +70,202 @@ async function invocation(s, action, fields, key = `${action}-key`, selectedTarg
 }
 const spawn = { model: "provider/model", profile: "explore", prompt: "检查任务", cwd: "D:/workspace" };
 const stop = key => ({ actionId: id("stop"), target, idempotencyKey: key });
+
+async function composerInvocation(s, key = "composer", message = "补充检查边界条件") {
+  const views = createViews({
+    online: () => true,
+    context: { mainSessions: { list: () => [], onChange: () => () => {} }, log: { info() {}, warn() {}, error() {} } },
+    api: {
+      async request(method, path) {
+        assert.equal(method, "GET");
+        assert.ok(path.startsWith("/v1/sessions?"));
+        return { status: 200, body: {
+          items: [{ ...s.state, kind: "task", parentId: null, title: "任务", hasChildren: false, createdAt: origin.receivedAt }],
+          changesCursor: { epoch: "composer-test", seq: 1 }, nextCursor: null,
+        } };
+      },
+    },
+  });
+  try {
+    const snapshot = await views.tree.snapshot({ openNodeIds: [], recentSince: origin.receivedAt });
+    const node = snapshot.nodes.find(node => node.id === target.nodeId);
+    assert.ok(node.capabilities.includes("send"));
+    assert.equal(node.composer.images, false);
+    return {
+      actionId: node.composer.actionId, target: { type: "node", nodeId: node.id },
+      input: { answers: [], fields: { message } }, idempotencyKey: key,
+    };
+  } finally { views.dispose(); }
+}
+
+test("节点 composer 声明生成的调用无需表单，发送前读取当前任务条件", async () => {
+  for (const status of ["running", "waiting_decision", "waiting_children", "completed", "failed"]) {
+    const s = setup(status);
+    const inv = await composerInvocation(s);
+    assert.equal(Object.hasOwn(inv, "formId"), false);
+    assert.equal(Object.hasOwn(inv, "formRevision"), false);
+    s.state.generation = 3;
+    s.state.revision = 8;
+    assert.equal((await s.actions.invoke(inv, origin)).status, "ok");
+    assert.deepEqual(s.reads, [
+      { method: "GET", path: "/sessions/as_original" }, { method: "GET", path: "/tasks/tk_actual" },
+    ]);
+    assert.deepEqual(s.calls[0], {
+      method: "POST", path: "/tasks/tk_actual/steer",
+      body: { message: inv.input.fields.message, interrupt: false, expectedGeneration: 3, expectedRevision: 8 },
+      options: { idempotencyKey: inv.idempotencyKey, origin },
+    });
+    const saved = JSON.parse(await readFile(join(s.dataDir, "actions.json"), "utf8"));
+    assert.deepEqual(saved.data.forms, []);
+    assert.deepEqual(saved.data.versions, []);
+  }
+});
+
+test("composer 拒绝两种半表单标识，完整表单继续校验版本", async () => {
+  for (const missing of ["formId", "formRevision"]) {
+    const s = setup();
+    const inv = await invocation(s, "steer", { message: "表单指令" });
+    delete inv[missing];
+    s.reads.length = 0;
+    assert.equal((await s.actions.invoke(inv, origin)).status, "failed");
+    assert.equal(s.calls.length, 0);
+    assert.equal(s.reads.length, 0);
+  }
+  const s = setup();
+  const stale = await invocation(s, "steer", { message: "旧表单指令", interrupt: "true" }, "stale-steer");
+  s.state.revision++;
+  assert.equal((await s.actions.invoke(stale, origin)).status, "failed");
+  const current = await invocation(s, "steer", { message: "完整表单指令", interrupt: "true" }, "current-steer");
+  assert.equal((await s.actions.invoke(current, origin)).status, "ok");
+  assert.equal(s.calls.length, 1);
+  assert.equal(s.calls[0].body.interrupt, true);
+});
+
+test("composer 仅接受空 answers 与 fields.message，拒绝额外字段和中断控制", async () => {
+  const base = await composerInvocation(setup());
+  for (const fields of [
+    { message: "指令", interrupt: "true" }, { message: "指令", interrupt: "false" },
+    { message: "指令", interrupt: true }, { message: "指令", interrupt: false },
+    { message: "指令", interrupt: undefined }, { message: "指令", expectedRevision: 7 },
+    { message: "指令", arbitrary: "值" }, { message: "指令", images: [] },
+    {}, { message: "" }, { message: " " }, { message: 1 }, { message: ["指令"] },
+    { message: "x".repeat(1_000_001) }, null,
+  ]) {
+    const s = setup();
+    assert.equal((await s.actions.invoke({ ...base, input: { answers: [], fields } }, origin)).status, "failed");
+    assert.equal(s.calls.length, 0);
+    assert.equal(s.reads.length, 0);
+  }
+  for (const input of [
+    { fields: { message: "指令" } }, { answers: null, fields: { message: "指令" } },
+    { answers: [{ id: "问题", selected: ["答案"] }], fields: { message: "指令" } },
+    { answers: [], fields: { message: "指令" }, interrupt: false },
+    { answers: [] },
+  ]) {
+    const s = setup();
+    assert.equal((await s.actions.invoke({ ...base, input }, origin)).status, "failed");
+    assert.equal(s.calls.length, 0);
+    assert.equal(s.reads.length, 0);
+  }
+});
+
+test("composer 不能越过动作、目标、任务类型和当前状态限制", async () => {
+  const base = await composerInvocation(setup());
+  for (const action of ["spawn", "stop", "cleanup", "recover"]) {
+    const s = setup();
+    assert.equal((await s.actions.invoke({ ...base, actionId: id(action) }, origin)).status, "failed");
+    assert.equal(s.calls.length, 0);
+    assert.equal(s.reads.length, 0);
+  }
+  for (const invalidTarget of [
+    undefined, { type: "global" }, { type: "panelRow", panelId: "agora", rowId: "row" },
+    { type: "node", nodeId: "pane:session:main" }, { type: "node", nodeId: "agora:session:as_../x" },
+    { ...target, taskId: "tk_actual" },
+  ]) {
+    const s = setup();
+    assert.equal((await s.actions.invoke({ ...base, target: invalidTarget }, origin)).status, "failed");
+    assert.equal(s.calls.length, 0);
+    assert.equal(s.reads.length, 0);
+  }
+  for (const session of [{ kind: "meeting-seat", taskId: "tk_actual" }, { kind: "task" }, { kind: "task", taskId: "as_original" }]) {
+    const s = setup();
+    s.setSession(session);
+    assert.equal((await s.actions.invoke(base, origin)).status, "failed");
+    assert.equal(s.calls.length, 0);
+  }
+  for (const status of ["created", "stopped", "quota_paused", "budget_paused", "interrupted"]) {
+    const s = setup(status);
+    assert.equal((await s.actions.invoke(base, origin)).status, "failed");
+    assert.equal(s.calls.length, 0);
+  }
+});
+
+test("composer pending 固定 HTTP 快照，同 key 重试和重启均不重读任务", async () => {
+  const s = setup();
+  const inv = await composerInvocation(s, "composer-restart");
+  let durableBeforeExecute = false;
+  s.replies.push(async () => {
+    const saved = JSON.parse(await readFile(join(s.dataDir, "actions.json"), "utf8"));
+    const entry = saved.data.identities.find(([key]) => key === inv.idempotencyKey)[1];
+    assert.equal(entry.fingerprint.length, 64);
+    assert.deepEqual(entry.operation, { method: "POST", path: "/tasks/tk_actual/steer", body: s.calls[0].body });
+    assert.equal(entry.result, undefined);
+    assert.deepEqual(saved.data.forms, []);
+    durableBeforeExecute = true;
+    return { status: 202, body: {} };
+  });
+  assert.equal((await s.actions.invoke(inv, origin)).status, "pending");
+  assert.equal(durableBeforeExecute, true, "composer 执行前必须完成快照写入");
+  s.state.status = "stopped";
+  s.state.generation = 99;
+  s.state.revision = 999;
+  s.setReadFailure(new Error("同 key 禁止重新预检"));
+  s.replies.push(new Error("响应断线"));
+  assert.equal((await s.actions.invoke(inv, origin)).status, "pending");
+  assert.deepEqual(s.calls[1], s.calls[0]);
+  assert.equal(s.reads.length, 2);
+  const next = setup("stopped", s.dataDir);
+  next.setSession({ kind: "meeting-seat" });
+  next.setReadFailure(new Error("重启后禁止重新预检"));
+  const retryOrigin = { ...origin, connectionId: "new-connection" };
+  assert.equal((await next.actions.invoke(inv, retryOrigin)).status, "ok");
+  assert.deepEqual(next.calls[0], { ...s.calls[0], options: { idempotencyKey: inv.idempotencyKey, origin: retryOrigin } });
+  assert.equal(next.reads.length, 0);
+  for (const change of [
+    value => { value.input.fields.message += "变更"; },
+    value => { value.input.fields.interrupt = "false"; },
+    value => { value.formId = "伪表单"; },
+    value => { value.formRevision = 1; },
+    value => { value.target.nodeId = "agora:session:as_other"; },
+    value => { value.extra = "未知字段"; },
+  ]) {
+    const changed = structuredClone(inv);
+    change(changed);
+    assert.equal((await next.actions.invoke(changed, origin)).status, "idempotencyConflict");
+  }
+  assert.equal(next.calls.length, 1);
+  assert.equal(next.reads.length, 0);
+});
+
+test("composer 预检失败的身份跨重启保留，恢复后按当前条件准备", async () => {
+  for (const failure of ["offline", "read"]) {
+    const s = setup();
+    const inv = await composerInvocation(s, `composer-${failure}`);
+    if (failure === "offline") s.setOnline(false);
+    else s.setReadFailure(new Error("读取失败"));
+    assert.equal((await s.actions.invoke(inv, origin)).status, "pending");
+    assert.equal(s.calls.length, 0);
+    const next = setup("running", s.dataDir);
+    next.state.revision++;
+    const changed = structuredClone(inv);
+    changed.input.fields.message += "改写";
+    assert.equal((await next.actions.invoke(changed, origin)).status, "idempotencyConflict");
+    assert.equal((await next.actions.invoke(inv, origin)).status, "ok");
+    assert.equal(next.calls[0].body.expectedRevision, 8);
+    assert.equal(next.calls[0].body.interrupt, false);
+    assert.equal(next.reads.length, 2);
+  }
+});
 
 test("静态目录仅开放五个任务动作，返回副本且文案为中文", () => {
   const s = setup();

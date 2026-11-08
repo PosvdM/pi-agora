@@ -360,6 +360,14 @@ export function createActions(runtime: PluginRuntime, execute: ExecuteOperation)
       if (!form) throw new Invalid("任务当前状态不允许此动作");
       return { status: "needsInput", followUpForm: form };
     }
+    // 节点 composer 仅发送文本；带任一表单标识的调用必须校验表单版本。
+    if (action === "steer" && inv.formId === undefined && inv.formRevision === undefined) {
+      const fields = inputFields(inv, ["message"]);
+      const message = text(fields.message, "返工指令", 1_000_000);
+      const state = await readTarget(target);
+      if (!allowed(action, state.task)) throw new Invalid("任务当前状态不允许此动作");
+      return { method: "POST", path: `/tasks/${encoded(state.task!.taskId)}/steer`, body: { message, interrupt: false, ...conditions(state) } };
+    }
     if (typeof inv.formId !== "string" || !Number.isSafeInteger(inv.formRevision)) throw new Invalid("请先读取动作表单");
     const record = versions.get(`${inv.formId}:${inv.formRevision}`);
     if (!record || record.action !== action || record.target !== target) throw new Invalid("表单无效或已过期，请重新读取");
