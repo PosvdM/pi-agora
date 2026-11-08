@@ -56,12 +56,22 @@ async function configured(options: DaemonOptions): Promise<DaemonOptions> {
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return options; throw new Error("daemon 配置文件无法读取或不是合法 JSON"); }
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("daemon 配置必须为对象");
   const config = value as Record<string, unknown>;
-  const allowed = ["maxConcurrentRuns", "readyTimeoutMs", "maxTaskDepth", "maxChildren", "worktreeRoot", "idleReclaimMs", "toolStallMinutes", "protectedPaths", "allowedRoots", "powershell", "skillDirectories", "defaultSkills", "quotaRecovery"];
+  const allowed = ["maxConcurrentRuns", "readyTimeoutMs", "maxTaskDepth", "maxChildren", "worktreeRoot", "idleReclaimMs", "toolStallMinutes", "protectedPaths", "allowedRoots", "powershell", "skillDirectories", "defaultSkills", "quotaRecovery", "taskLimitDefaults", "agentLimitCap"];
   if (Object.keys(config).some(key => !allowed.includes(key))) throw new Error("daemon 配置包含不支持的字段");
   for (const key of ["maxConcurrentRuns", "readyTimeoutMs", "maxTaskDepth", "maxChildren", "idleReclaimMs"]) {
     const item = config[key];
     if (item === undefined || key === "maxChildren" && item === null) continue;
     if (typeof item !== "number" || !Number.isSafeInteger(item) || item < (["maxChildren", "idleReclaimMs"].includes(key) ? 0 : 1) || item > 2_147_483_647) throw new Error(`配置 ${key} 必须为有界整数`);
+  }
+  for (const key of ["taskLimitDefaults", "agentLimitCap"]) {
+    const item = config[key];
+    if (item === undefined) continue;
+    if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error(`配置 ${key} 必须为对象`);
+    const fields = key === "taskLimitDefaults" ? ["maxTokens"] : ["perTaskFactor", "dailyTokens"];
+    for (const [field, value] of Object.entries(item)) {
+      if (!fields.includes(field)) throw new Error(`配置 ${key} 包含不支持的字段`);
+      if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) throw new Error(`配置 ${key}.${field} 必须为正的安全整数`);
+    }
   }
   if (config.toolStallMinutes !== undefined && (typeof config.toolStallMinutes !== "number" || !Number.isFinite(config.toolStallMinutes) || config.toolStallMinutes <= 0 || config.toolStallMinutes > 35791)) throw new Error("toolStallMinutes 必须为正数");
   if (config.powershell !== undefined && typeof config.powershell !== "boolean") throw new Error("powershell 必须为布尔值");
@@ -96,6 +106,7 @@ export async function startDaemon(options: DaemonOptions): Promise<RunningDaemon
     store = await openStore(home);
     const auth = await Auth.create(store, instanceId);
     const security = new Security(store);
+    security.importBudgetConfig(options);
     store.run("UPDATE operations SET state='failed',status=409,result=? WHERE state='in_progress'", JSON.stringify({ error: { code: "operation_interrupted", message: "操作被 daemon 重启中断，请核对任务状态" } }));
     const driver = options.driver ?? new RpcSubprocessDriver({ home, piPath: options.piPath,
       extensionPath: options.extensionPath ?? fileURLToPath(new URL("../../extension/dist/index.js", import.meta.url)),

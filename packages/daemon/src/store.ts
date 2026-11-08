@@ -113,7 +113,7 @@ CREATE TABLE usage_records (
 );
 CREATE INDEX usage_task ON usage_records(task_id,generation,seq);
 `, String.raw`
-ALTER TABLE tasks ADD COLUMN max_tokens INTEGER NOT NULL DEFAULT 2000000;
+ALTER TABLE tasks ADD COLUMN max_tokens INTEGER NOT NULL DEFAULT 50000000;
 ALTER TABLE tasks ADD COLUMN taken_over_from TEXT;
 ALTER TABLE requests ADD COLUMN answer_proof TEXT;
 CREATE TABLE budget_grants (
