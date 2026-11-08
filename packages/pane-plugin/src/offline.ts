@@ -23,6 +23,8 @@ export interface ArchivedSessionSummary {
   archiveState: "ok" | "partial" | "suspect" | "missing";
   messageCount?: number;
   inheritsFrom?: string;
+  isCurrent?: boolean;
+  usage?: { contextTokens?: number };
   createdAt: string;
   endedAt?: string;
   parent?: ArchivedSessionParent;
@@ -302,6 +304,21 @@ export function createOfflineViews(reader: ArchiveReader, epoch = `offline:${ran
         return { entries: view.entries, historyBefore: view.historyBefore };
       }),
       subscribe: () => { check(); return () => {}; },
+    },
+    panels: {
+      list: () => [{ id: "agora.task", source: "agora", title: "任务信息", placement: "node", appliesTo: { kinds: ["session"], sources: ["agora"] }, revision: 0 }],
+      content: (panelId, nodeId) => run(async () => {
+        if (panelId !== "agora.task" || !nodeId?.startsWith(SESSION)) throw new Error("任务面板需要 agora 会话节点");
+        const item = await session({ source: "agora", id: nodeId.slice(SESSION.length) });
+        const rows = [
+          { key: "会话", value: item.agoraSessionId }, { key: "任务", value: item.taskId ?? "—" },
+          { key: "模型", value: item.model }, { key: "档位", value: item.profile }, { key: "状态", value: item.status },
+          { key: "当前会话", value: item.isCurrent === undefined ? "未知" : item.isCurrent ? "是" : "否（历史会话）" },
+          { key: "任务用量", value: item.usage === undefined ? "—" : JSON.stringify(item.usage) },
+          { key: "上下文 token", value: String(item.usage?.contextTokens ?? "—") },
+        ];
+        return { type: "keyValue", rows };
+      }),
     },
     dispose() {
       if (abort.signal.aborted) return;

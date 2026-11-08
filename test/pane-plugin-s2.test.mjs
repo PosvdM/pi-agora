@@ -260,7 +260,7 @@ test("连接错误切到存档只读视图，隐藏动作并保留宿主已有�
   assert.equal((await plugin.actions.invoke({ actionId: "agora.task.stop", idempotencyKey: "offline-action" }, origin)).status, "failed");
   assert.equal((await plugin.sessions.send(ref, { text: "不能写入" }, { idempotencyKey: "offline-send", origin })).status, "rejected");
   await assert.rejects(plugin.sessions.abort(ref, { clearQueue: true, origin }), /只能读取存档/);
-  await assert.rejects(plugin.panels.content("agora.task", `agora:session:${ref.id}`), /只能读取存档/);
+  assert.equal((await plugin.panels.content("agora.task", `agora:session:${ref.id}`)).type, "keyValue");
   assert.equal((await plugin.forms.submit(submission("offline-form"), origin)).status, "failed");
   assert.equal(opened, 1);
   assert.deepEqual(h.banners.get(previous.id), previous);
@@ -330,6 +330,24 @@ test("周期健康检测断线触发离线 reset，恢复在线再次 reset 并�
   await plugin.deactivate();
   assert.equal(second.state.closed, 1); assert.equal(archive.closed, 1);
   assert.deepEqual(first.unexpected, []); assert.deepEqual(second.unexpected, []);
+});
+
+test("领域变更流过期必发树 reset，宿主据此重新对齐持久表单", async t => {
+  const { h, a, plugin } = await activated(t, call => call.path === `/v1/requests/${question.id}` ? ok({ ...question, state: "answered" }) : undefined);
+  const events = [];
+  let alignment;
+  plugin.tree.subscribe(treeCursor, event => {
+    events.push(event);
+    if (event.type === "reset") alignment = plugin.forms.pending();
+  });
+  a.state.requests = [{ ...question, id: "rq-new", revision: 1 }];
+  const domain = a.streams.find(stream => stream.path.startsWith("/v1/changes?") && stream.stops === 0);
+  domain.emit({ type: "reset", data: { epoch: "reset-database" } });
+  await eventually(() => events.length === 1 && alignment, "领域流 reset 应立即送达树订阅者");
+  assert.equal(events[0].type, "reset");
+  const forms = await alignment;
+  assert.ok(forms.some(form => form.id === "agora:request:rq-new"));
+  assert.ok(domain.stops > 0);
 });
 
 test("停用取消领域流和会话流、终止通知轮询、释放保活但保留持久横幅与表单", { timeout: 5_000 }, async t => {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createOfflineViews, OFFLINE_LIMITS } from "../packages/pane-plugin/src/offline.ts";
+import { createOfflineViews, OFFLINE_LIMITS } from "../packages/pane-plugin/dist/offline.js";
 
 const OLD = "2024-01-01T00:00:00.000Z";
 const RECENT = "2026-01-02T00:00:00.000Z";
@@ -39,6 +39,17 @@ function mock(items, { pageSize = 2, details = new Map(), entries = [], partials
   }
   return { reader, calls };
 }
+
+test("离线任务面板显示中立用量与当前会话标记", async () => {
+  const { reader } = mock([summary("one", { isCurrent: false, usage: { inputTokens: 10, outputTokens: 2, contextTokens: 12 } })]);
+  const views = createOfflineViews(reader);
+  const content = await views.panels.content("agora.task", nodeId("one"));
+  assert.equal(content.type, "keyValue");
+  assert.ok(content.rows.some(row => row.key === "上下文 token" && row.value === "12"));
+  assert.ok(content.rows.some(row => row.key === "当前会话" && row.value === "否（历史会话）"));
+  assert.ok(content.rows.some(row => row.key === "任务用量" && row.value.includes('"inputTokens":10')));
+  views.dispose();
+});
 
 test("快照仅包含热会话及其祖先，不包含冷兄弟节点", async () => {
   const items = [
@@ -115,7 +126,7 @@ test("用户会议和任务使用独立虚拟根节点，会议分组为只读",
   assert.deepEqual(nodes.get("agora:meeting:mt_1").capabilities, []);
   const seats = await views.tree.children("agora:meeting:mt_1", { epoch: "meetings", limit: 10 });
   assert.deepEqual(seats.nodes.map(node => node.id), [nodeId("seat"), nodeId("secretary")]);
-  assert.equal(views.panels, undefined);
+  assert.deepEqual(views.panels.list().map(panel => panel.id), ["agora.task"]);
   views.dispose();
 });
 

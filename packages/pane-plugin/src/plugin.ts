@@ -32,6 +32,7 @@ export default function createPlugin(options: PluginOptions = {}): PanePlugin {
   let archive: Promise<ReturnType<typeof createOfflineViews>> | undefined;
   let domainOff: (() => void) | undefined;
   let domainRefresh: Promise<unknown> | undefined;
+  let domainsDirty = false;
   let inboxGeneration = 0;
   let inboxRunning = false;
   const identities = new OperationIdentities();
@@ -63,7 +64,13 @@ export default function createPlugin(options: PluginOptions = {}): PanePlugin {
       else {
         const packageName = "@pi-agora/archive";
         const module = await import(packageName);
-        reader = await module.openArchive({ home: options.home, apiVersion: 1 });
+        const raw = await module.openArchive({ home: options.home, apiVersion: 1 });
+        if (typeof module.projectPartials !== "function") { raw.close(); throw new Error("存档适配器缺少流片段投影接口"); }
+        reader = {
+          listSessions: query => raw.listSessions(query), getSession: id => raw.getSession(id),
+          readUserView: (id, query) => raw.readUserView(id, query),
+          readPartials: async id => module.projectPartials(await raw.readPartials(id)), close: () => raw.close(),
+        };
       }
       if (!activated || online) { reader.close(); throw new Error("存档读取状态已变化"); }
       return createOfflineViews(reader);
@@ -90,10 +97,18 @@ export default function createPlugin(options: PluginOptions = {}): PanePlugin {
   }
   async function refreshDomains(): Promise<void> {
     if (!activated || !online) return;
+    domainsDirty = true;
     if (!domainRefresh) {
-      domainRefresh = Promise.allSettled([security.refreshAlerts(), forms.refresh(), views.refreshHolds()]).then(results => {
-        for (const result of results) if (result.status === "rejected") log("agora 领域状态暂时无法对齐", result.reason);
-      }).finally(() => { domainRefresh = undefined; });
+      domainRefresh = (async () => {
+        while (domainsDirty && activated && online) {
+          domainsDirty = false;
+          const results = await Promise.allSettled([security.refreshAlerts(), forms.refresh(), views.refreshHolds()]);
+          for (const result of results) if (result.status === "rejected") log("agora 领域状态暂时无法对齐", result.reason);
+        }
+      })().finally(() => {
+        domainRefresh = undefined;
+        if (domainsDirty && activated && online) void refreshDomains();
+      });
     }
     await domainRefresh;
   }
@@ -106,6 +121,7 @@ export default function createPlugin(options: PluginOptions = {}): PanePlugin {
       if (!activated || !online || token !== generation) return;
       if (event.type === "reset") {
         domainOff?.(); domainOff = undefined;
+        resetSubscribers();
         void refreshDomains().then(() => watchDomains(token)).catch(error => log("agora 变更流暂时不可用", error));
       } else if (event.type === "change") void refreshDomains();
     }, error => { domainOff?.(); domainOff = undefined; log("agora 领域变更流已断开", error); });
@@ -238,7 +254,16 @@ export default function createPlugin(options: PluginOptions = {}): PanePlugin {
       },
       async abort(ref, req) { active(); if (!online) throw new Error(offlineMessage); return views.sessions.abort!(ref, req); },
     },
-    panels: { list: () => views?.panels.list() ?? [], async content(id, nodeId) { active(); if (!online) throw new Error(offlineMessage); return views.panels.content(id, nodeId); } },
+    panels: {
+      list: () => views?.panels.list() ?? [],
+      async content(id, nodeId) {
+        active();
+        if (online) return views.panels.content(id, nodeId);
+        const reader = await offline();
+        if (!reader.panels) throw new Error(offlineMessage);
+        return reader.panels.content(id, nodeId);
+      },
+    },
     actions: {
       list: () => online ? [...actions.list(), { id: "agora.device.pair", source: "agora", title: "配对当前浏览器", scope: ["global"], timeoutMs: 60_000 },
         ...["devices-reset", "budget-config-changed"].map(kind => ({ id: kind === "devices-reset" ? "agora.security.acknowledge" : "agora.security.acknowledge-budget", source: "agora", title: "我已知悉", scope: ["global" as const], hasForm: true, timeoutMs: 60_000 }))] : [],
