@@ -8,6 +8,7 @@
     "src/**/*.ts"
   ],
   "references": [
+    { "path": "../archive" },
     {
       "path": "../protocol"
     },

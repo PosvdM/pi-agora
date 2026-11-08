@@ -97,9 +97,12 @@ class ArchiveReader implements ArchiveReaderV1 {
   private generation = 0;
   private generations = new WeakMap<ParsedSession, number>();
   private readonly selectSession: string;
+  private readonly ownerExpression: string;
   constructor(private db: DatabaseSync, private home: string, readonly schemaVersion: number) {
-    const hasTakeover = (db.prepare("PRAGMA table_info(tasks)").all() as { name: string }[]).some(column => column.name === "taken_over_from");
-    this.selectSession = hasTakeover ? SELECT_SESSION.replace("SELECT s.id", "SELECT t.taken_over_from,s.id") : SELECT_SESSION;
+    const columns = new Set((db.prepare("PRAGMA table_info(tasks)").all() as { name: string }[]).map(column => column.name));
+    this.ownerExpression = columns.has("convener_id") ? "COALESCE(t.convener_id,s.convener_id)" : "s.convener_id";
+    const selected = SELECT_SESSION.replace("s.convener_id,p.type", `${this.ownerExpression} AS convener_id,p.type`).replace("p.id=s.convener_id", `p.id=${this.ownerExpression}`);
+    this.selectSession = columns.has("taken_over_from") ? selected.replace("SELECT s.id", "SELECT t.taken_over_from,s.id") : selected;
   }
 
   private active(): void {
@@ -149,7 +152,7 @@ class ArchiveReader implements ArchiveReaderV1 {
     const where: string[] = [];
     const args: SQLInputValue[] = [];
     for (const [key, value] of [["convener_id", q.convenerId], ["meeting_id", q.meetingId], ["task_id", q.taskId]] as const) {
-      if (value !== undefined) { where.push(`s.${key}=?`); args.push(value); }
+      if (value !== undefined) { where.push(`${key === "convener_id" ? this.ownerExpression : `s.${key}`}=?`); args.push(value); }
     }
     const scope = [q.convenerId ?? null, q.meetingId ?? null, q.taskId ?? null];
     if (q.cursor !== undefined) {

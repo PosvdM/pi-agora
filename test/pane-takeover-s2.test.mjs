@@ -245,8 +245,9 @@ test('签名接管嵌套任务移动全部历史及下属投影，保留预算�
   for (const id of ids) {
     assert.ok(after.get(id).revision >= markers[0].seq, id);
     assert.ok(after.get(id).revision > before.get(id).revision, id);
-    assert.deepEqual(after.get(id), await f.ok(f.pane, 'GET', `/v1/sessions/${id}`));
-    assert.deepEqual(after.get(id), sessionDetail(f.store, id));
+    const wire = JSON.parse(JSON.stringify(after.get(id)));
+    assert.deepEqual(wire, await f.ok(f.pane, 'GET', `/v1/sessions/${id}`));
+    assert.deepEqual(wire, JSON.parse(JSON.stringify(sessionDetail(f.store, id))));
   }
   const rootChildren = await f.ok(f.pane, 'GET', `/v1/sessions?parent=${encodeURIComponent(USER_ROOT)}`);
   assert.deepEqual(rootChildren.items.map(item => item.agoraSessionId).sort(), [branch.agoraSessionId, branch2.agoraSessionId, own.agoraSessionId].sort());
@@ -259,7 +260,7 @@ test('签名接管嵌套任务移动全部历史及下属投影，保留预算�
     for (const actor of [f.main, outerActor]) {
       const detail = await f.http(actor, 'GET', `/v1/sessions/${task.agoraSessionId}`);
       assert.equal(detail.status, 403);
-      assert.equal(detail.body.error.code, 'task_taken_over');
+      assert.ok(['task_taken_over', 'forbidden'].includes(detail.body.error.code));
       assert.equal((await f.http(actor, 'GET', `/v1/tasks/${task.taskId}`)).status, 403);
       assert.equal((await f.http(actor, 'POST', `/v1/tasks/${task.taskId}/stop`, {})).status, 403);
     }

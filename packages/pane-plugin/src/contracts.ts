@@ -1,4 +1,6 @@
 import type { PaneHostContext } from "@pi-pane/plugin-api";
+import type { SessionMetadata, SessionParent } from "@pi-agora/protocol";
+export type { SessionParent } from "@pi-agora/protocol";
 
 export interface ApiReply<T = any> { status: number; body: T }
 export interface ApiOptions {
@@ -18,17 +20,13 @@ export interface PluginRuntime {
   context: PaneHostContext;
   online(): boolean;
 }
-export type SessionParent =
-  | { kind: "task"; taskId: string; sessionId: string }
-  | { kind: "main"; piSessionId: string }
-  | { kind: "user" };
 export function parentNodeId(item: { parent?: SessionParent; parentId?: string | null }): string | null {
   if (item.parent?.kind === "task") return `agora:session:${item.parent.sessionId}`;
   if (item.parent?.kind === "main") return `pane:session:${item.parent.piSessionId}`;
   if (item.parent?.kind === "user") return "agora:root:user-tasks";
   return item.parentId ?? null;
 }
-export interface SessionItem {
+export interface SessionItem extends SessionMetadata {
   agoraSessionId: string;
   taskId?: string | null;
   kind?: string;

@@ -8,6 +8,7 @@ import { EventEmitter } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
 import { openStore } from '../packages/daemon/dist/store.js';
 import { Auth } from '../packages/daemon/dist/auth.js';
+import { AccessControl } from '../packages/daemon/dist/acl.js';
 import { createHttpServer } from '../packages/daemon/dist/server.js';
 import { changesCursor, readChanges, pruneChanges, streamChanges } from '../packages/daemon/dist/changes.js';
 import { listSessions, sessionDetail } from '../packages/daemon/dist/session-list.js';
@@ -43,7 +44,7 @@ async function httpFixture(t) {
   const auth = await Auth.create(store, 'instance');
   store.run("UPDATE principals SET lease_connection_id='cn-main',lease_expires_at=? WHERE id='main'", Date.now() + 60_000);
   const closing = new AbortController();
-  const tasks = { status(conn, taskId) { auth.requireAgent(conn); return store.task(taskId); } };
+  const tasks = { acl: new AccessControl(store, auth), status(conn, taskId) { auth.requireAgent(conn); return store.task(taskId); } };
   const context = { store, auth, tasks, requests: { close() {} }, instanceId: 'instance', closing: closing.signal, async close() { closing.abort(); } };
   const server = createHttpServer(context);
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));

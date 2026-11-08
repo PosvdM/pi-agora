@@ -31,7 +31,7 @@ export default function createPlugin(options: PluginOptions = {}): PanePlugin {
   let security: Security;
   let archive: Promise<ReturnType<typeof createOfflineViews>> | undefined;
   let domainOff: (() => void) | undefined;
-  let domainRefresh: Promise<unknown> | undefined;
+  let domainRefresh: Promise<void> | undefined;
   let domainsDirty = false;
   let inboxGeneration = 0;
   let inboxRunning = false;
@@ -62,14 +62,13 @@ export default function createPlugin(options: PluginOptions = {}): PanePlugin {
       let reader: ArchiveReader;
       if (options.openArchive) reader = await options.openArchive();
       else {
-        const packageName = "@pi-agora/archive";
-        const module = await import(packageName);
+        const module = await import("@pi-agora/archive");
         const raw = await module.openArchive({ home: options.home, apiVersion: 1 });
-        if (typeof module.projectPartials !== "function") { raw.close(); throw new Error("存档适配器缺少流片段投影接口"); }
+        if (typeof module.projectPartialsAsync !== "function") { raw.close(); throw new Error("存档适配器缺少流片段投影接口"); }
         reader = {
           listSessions: query => raw.listSessions(query), getSession: id => raw.getSession(id),
           readUserView: (id, query) => raw.readUserView(id, query),
-          readPartials: async id => module.projectPartials(await raw.readPartials(id)), close: () => raw.close(),
+          readPartials: async id => module.projectPartialsAsync(await raw.readPartials(id)), close: () => raw.close(),
         };
       }
       if (!activated || online) { reader.close(); throw new Error("存档读取状态已变化"); }
@@ -100,8 +99,8 @@ export default function createPlugin(options: PluginOptions = {}): PanePlugin {
     resetSubscribers();
     // 安全横幅与待处理表单保持宿主中的持久状态，离线不表示解除。
   }
-  async function refreshDomains(): Promise<void> {
-    if (!activated || !online) return;
+  function refreshDomains(): Promise<void> {
+    if (!activated || !online) return Promise.resolve();
     domainsDirty = true;
     if (!domainRefresh) {
       domainRefresh = (async () => {
@@ -115,7 +114,7 @@ export default function createPlugin(options: PluginOptions = {}): PanePlugin {
         if (domainsDirty && activated && online) void refreshDomains();
       });
     }
-    await domainRefresh;
+    return domainRefresh;
   }
   async function watchDomains(token: number): Promise<void> {
     const response = await runtime.api.request("GET", "/v1/sessions?limit=1");

@@ -297,9 +297,9 @@ export class Store {
   }
   sessionParent(sessionId: string): SessionParent | undefined {
     const row = this.get<{ parent_task_id: string | null; parent_session_id: string | null; owner: string | null; type: string | null; pi_session_id: string | null }>(`SELECT t.parent_task_id, parent.agora_session_id AS parent_session_id,
-      s.convener_id AS owner,p.type,p.pi_session_id FROM agora_sessions s
+      COALESCE(t.convener_id,s.convener_id) AS owner,p.type,p.pi_session_id FROM agora_sessions s
       LEFT JOIN tasks t ON t.id=s.task_id LEFT JOIN tasks parent ON parent.id=t.parent_task_id
-      LEFT JOIN principals p ON p.id=s.convener_id WHERE s.id=? LIMIT 1`, sessionId);
+      LEFT JOIN principals p ON p.id=COALESCE(t.convener_id,s.convener_id) WHERE s.id=? LIMIT 1`, sessionId);
     if (row?.owner === "user" || row?.type === "user") return { kind: "user" };
     if (row?.parent_task_id) return row.parent_session_id ? { kind: "task", taskId: row.parent_task_id, sessionId: row.parent_session_id } : undefined;
     if (row?.type === "host:cli" || row?.type === "host:pane") return { kind: "user" };
@@ -308,9 +308,10 @@ export class Store {
   }
   sessionMetadata(sessionId: string): SessionMetadata {
     const session = this.session(sessionId);
-    const task = session.task_id ? this.get<{ agora_session_id: string; taken_over_from: string | null; parent_task_id: string | null }>(
-      "SELECT agora_session_id,taken_over_from,parent_task_id FROM tasks WHERE id=?", session.task_id) : undefined;
-    const principal = session.convener_id ? this.principal(session.convener_id) : undefined;
+    const task = session.task_id ? this.get<{ agora_session_id: string; taken_over_from: string | null; parent_task_id: string | null; convener_id: string }>(
+      "SELECT agora_session_id,taken_over_from,parent_task_id,convener_id FROM tasks WHERE id=?", session.task_id) : undefined;
+    const owner = task?.convener_id ?? session.convener_id;
+    const principal = owner ? this.principal(owner) : undefined;
     const parent = this.sessionParent(sessionId);
     const diagnostic = task?.parent_task_id ? { kind: "parent_task_missing", message: "父任务缺少当前会话，无法确定会话父关系" } :
       principal?.type === "agent:main" ? { kind: "main_session_id_missing", message: "主 Agent 召集人的 pi 会话标识缺失" } :

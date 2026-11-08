@@ -49,7 +49,7 @@ node scripts/vendor-pane-api.mjs generate <pi-pane仓库路径>
 
 插件每 15 秒检查连接和认证状态。daemon 不运行时，通过 `openArchive({ home, apiVersion: 1 })` 只读读取，节点保留业务状态，只有 `open` 能力，会话标为只读。恢复在线时关闭 archive reader，并重置已订阅的树和会话。未知认证或协议错误不会在启用时冒充正常的离线状态。
 
-离线元数据扫描每页 128 条，最多 64 页、4096 个会话；超限明确报错，不返回截断的树。每次打开 reader 使用新的离线 epoch，同一 epoch 使用固定元数据索引。归档条目和历史经 adapter 透传；流片段由 archive 的 `projectPartials` 转成协议中的未完成内容，不由插件解析 pi 格式。离线任务面板使用 adapter 的 `usage` 和 `isCurrent` 显示用量、上下文及历史会话标记。父关系缺失时进入未归属，不能用祖先的 pi 会话 ID 猜测直接父节点。
+离线元数据扫描每页 128 条，最多 64 页、4096 个会话；超限明确报错，不返回截断的树。每次打开 reader 使用新的离线 epoch，同一 epoch 使用固定元数据索引。归档条目和历史经 adapter 透传；流片段由 archive 的 `projectPartialsAsync` 分批转成协议中的未完成内容，不由插件解析 pi 格式。离线任务面板使用 adapter 的 `usage` 和 `isCurrent` 显示用量、上下文及历史会话标记。父关系缺失时进入未归属，不能用祖先的 pi 会话 ID 猜测直接父节点。
 
 ## 幂等与资源上限
 
@@ -79,7 +79,7 @@ HTTP JSON 响应最多 8 MiB，单个 SSE 事件最多 4 MiB。树变更映射�
 | `pane-forms-s2.test.mjs`、`pane-form-cache-s2.test.mjs`、`pane-form-states-s2.test.mjs` | 表单排序、并发提交、取消、旧 revision、结果未知、跨插件重启的离线保留、容量、写入故障和停用竞态 |
 | `pane-security-s2.test.mjs`、`pane-security-daemon-s2.test.mjs`、`pane-takeover-s2.test.mjs`、`pane-takeover-action-s2.test.mjs` | 用户拒绝/超时/缺少设备、去重确认、设备自签、旧警告 revision 和持久横幅；真实 HTTP 与 P-256 签名、双标签答复、接管后权限/父链/预算和事务 marker |
 | `pane-identities-s2.test.mjs` | 跨重启完整调用身份、最终结果与并发登记 |
-| `pane-offline-s2.test.mjs` | 离线热树与中立父关系、分页、只读内容、缺失文件、扫描上限与取消 |
+| `pane-offline-s2.test.mjs`、`pane-archive-real-s2.test.mjs`、`schema-s2.test.mjs` | 离线热树与中立父关系、分页、只读内容、缺失文件、扫描上限与取消 |
 | `pane-plugin-s2.test.mjs` | 生命周期、通知展示后确认、离线恢复、停用竞态、重启幂等和无效安全状态保留 |
 
 这些测试在 agora 侧使用模拟主机，其中安全和接管测试通过真实 daemon HTTP 及 P-256 签名验证后台协议；它们不代替 pane M3 的浏览器联调。流式输出断网恢复、多标签页交互、设备密钥与签名、横幅跨宿主重启及插件不可用提示，需由 pane 的浏览器测试验收。

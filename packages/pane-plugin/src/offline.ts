@@ -3,40 +3,15 @@ import { setImmediate as yieldTurn } from "node:timers/promises";
 import type { NodeStatus, PanePlugin, SessionRef, SessionSnapshot, TreeNode } from "@pi-pane/plugin-api";
 import { statusDetail } from "./contracts.js";
 
-/** 归档关系使用领域标识符，由插件映射为树节点 ID。 */
-export type ArchivedSessionParent =
-  | { kind: "task"; taskId: string; sessionId: string }
-  | { kind: "main"; piSessionId: string }
-  | { kind: "user" };
-
-/** 归档读取器的结构边界，供适配器对齐会话元数据。 */
-export interface ArchivedSessionSummary {
-  agoraSessionId: string;
-  kind: "task" | "meeting-seat" | "secretary";
-  title: string;
-  model: string;
-  profile: "explore" | "review" | "implement";
-  convenerId: string;
-  parentPiSessionId?: string;
-  taskId?: string;
-  meetingId?: string;
-  status: string;
-  archiveState: "ok" | "partial" | "suspect" | "missing";
-  messageCount?: number;
-  inheritsFrom?: string;
-  isCurrent?: boolean;
-  takenOver?: boolean;
-  usage?: { contextTokens?: number };
-  createdAt: string;
-  endedAt?: string;
-  parent?: ArchivedSessionParent;
+export type ArchivedSessionParent = import("@pi-agora/protocol").SessionParent;
+export type ArchivedSessionSummary = import("@pi-agora/archive").ArchivedSessionSummary & {
   lastActivityAt?: string;
   statusDetail?: string;
-}
+};
 
 export interface ArchiveReader {
   listSessions(q?: { convenerId?: string; meetingId?: string; taskId?: string; limit?: number; cursor?: string }):
-    Promise<{ items: ArchivedSessionSummary[]; nextCursor?: string }>;
+    Promise<{ items: ArchivedSessionSummary[]; nextCursor?: string | null }>;
   getSession(id: string): Promise<ArchivedSessionSummary | undefined>;
   readUserView(id: string, q?: { before?: string; limit?: number }):
     Promise<{ leafId: string | null; entries: unknown[]; historyBefore: string | null }>;

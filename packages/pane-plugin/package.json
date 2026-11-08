@@ -12,6 +12,7 @@
     ]
   },
   "dependencies": {
+    "@pi-agora/archive": "0.1.0",
     "@pi-agora/protocol": "0.1.0"
   },
   "peerDependencies": {
