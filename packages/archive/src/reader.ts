@@ -355,8 +355,8 @@ export async function openArchive(opts: { home?: string; apiVersion: 1 }): Promi
   const db = new DatabaseSync(file.file, { readOnly: true });
   try {
     const version = Number((db.prepare("SELECT version FROM schema_version LIMIT 1").get() as { version?: number } | undefined)?.version);
-    if (!Number.isInteger(version) || version < 4 || version > 6) {
-      throw new ArchiveError("unsupported_schema", "存档数据库版本不支持；支持 v4、v5 和 v6 的共用列");
+    if (!Number.isInteger(version) || version < 4 || version > 7) {
+      throw new ArchiveError("unsupported_schema", "存档数据库版本不支持；支持 v4、v5、v6 和 v7 的共用列");
     }
     return new ArchiveReader(db, home, version);
   } catch (error) { db.close(); throw error; }
