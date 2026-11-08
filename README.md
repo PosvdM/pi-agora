@@ -19,7 +19,7 @@ npm run build
 pi -e ./packages/extension/dist/index.js
 ```
 
-向主代理提出任务，并要求使用 `agora_task` 的 `spawn`，指定完整模型名（`provider/id`）、权限档位和任务书。动作包括 `spawn`、`list`、`status`、`result`、`steer`、`stop`、`cleanup` 和 `recover`。子代理也能派出下级，默认最多两层（子代理、孙代理），整棵任务树共用并发上限。下级的档位和子树限制不能放宽，只能管理自己直接派出的任务；主代理能查看、停止整棵树，但只能返工直接下级。
+向主代理提出任务，并要求使用 `agora_task` 的 `spawn`，指定完整模型名（`provider/id`）、权限档位和任务书。动作包括 `spawn`、`list`、`status`、`result`、`steer`、`stop`、`cleanup`、`recover` 和 `limits`。子代理也能派出下级，默认最多两层（子代理、孙代理），整棵任务树共用并发上限。下级的档位和子树限制不能放宽，只能管理自己直接派出的任务；主代理能查看、停止整棵树，但只能返工直接下级。
 
 `explore` 提供只读文件工具和协作工具，`review` 另有加固的 `agora_git`，`implement` 提供文件修改和 shell 工具。只读档位的文件访问限定在允许根内；所有档位的文件工具都拒绝凭证目录。shell 不承诺路径隔离，这属于工具层权限，不是操作系统沙箱。
 

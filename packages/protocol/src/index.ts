@@ -123,7 +123,8 @@ export interface InboxAck {
   persisted: boolean;
 }
 
-// 工具参数与 HTTP 任务接口共用字段定义。
+// 工具参数与 HTTP 任务接口共用字段定义；动作清单同时用于扩展分发。
+export const TASK_CONTROL_ACTIONS = ["steer", "stop", "cleanup", "recover", "limits"] as const;
 export const spawnTaskSchema = {
   type: "object",
   required: ["model", "profile", "prompt"],
@@ -138,6 +139,7 @@ export const spawnTaskSchema = {
     isolation: { enum: ["none", "worktree"] },
     boardId: { type: "string" },
     notify: { enum: ["wake", "silent"] },
+    maxTokens: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
     maxDepth: { type: "integer", minimum: 1 },
     maxChildren: { type: ["integer", "null"], minimum: 0 },
     skills: { type: "array", items: { type: "string", minLength: 1 }, uniqueItems: true },
@@ -147,7 +149,7 @@ export const agoraTaskSchema = {
   type: "object",
   required: ["action"],
   properties: {
-    action: { enum: ["spawn", "list", "status", "result", "steer", "stop", "cleanup", "recover"] },
+    action: { enum: ["spawn", "list", "status", "result", ...TASK_CONTROL_ACTIONS] },
     scope: { enum: ["mine", "all"] }, status: { type: "array", items: { type: "string" } },
     message: { type: "string" }, interrupt: { type: "boolean" }, discard: { type: "boolean" },
     mode: { enum: ["resume", "reopen", "replace", "abandon"] },

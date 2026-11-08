@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { join, relative, sep } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { AgoraConnectionError, AgoraHttpError, agoraHome, connectHost, connectLaunch, hmacProof, agoraTaskSchema, gitRead } from '@pi-agora/protocol';
+import { AgoraConnectionError, AgoraHttpError, agoraHome, connectHost, connectLaunch, hmacProof, agoraTaskSchema, TASK_CONTROL_ACTIONS, gitRead } from '@pi-agora/protocol';
 import { canonicalPath, isWithin } from 'pi-hostkit/paths';
 import type { AgoraClient } from '@pi-agora/protocol';
 import { NoticeDelivery } from './notifications.js';
@@ -270,7 +270,7 @@ export default function agoraExtension(pi: PiExtensionApi): void {
   });
   pi.registerTool({
     name: 'agora_task', label: 'agora 任务', executionMode: 'sequential',
-    description: '派出子代理，列出和查询任务、取结果、返工、停止子树、清理 worktree 或处理中断。下级只能管理自己直接派出的任务，权限和子树限制不能放宽。任务书要窄，把需要的接口和结论直接摘进任务书；并行前先定接口，机械性工作用 medium，已完成的任务不追加新活。skills 按名字选择，默认不给；下级只能选择上级名单的子集。',
+    description: '派出子代理，列出和查询任务、取结果、返工、停止子树、清理 worktree、处理中断或用 limits 调整任务树软预算。spawn 可用 maxTokens 收紧预算；预算暂停后须先增额再明确 recover resume，下级不会自动恢复。下级只能管理自己直接派出的任务，权限和子树限制不能放宽。任务书要窄，把需要的接口和结论直接摘进任务书；并行前先定接口，机械性工作用 medium，已完成的任务不追加新活。skills 按名字选择，默认不给；下级只能选择上级名单的子集。',
     parameters: taskSchema,
     async execute(toolCallId, params, signal, _update, ctx) {
       const r = runtime;
@@ -296,7 +296,7 @@ export default function agoraExtension(pi: PiExtensionApi): void {
         const path = `/v1/tasks/${encodeURIComponent(params.taskId)}`;
         if (params.action === 'status') result = await client.request('GET', path, undefined, options);
         else if (params.action === 'result') result = await client.request('GET', path + '/result' + (params.generation ? `?generation=${params.generation}` : ''), undefined, options);
-        else if (['stop', 'steer', 'cleanup', 'recover'].includes(params.action)) {
+        else if (TASK_CONTROL_ACTIONS.includes(params.action)) {
           const { action, taskId: _taskId, ...body } = params;
           result = await client.request('POST', path + '/' + action, body, options);
         }

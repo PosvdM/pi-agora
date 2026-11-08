@@ -12,7 +12,7 @@ agora 扩展按连接 token 的权限注册工具。子代理功能只注册 `ag
 
 | 工具 | 谁能用 | 用途 |
 | --- | --- | --- |
-| `agora_task` | 主代理及任务子代理（最终就绪后） | 派任务、列表、取结果、返工、停止子树、清理 worktree、恢复 |
+| `agora_task` | 主代理及任务子代理（最终就绪后） | 派任务、列表、取结果、返工、停止子树、清理 worktree、恢复、调整软预算 |
 | `agora_request` | 所有 agora 会话 | 子代理提问；召集人答复、转给用户、取消 |
 | `agora_board`（后续切片） | 绑定了 board 的会话 | 读写共享桌面，见 [board.md](board.md) |
 | `agora_meeting`（后续切片） | 主代理；参会者只有 `endorse` | 召开和管理会议，见 [meetings.md](meetings.md) |
@@ -39,6 +39,7 @@ type AgoraTaskParams =
       notify?: "wake" | "silent";    // 默认 wake；父任务等待下级时始终叫醒
       maxDepth?: number;              // 以新任务为第一层的子树层数，不能超过父任务剩余层数
       maxChildren?: number | null;    // 每个任务同时存在的未结束下级数，null 为不限
+      maxTokens?: number;              // 本任务及子树的累计软预算；下级只能收紧
     }
   | { action: "list"; status?: TaskStatus[]; scope?: "mine" | "all" }  // 默认 mine
   | { action: "status"; taskId: string }                          // 当前任务详情
@@ -46,6 +47,7 @@ type AgoraTaskParams =
   | { action: "steer"; taskId: string; message: string; interrupt?: boolean }
   | { action: "stop"; taskId: string; reason?: string }
   | { action: "cleanup"; taskId: string; discard?: boolean }
+  | { action: "limits"; taskId: string; maxTokens: number; expectedRevision?: number }
   | { action: "recover"; taskId: string; mode: "resume" | "reopen" | "replace" | "abandon"; model?: string; profile?: "explore" | "review" | "implement" };
 ```
 
@@ -72,6 +74,7 @@ type AgoraTaskParams =
 - **steer**：见“返工 generation”。
 - **stop**：取消当前运行，包括排队的消息：先 RPC `clear_queue`，再 `abort`（带超时，见 [pi-hostkit 设计文档的“进程树终止”](https://github.com/PosvdM/pi-hostkit/blob/main/docs/design.md#进程树终止)），等旧运行结束；abort 超时则终止进程树。任务进入 `stopped`。`clear_queue` 返回的排队文本中属于 agora 返工消息的，对应的 steer 记录标为 `dropped` 并在 stop 的结果里列出。停止不回滚文件。
 - **cleanup**：清理 worktree，规则见 [architecture.md](architecture.md#worktree)。
+- **limits**：调整自己直接下级的任务树软预算；主 Agent 在封顶内可直接增额，超出封顶发起用户确认。预算暂停后仍须明确 recover resume，不自动恢复下级。
 
 agora 对任务只提供“取消（含队列）”这一种停止。协作会话的 pi 队列里只有 agora 自己发的消息，被清掉的消息都有记录，召集人可以重新发送。
 
@@ -103,7 +106,7 @@ agora 对任务只提供“取消（含队列）”这一种停止。协作会�
 
 默认值按历史实现树与返工的请求用量校准：普通实现树约 2,900–3,200 万 token，较大实现树可超过 1 亿；每日封顶按创建和增额的授权额计算，不能以当天实际消耗替代。小任务应在派活时收紧预算。
 
-上限可由 `POST /v1/tasks/:id/limits`、`{ "maxTokens": <正整数> }` 或 `agora task limits <任务 ID> --max-tokens <数量>` 调整；召集人为 `user` 的任务增额走用户确认。预算配置、签名要求和接管边界见 [security.md](security.md#任务预算与设置)。
+上限可由 `agora_task` 的 `limits`、`POST /v1/tasks/:id/limits`、`{ "maxTokens": <正整数> }` 或 `agora task limits <任务 ID> --max-tokens <数量>` 调整；召集人为 `user` 的任务增额走用户确认。预算配置、签名要求和接管边界见 [security.md](security.md#任务预算与设置)。
 
 用户接管后，尚交给子树外部 Agent 的提问同事务转给用户，保留原 requestId 与 asker 并增加 revision；子树内部的提问继续由内部直接接收方处理。旧 Agent 对这些问题不能继续读取、答复、取消或转交，问题列表也不再返回越过接管边界的记录。
 
