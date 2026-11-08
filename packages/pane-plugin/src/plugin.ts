@@ -134,14 +134,17 @@ export default function createPlugin(options: PluginOptions = {}): PanePlugin {
     finally { if (token === inboxGeneration) inboxRunning = false; }
   }
   async function probe(): Promise<void> {
+    if (!activated) return;
     if (probing) return probing;
     const token = generation;
     probing = (async () => {
       if (api && online) {
         try {
           const health = await api.request("GET", "/v1/health", undefined, { timeoutMs: 5_000 });
+          if (!activated || token !== generation) return;
           if (health.status !== 200) throw new AgoraConnectionError();
           const authorization = await api.request("GET", "/v1/status", undefined, { timeoutMs: 5_000 });
+          if (!activated || token !== generation) return;
           if (authorization.status !== 200) throw new AgoraConnectionError();
           await refreshDomains();
           if (!domainOff) await watchDomains(generation);
@@ -149,6 +152,7 @@ export default function createPlugin(options: PluginOptions = {}): PanePlugin {
           return;
         } catch (error) { if (activated) { log("agora 连接需要重建", error); disconnect(); } }
       }
+      if (!activated) return;
       let next: AgoraApi;
       try { next = await (options.connect ?? (() => connectDaemonApi(options.home)))(); }
       catch (error) {
@@ -197,6 +201,7 @@ export default function createPlugin(options: PluginOptions = {}): PanePlugin {
         views = createViews(runtime); security = createSecurity(runtime); forms = createForms(runtime, security); actions = createActions(runtime, security.execute);
         plugin.renderers = views.renderers;
         await probe();
+        if (!activated) return;
         timer = setInterval(() => { void probe().catch(error => log("agora 重连失败", error)); }, options.retryMs ?? 15_000); timer.unref();
       } catch (error) { await plugin.deactivate?.(); throw error; }
     },

@@ -75,7 +75,10 @@ export function createSecurity(runtime: PluginRuntime, options: { waitMs?: numbe
     const response = await runtime.api.request("GET", "/v1/security/alerts");
     if (response.status !== 200 || !Array.isArray(response.body?.items)) throw new Error("无法核实 agora 安全警告");
     const items: SecurityAlert[] = response.body.items;
-    if (items.some(item => !item || typeof item.alertId !== "string" || typeof item.kind !== "string" || !Number.isSafeInteger(item.revision) || item.revision < 1)) throw new Error("agora 安全警告响应无效");
+    if (items.some(item => !item || typeof item.alertId !== "string" || !item.alertId || typeof item.kind !== "string" || !item.kind ||
+      !Number.isSafeInteger(item.revision) || item.revision < 1 ||
+      item.acknowledgedAt !== undefined && item.acknowledgedAt !== null && (typeof item.acknowledgedAt !== "string" || !Number.isFinite(Date.parse(item.acknowledgedAt))) ||
+      item.state !== undefined && (typeof item.state !== "string" || !["active", "pending", "unacknowledged", "acknowledged", "cleared", "resolved"].includes(item.state)))) throw new Error("agora 安全警告响应无效");
     active();
     const activeIds = new Set<string>();
     const next = new Map<string, SecurityAlert>();

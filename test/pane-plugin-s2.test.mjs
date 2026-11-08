@@ -93,7 +93,7 @@ function seedBanner(h, kind = "devices-reset") {
 function mockApi(h, handler = () => undefined) {
   const calls = [], streams = [], polls = new Set(), unexpected = [];
   const state = { alerts: [structuredClone(alert)], requests: [structuredClone(question)], sessions: [structuredClone(session)],
-    confirmations: [], devices: [], tasks: [], health: 200, closed: 0 };
+    confirmations: [], devices: [], tasks: [], health: 200, authorization: 200, closed: 0 };
   const api = {
     async request(method, requestPath, body, options = {}) {
       const call = { method, path: requestPath, body: structuredClone(body), options,
@@ -106,6 +106,7 @@ function mockApi(h, handler = () => undefined) {
       const pathname = call.url.pathname;
       if (method === "GET") {
         if (pathname === "/v1/health") return { status: state.health, body: {} };
+        if (pathname === "/v1/status") return { status: state.authorization, body: {} };
         if (pathname === "/v1/security/alerts") return ok({ items: structuredClone(state.alerts) });
         for (const [endpoint, key] of [["requests", "requests"], ["confirmations", "confirmations"], ["devices", "devices"], ["tasks", "tasks"]]) {
           if (pathname === `/v1/${endpoint}`) return ok({ items: structuredClone(state[key]) });
