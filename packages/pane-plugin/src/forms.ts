@@ -6,6 +6,38 @@ import { createFormCache, displayRecord, MAX_FORM_CACHE_BYTES, MAX_FORM_CACHE_IT
 function businessId(kind: string, object: any): unknown {
   return kind === "confirmation" ? object.confirmationId ?? object.id : kind === "device" ? object.deviceId : kind === "decision" ? object.taskId : object.id;
 }
+const STATES: Record<string, readonly string[]> = {
+  request: ["open", "escalated", "answered", "cancelled", "expired"],
+  confirmation: ["pending", "executing", "confirmed", "failed", "cancelled", "expired"],
+  device: ["pending", "paired", "revoked", "rejected"],
+  decision: ["created", "running", "waiting_decision", "waiting_children", "quota_paused", "budget_paused", "completed", "failed", "stopped", "interrupted"],
+};
+function businessState(kind: string, object: any): string {
+  const state = kind === "decision" ? object.status : object.state;
+  if (typeof state !== "string" || !STATES[kind]?.includes(state)) throw new Error("无法识别事项状态，无法核实终态，保留待处理表单");
+  return state;
+}
+function removedReason(kind: string, object: any): FormRemovedReason {
+  const state = businessState(kind, object);
+  if (kind === "request") {
+    if (["open", "escalated"].includes(state)) {
+      if (object.targetId === "user") throw new Error("事项仍待处理，保留待处理表单");
+      return "withdrawn";
+    }
+    return state === "cancelled" ? "cancelled" : state === "expired" ? "expired" : "handled";
+  }
+  if (kind === "confirmation") {
+    if (["pending", "executing"].includes(state)) throw new Error("事项仍在处理，保留待处理表单");
+    return state === "cancelled" ? "cancelled" : state === "expired" ? "expired" : "handled";
+  }
+  if (kind === "device") {
+    if (state === "pending") throw new Error("事项仍待处理，保留待处理表单");
+    if (state === "revoked") return "withdrawn";
+    if (state === "rejected") return "cancelled";
+  }
+  if (kind === "decision" && state === "interrupted") throw new Error("事项仍待处理，保留待处理表单");
+  return "handled";
+}
 function ok(reply: ApiReply): boolean { return reply.status >= 200 && reply.status < 300 && reply.status !== 202; }
 export function createForms(runtime: PluginRuntime, security: Security) {
   const current = new Map<string, FormRecord>();
@@ -63,6 +95,9 @@ export function createForms(runtime: PluginRuntime, security: Security) {
     const confirmations = await pages("/v1/confirmations", budget);
     const devices = await pages("/v1/devices", budget);
     const decisions = await pages("/v1/tasks?scope=mine&status=interrupted", budget);
+    for (const [kind, items] of [["request", requests], ["confirmation", confirmations], ["device", devices], ["decision", decisions]] as const) {
+      for (const item of items) businessState(kind, item);
+    }
     const next = new Map<string, FormRecord>();
     const add = (item: FormRecord) => {
       if (next.has(item.form.id)) throw new Error("agora 待处理事项标识重复");
@@ -72,14 +107,14 @@ export function createForms(runtime: PluginRuntime, security: Security) {
       add(record("request", request.id, request, { title: "答复提问", description: request.context ?? undefined,
         questions: request.questions, cancel: { label: "不答复，取消提问" }, expiresAt: request.expiresAt ?? undefined }));
     }
-    for (const confirmation of confirmations) if (confirmation.state === "pending") {
+    for (const confirmation of confirmations) if (["pending", "executing"].includes(confirmation.state)) {
       add(record("confirmation", confirmation.confirmationId ?? confirmation.id, confirmation, { title: confirmation.title,
         description: `${confirmation.summary}\n\n发起方：${confirmation.requestedBy ?? "未知"}`, expiresAt: confirmation.expiresAt, cancel: { label: "拒绝" } }));
     }
     for (const device of devices) if (device.state === "pending") {
       add(record("device", device.deviceId, device, { title: "批准设备", description: `设备：${device.label}\n\n公钥指纹：${device.fingerprint}\n\n请求时间：${device.createdAt}`, cancel: { label: "拒绝" } }));
     }
-    for (const task of decisions) {
+    for (const task of decisions) if (task.status === "interrupted") {
       add(record("decision", task.taskId, task, { title: `处理中断任务：${task.title}`, nodeId: `agora:session:${task.agoraSessionId}`,
         fields: [{ id: "mode", label: "处理方式", type: "select", required: true, options: ["resume", "reopen", "replace", "abandon"] },
           { id: "model", label: "换人时的模型", type: "text" }, { id: "profile", label: "换人时的权限档位", type: "select", options: ["explore", "review", "implement"] }] }));
@@ -100,15 +135,7 @@ export function createForms(runtime: PluginRuntime, security: Security) {
         else throw new Error("暂时无法核实事项的终态，保留待处理表单");
       }
       active();
-      if (object) {
-        const state = previous.kind === "decision" ? object.status : object.state;
-        const stillPending = previous.kind === "request" ? ["open", "escalated"].includes(state) && object.targetId === "user"
-          : previous.kind === "decision" ? state === "interrupted" : state === "pending";
-        if (typeof state !== "string" || !state || stillPending) throw new Error("暂时无法核实事项的终态，保留待处理表单");
-        if (state === "cancelled" || state === "rejected") reason = "cancelled";
-        else if (state === "expired") reason = "expired";
-        else if (state === "withdrawn" || state === "revoked") reason = "withdrawn";
-      }
+      if (object) reason = removedReason(previous.kind, object);
       removals.push({ id, reason });
     }
     active();
@@ -165,7 +192,9 @@ export function createForms(runtime: PluginRuntime, security: Security) {
             active();
             if (!runtime.online()) return { status: "failed", message: "agora 未运行，待处理事项仍然保留" };
             if (response.status !== 200) return mapped(response, req);
-            if (response.body.state !== "pending") return { status: "alreadyHandled" };
+            const state = businessState("confirmation", response.body);
+            if (state === "executing") return { status: "pending", message: "操作已经签名，正在执行" };
+            if (state !== "pending") return { status: "alreadyHandled" };
             if ((response.body.revision ?? 1) !== req.revision) {
               const latest = (await pending()).find(form => form.id === req.formId);
               return latest ? { status: "stale", form: latest } : { status: "alreadyHandled" };

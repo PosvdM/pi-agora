@@ -101,7 +101,7 @@ test("在线缓存先写盘再通知，插件重启离线仍按稳定顺序显�
   const dir = await directory(t), f = fixture(dir);
   f.setRequests([{ ...request, token: "不可保存的令牌", privateKey: "不可保存的私钥", questions: [{ id: "q", question: "题目", token: "题目额外令牌", options: [{ label: "甲", privateKey: "选项私钥" }] }] }]);
   f.setDevices([{ deviceId: "a", state: "pending", label: "设备", fingerprint: "指纹", createdAt: request.createdAt, privateKey: "设备私钥" }]);
-  f.setDecisions([{ taskId: "b", title: "中断任务", agoraSessionId: "session", revision: 1, createdAt: "2025-01-01T00:00:00Z" }]);
+  f.setDecisions([{ taskId: "b", status: "interrupted", title: "中断任务", agoraSessionId: "session", revision: 1, createdAt: "2025-01-01T00:00:00Z" }]);
   const notify = f.runtime.context.formAdded;
   f.runtime.context.formAdded = form => {
     const stored = JSON.parse(readFileSync(path.join(dir, FORM_CACHE_FILE), "utf8"));
