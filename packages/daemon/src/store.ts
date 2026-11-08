@@ -172,6 +172,15 @@ export class Store {
       return result;
     } catch (error) { this.db.exec("ROLLBACK"); throw error; }
   }
+  readTransaction<T>(fn: () => T): T {
+    this.db.exec("BEGIN");
+    try {
+      const result = fn();
+      if (result && typeof (result as { then?: unknown }).then === "function") throw new Error("数据库事务不能包含异步操作");
+      this.db.exec("COMMIT");
+      return result;
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+  }
   principal(principalId: string): PrincipalRow | undefined {
     return this.get<PrincipalRow>("SELECT * FROM principals WHERE id=?", principalId);
   }
@@ -198,8 +207,8 @@ export class Store {
     this.run("UPDATE outbox SET payload=json_set(payload,'$.triggerTurn',json('true')) WHERE dedupe_key=?", key);
     this.run("UPDATE tasks SET quota_notified_at=? WHERE id=?", at, task.id);
   }
-  change(kind: string, objectId: string): void {
-    this.run("INSERT INTO changes(epoch,object_type,object_id,created_at) VALUES((SELECT value FROM settings WHERE key='epoch'),?,?,?)", kind, objectId, now());
+  change(kind: string, objectId: string, tombstone = false): void {
+    this.run("INSERT INTO changes(epoch,object_type,object_id,tombstone,created_at) VALUES((SELECT value FROM settings WHERE key='epoch'),?,?,?,?)", kind, objectId, tombstone ? 1 : 0, now());
   }
   transition(task: TaskRow, status: string, resultText?: string, runId?: string, usage?: unknown, quota?: { resumeAt: string | null }): TaskRow {
     return this.transaction(() => {
@@ -287,6 +296,7 @@ export async function openStore(home: string): Promise<Store> {
       finally { db.exec("PRAGMA foreign_keys=ON"); }
     }
     db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;");
+    db.exec("CREATE INDEX IF NOT EXISTS changes_object ON changes(object_type,object_id,seq)");
     return new Store(db, home);
   } catch (error) { db.close(); throw error; }
 }
