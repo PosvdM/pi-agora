@@ -51,7 +51,7 @@ function node(item: SessionItem, revision = item.revision): TreeNode {
     badge: item.taskId ? "子代理" : item.kind === "secretary" ? "书记" : "参会",
     sessionRef: { source: "agora", id: item.agoraSessionId }, status: status(item.status),
     ...(statusDetail(item) ? { statusDetail: statusDetail(item) } : {}),
-    availability: item.archiveState === "missing" ? "missing" : item.archiveState === "archived" ? "archived" : "online",
+    availability: item.archiveState === "missing" ? "missing" : historical || item.archiveState === "archived" ? "archived" : "online",
     hasChildren: item.hasChildren, ...(item.childCount === undefined ? {} : { childCount: item.childCount }),
     lastActivityAt: item.lastActivityAt, sortKey: item.createdAt, revision, capabilities,
     ...(steerable ? { composer: { actionId: "agora.task.steer", placeholder: "对子代理补充说明或返工", images: false } } : {}),
@@ -276,7 +276,7 @@ export function createViews(runtime: PluginRuntime): {
       const readonly = !item.taskId || item.isCurrent === false || !STEERABLE.has(item.status);
       return { ref, cursor: data.cursor, leafId: data.leafId, entries: data.entries,
         historyBefore: data.historyBefore, inFlight: data.inFlight, unfinishedPartials: data.unfinishedPartials,
-        status: status(data.status), readonly, ...(readonly ? { readonlyReason: "noPermission" as const } : {}) } satisfies SessionSnapshot;
+        status: status(data.status), readonly, ...(readonly ? { readonlyReason: item.isCurrent === false ? "archived" as const : "noPermission" as const } : {}) } satisfies SessionSnapshot;
     },
     async history(ref, page) {
       return get<HistoryPage>(query(`/v1/sessions/${sessionId(ref)}/history`, page));

@@ -72,8 +72,11 @@ test('历史任务节点只读且不能通过 send 或 abort 操作当前任务'
   });
   const snapshot = await h.views.tree.snapshot({ openNodeIds: ['agora:session:old'], recentSince: '2026-01-01T00:00:00Z' });
   assert.deepEqual(snapshot.nodes.find(node => node.id === 'agora:session:old').capabilities, ['open']);
+  assert.equal(snapshot.nodes.find(node => node.id === 'agora:session:old').availability, 'archived');
   const ref = { source: 'agora', id: 'old' };
-  assert.equal((await h.views.sessions.snapshot(ref)).readonly, true);
+  const historicalSnapshot = await h.views.sessions.snapshot(ref);
+  assert.equal(historicalSnapshot.readonly, true);
+  assert.equal(historicalSnapshot.readonlyReason, 'archived');
   assert.equal((await h.views.sessions.send(ref, { text: '不能误控' }, { idempotencyKey: 'old', origin: {} })).status, 'rejected');
   assert.equal((await h.views.sessions.abort(ref, { clearQueue: true, origin: {} })).status, 'nothingToStop');
   assert.equal(h.requests.filter(request => request.method === 'POST').length, 0);
