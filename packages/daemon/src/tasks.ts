@@ -916,6 +916,7 @@ export class TaskManager {
       this.store.notice(task.convener_id, key, 'task:taken_over', {
         taskId, generation: task.generation, title: task.title, summary: '任务已被用户接管', notify: 'wake', triggerTurn: true,
       });
+      this.store.changeTreeStructure();
       this.store.change('task', taskId);
       queueMicrotask(() => {
         if (this.store.get('SELECT id FROM outbox WHERE recipient_id=? AND dedupe_key=?', task.convener_id, key)) this.wake(task.convener_id);
