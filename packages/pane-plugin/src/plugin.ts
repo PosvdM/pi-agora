@@ -203,8 +203,12 @@ export default function createPlugin(options: PluginOptions = {}): PanePlugin {
     const pending = inProgress.get(key);
     if (pending) return pending;
     const operation = invoke().then(async result => {
-      if (result.status !== "pending") await identities.finish(key, result);
-      return result;
+      if (result.status === "pending") return result;
+      try { return await identities.finish(key, result); }
+      catch (error) {
+        log("agora 操作结果未能保存，请使用原幂等键核对", error);
+        return { status: "pending", message: `操作可能已执行，但结果未能保存：${error instanceof Error ? error.message : "存储故障"}；请使用原幂等键核对` } as unknown as T;
+      }
     }).finally(() => { inProgress.delete(key); });
     inProgress.set(key, operation);
     return operation;
