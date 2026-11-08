@@ -314,8 +314,15 @@ export class SessionViews {
     }
   }
   private runDiagnostics(state: ViewState) {
+    const raw = state.handle?.diagnostics();
+    const run = this.store.get<{ pid: number | null; started_at: string; exited_at: string | null; exit_code: number | null; signal: string | null }>("SELECT pid,started_at,exited_at,exit_code,signal FROM process_runs WHERE id=? LIMIT 1", state.runId);
     return clone({
-      ...state.handle?.diagnostics(), sessionId: state.sessionId, runId: state.runId,
+      ...raw, sessionId: state.sessionId, agoraSessionId: state.sessionId, runId: state.runId,
+      pid: raw?.identity?.pid ?? run?.pid ?? null, startedAt: run?.started_at ?? null,
+      exitedAt: run?.exited_at ?? (state.ended ? new Date().toISOString() : null),
+      exitCode: raw?.code ?? run?.exit_code ?? null, signal: raw?.signal ?? run?.signal ?? null,
+      lastConfirmedAction: raw?.lastCompletedAction ?? null, inFlightTools: raw?.activeTools ?? [],
+      lastEvents: raw?.events ?? [], stderrTail: Buffer.from(raw?.stderr ?? "").subarray(-8192).toString("utf8"),
       ...(state.endReason !== undefined ? { reason: state.endReason } : {}),
       epoch: state.epoch, ended: state.ended, updatedAt: new Date().toISOString(),
       diagnostics: state.issues, baseline: state.baseline ?? null, verification: state.verification ?? null,
@@ -328,7 +335,7 @@ export class SessionViews {
       await this.refresh(state);
       await this.writePending(state);
       await this.verifyState(state);
-      await this.saveDiagnostics(state);
+      if (state.handle) await this.saveDiagnostics(state);
     });
     this.status(sessionId);
   }
