@@ -204,6 +204,7 @@ export function createViews(runtime: PluginRuntime): {
           if (change.cursor.epoch !== from.epoch) { reset(change.cursor.epoch); return; }
           if (change.cursor.seq <= seq) return;
           const revision = change.cursor.seq;
+          if (change.objectType === "tree" && change.objectId === "all") { reset(); return; }
           if (change.objectType === "task" || change.objectType === "session") {
             let id = change.objectId as string;
             if (change.objectType === "task") {

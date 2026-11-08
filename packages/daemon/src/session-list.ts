@@ -7,7 +7,7 @@ import { changesCursor } from "./changes.js";
 interface ListedSession extends SessionRow {
   cursor: number; parent_id: string | null; title: string; kind: string;
   child_count: number; last_activity_at: string; status_detail: string | null;
-  archive_state: string; tree_revision: number; effective_status: string;
+  archive_state: string; tree_revision: number; effective_status: string; is_current: number;
   task_parent_id: string | null; parent_session_id: string | null; convener_pi_session_id: string | null;
   origin_call: string | null;
 }
@@ -35,11 +35,15 @@ function treeSql(): string {
   return `WITH RECURSIVE allowed(id) AS (
     SELECT id FROM tasks WHERE $owner IS NULL OR convener_id=$owner
     UNION SELECT t.id FROM tasks t JOIN allowed a ON t.parent_task_id=a.id
+  ), structure AS (
+    SELECT MAX(COALESCE((SELECT seq FROM changes WHERE object_type='tree' AND object_id='all' ORDER BY seq DESC LIMIT 1),0),
+      COALESCE((SELECT json_extract(value,'$.seq') FROM settings WHERE key='changes:object:tree:all'),0)) AS revision
   ), base AS (
     SELECT s.*,s.rowid AS cursor,t.title,t.status_detail,t.convener_id AS task_convener_id,
       t.parent_task_id AS task_parent_id,pt.agora_session_id AS parent_session_id,p.pi_session_id AS convener_pi_session_id,
       origin.value AS origin_call,
       CASE WHEN t.agora_session_id=s.id THEN t.status ELSE s.status END AS effective_status,
+      CASE WHEN t.agora_session_id=s.id THEN 1 ELSE 0 END AS is_current,
       CASE WHEN t.parent_task_id IS NOT NULL THEN 'agora:session:' || pt.agora_session_id
         WHEN COALESCE(s.convener_id,t.convener_id) IN ('user','host:cli','host:pane') OR p.type LIKE 'host:%' THEN 'agora:root:user-tasks'
         WHEN p.pi_session_id IS NOT NULL THEN 'pane:session:' || p.pi_session_id ELSE NULL END AS parent_id,
@@ -49,8 +53,8 @@ function treeSql(): string {
         COALESCE(json_extract(sm.value,'$.at'),s.created_at),COALESCE(json_extract(tm.value,'$.at'),s.created_at)) AS last_activity_at,
       MAX(COALESCE((SELECT seq FROM changes WHERE object_type='session' AND object_id=s.id ORDER BY seq DESC LIMIT 1),0),
         COALESCE((SELECT seq FROM changes WHERE object_type='task' AND object_id=t.id ORDER BY seq DESC LIMIT 1),0),
-        COALESCE(json_extract(sm.value,'$.seq'),0),COALESCE(json_extract(tm.value,'$.seq'),0)) AS tree_revision
-    FROM agora_sessions s JOIN tasks t ON t.id=s.task_id JOIN allowed a ON a.id=t.id
+        COALESCE(json_extract(sm.value,'$.seq'),0),COALESCE(json_extract(tm.value,'$.seq'),0),structure.revision) AS tree_revision
+    FROM agora_sessions s JOIN tasks t ON t.id=s.task_id JOIN allowed a ON a.id=t.id CROSS JOIN structure
     LEFT JOIN tasks pt ON pt.id=t.parent_task_id
     LEFT JOIN principals p ON p.id=COALESCE(s.convener_id,t.convener_id)
     LEFT JOIN settings origin ON origin.key='origin:task:' || t.id
@@ -62,7 +66,7 @@ function treeSql(): string {
 export function sessionView(session: ListedSession) {
   return { agoraSessionId: session.id, taskId: session.task_id, piSessionId: session.pi_session_id,
     profile: session.profile, model: session.model, thinking: session.thinking, cwd: session.cwd,
-    status: session.effective_status ?? session.status, revision: session.tree_revision, createdAt: session.created_at,
+    status: session.effective_status ?? session.status, isCurrent: !!session.is_current, revision: session.tree_revision, createdAt: session.created_at,
     parentId: session.parent_id,
     ...(session.task_parent_id && session.parent_session_id ? { parent: { kind: "task", taskId: session.task_parent_id, sessionId: session.parent_session_id } }
       : session.convener_pi_session_id ? { parent: { kind: "main", piSessionId: session.convener_pi_session_id } }
