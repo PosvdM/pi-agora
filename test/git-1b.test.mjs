@@ -65,6 +65,7 @@ test('1b git argv：固定安全前缀、filter 覆盖和 -- 分隔，不依赖 
   });
   syncBuiltinESMExports();
   try {
+    const worktree = [`--work-tree=${await realpath(f.cwd)}`];
     const filters = ['-c', 'filter.trap.clean=', '-c', 'filter.trap.smudge=', '-c', 'filter.trap.process=', '-c', 'filter.trap.required=false'];
     for (const [command, options, refs, paths, expected] of [
       ['status', [], [], ['-leading.txt'], ['status', '--porcelain=v1', '--ignore-submodules=all', '--untracked-files=normal', '--', '-leading.txt']],
@@ -75,13 +76,13 @@ test('1b git argv：固定安全前缀、filter 覆盖和 -- 分隔，不依赖 
       calls.length = 0;
       assert.equal(await gitRead(f.cwd, command, options, refs, paths, signal), 'output');
       assert.deepEqual(calls[0].args, [...prefix, 'rev-parse', '--show-toplevel']);
-      assert.deepEqual(calls[1].args, [...prefix, 'config', '--null', '--get-regexp', '^filter\\.']);
+      assert.deepEqual(calls[1].args, [...prefix, `--work-tree=${await realpath(f.cwd)}`, 'config', '--null', '--get-regexp', '^filter\\.']);
       const oid = 'a'.repeat(40);
       const resolved = expected.map(arg => arg === 'HEAD' ? oid : arg === 'HEAD~1..HEAD' ? `${oid}..${oid}` : arg);
-      assert.deepEqual(calls.at(-1).args, [...prefix, ...filters, '--literal-pathspecs', ...resolved]);
+      assert.deepEqual(calls.at(-1).args, [...prefix, ...worktree, ...filters, '--literal-pathspecs', ...resolved]);
       const endpoints = refs.flatMap(ref => ref.split('..'));
       assert.deepEqual(calls.filter(call => call.args.includes('--verify')).map(call => call.args),
-        [...new Set(endpoints)].map(ref => [...prefix, ...filters, 'rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`]));
+        [...new Set(endpoints)].map(ref => [...prefix, ...worktree, ...filters, 'rev-parse', '--verify', '--end-of-options', `${ref}^{commit}`]));
       for (const call of calls) {
         assert.equal(call.file, 'git');
         assert.equal(call.options.signal, signal);
@@ -93,8 +94,8 @@ test('1b git argv：固定安全前缀、filter 覆盖和 -- 分隔，不依赖 
     }
     calls.length = 0;
     await gitExec(f.cwd, ['rev-parse', '--show-toplevel'], signal);
-    assert.deepEqual(calls[1].args, [...prefix, 'config', '--null', '--get-regexp', '^filter\\.']);
-    assert.deepEqual(calls[2].args, [...prefix, ...filters, 'rev-parse', '--show-toplevel']);
+    assert.deepEqual(calls[1].args, [...prefix, `--work-tree=${await realpath(f.cwd)}`, 'config', '--null', '--get-regexp', '^filter\\.']);
+    assert.deepEqual(calls[2].args, [...prefix, ...worktree, ...filters, 'rev-parse', '--show-toplevel']);
   } finally {
     mock.restoreAll();
     syncBuiltinESMExports();
@@ -113,8 +114,9 @@ test('N2：gitExec 合并配置上下文的 filter，附加上下文故障时拒
   });
   syncBuiltinESMExports();
   try {
-    assert.equal(await gitExec(f.cwd, ['worktree', 'remove', target.cwd], signal, [target.cwd, f.cwd, target.cwd]), 'output');
+    assert.equal(await gitExec(f.cwd, ['worktree', 'remove', target.cwd], signal, [target.cwd, f.cwd, target.cwd], target.cwd), 'output');
     assert.deepEqual(calls.map(call => call.options.cwd), [f.cwd, f.cwd, target.cwd, target.cwd, f.cwd]);
+    assert.ok(calls.at(-1).args.includes(`--work-tree=${await realpath(target.cwd)}`));
     for (const driver of ['parent', 'target']) {
       for (const key of ['clean', 'smudge', 'process']) assert.ok(calls.at(-1).args.includes(`filter.${driver}.${key}=`));
       assert.ok(calls.at(-1).args.includes(`filter.${driver}.required=false`));

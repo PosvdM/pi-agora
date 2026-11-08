@@ -30,7 +30,7 @@ async function gitRaw(cwd: string, args: string[], signal?: AbortSignal): Promis
   });
 }
 /** 从文件系统确定工作树边界；Git 的 show-toplevel 仅用于核验，不能作为授权根。 */
-async function verifyWorktree(cwd: string, signal?: AbortSignal): Promise<void> {
+async function verifyWorktree(cwd: string, signal?: AbortSignal): Promise<string> {
   let root = await realpath(cwd);
   while (true) {
     try { await lstat(path.join(root, '.git')); break; }
@@ -46,6 +46,7 @@ async function verifyWorktree(cwd: string, signal?: AbortSignal): Promise<void> 
   if (normalize(actual) !== normalize(root)) {
     throw Object.assign(new Error('Git 工作树与任务目录的仓库根不一致，请检查 core.worktree 配置'), { code: 'EAGORA_GIT_WORKTREE_MISMATCH' });
   }
+  return root;
 }
 export async function gitRead(cwd: string, command: string, options: string[] = [], refs: string[] = [], paths: string[] = [], signal?: AbortSignal): Promise<string> {
   if (!['status', 'diff', 'log', 'show'].includes(command)) throw new Error('git 子命令不在允许列表中');
@@ -83,15 +84,16 @@ export async function gitRead(cwd: string, command: string, options: string[] = 
     : [command, '--no-ext-diff', '--no-textconv', '--no-color', ...(command === 'log' || command === 'show' ? ['--no-show-signature', '--no-notes', '--no-mailmap'] : []), ...(command === 'log' ? ['-n50'] : []), ...options, ...resolved];
   return gitExec(cwd, ['--literal-pathspecs', ...args, '--', ...(paths.length ? paths : ['.'])], signal);
 }
-async function filterOverrides(cwd: string, signal?: AbortSignal, configContexts: string[] = []): Promise<string[]> {
-  const drivers = new Set<string>();
+async function filterOverrides(cwd: string, signal?: AbortSignal, configContexts: string[] = []): Promise<{ filters: string[]; roots: Map<string, string> }> {
+  const drivers = new Set<string>(), roots = new Map<string, string>();
   for (const context of new Set([cwd, ...configContexts])) {
-    await verifyWorktree(context, signal);
+    const root = await verifyWorktree(context, signal);
+    roots.set(context, root);
     let config = '';
-    try { config = await gitRaw(context, ['config', '--null', '--get-regexp', '^filter\\.'], signal); }
+    try { config = await gitRaw(context, [`--work-tree=${root}`, 'config', '--null', '--get-regexp', '^filter\\.'], signal); }
     catch {
       // --get-regexp 无匹配返回 1，独立读取全部配置区分无匹配与查询故障。
-      config = await gitRaw(context, ['config', '--null', '--list'], signal);
+      config = await gitRaw(context, [`--work-tree=${root}`, 'config', '--null', '--list'], signal);
     }
     for (const item of config.split('\0')) {
       const name = item.split('\n', 1)[0]!;
@@ -100,16 +102,18 @@ async function filterOverrides(cwd: string, signal?: AbortSignal, configContexts
     }
   }
   const filters = [...drivers].flatMap(driver => ['clean', 'smudge', 'process'].flatMap(key => ['-c', `filter.${driver}.${key}=`]).concat(['-c', `filter.${driver}.required=false`]));
-  return filters;
+  return { filters, roots };
 }
-export async function gitExec(cwd: string, args: string[], signal?: AbortSignal, configContexts: string[] = []): Promise<string> {
-  return gitRaw(cwd, [...await filterOverrides(cwd, signal, configContexts), ...args], signal);
+export async function gitExec(cwd: string, args: string[], signal?: AbortSignal, configContexts: string[] = [], worktreeContext = cwd): Promise<string> {
+  const { filters, roots } = await filterOverrides(cwd, signal, [...configContexts, worktreeContext]);
+  // worktree remove 的内部 status 必须使用目标根，不能继承父工作树根。
+  return gitRaw(cwd, [`--work-tree=${roots.get(worktreeContext)!}`, ...filters, ...args], signal);
 }
 /** 流式检查索引的 gitlink；每条记录只保留固定长度的 mode 前缀。 */
 export async function gitHasGitlinks(cwd: string, signal?: AbortSignal): Promise<boolean> {
-  const filters = await filterOverrides(cwd, signal);
+  const { filters, roots } = await filterOverrides(cwd, signal);
   return new Promise((resolve, reject) => {
-    const child = spawn('git', [...prefix, ...filters, 'ls-files', '--stage', '-z'], {
+    const child = spawn('git', [...prefix, `--work-tree=${roots.get(cwd)!}`, ...filters, 'ls-files', '--stage', '-z'], {
       cwd, env: gitEnvironment(), windowsHide: true, signal, stdio: ['ignore', 'pipe', 'ignore'], timeout: 30_000,
     });
     let mode = '', found = false, failed = false;

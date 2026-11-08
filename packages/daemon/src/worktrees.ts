@@ -44,7 +44,7 @@ export class Worktrees {
       }
       const dirty = (await gitRead(row.path, 'status')).trim();
       if (dirty && !discard) throw new AgoraError(409, 'worktree_dirty', 'worktree 有未提交改动或未跟踪文件，请验收后显式指定 discard');
-      await gitExec(row.repo_root, ['worktree', 'remove', ...(discard ? ['--force'] : []), row.path], undefined, [row.path]);
+      await gitExec(row.repo_root, ['worktree', 'remove', ...(discard ? ['--force'] : []), row.path], undefined, [row.path], row.path);
       this.store.run("UPDATE worktrees SET state='removed' WHERE task_id=?", taskId);
     });
   }
