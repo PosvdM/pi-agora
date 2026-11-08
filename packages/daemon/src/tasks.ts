@@ -524,8 +524,8 @@ export class TaskManager {
         this.store.transaction(() => {
           const paused = this.store.all<TaskRow>("SELECT * FROM tasks WHERE status='quota_paused' AND convener_id=? ORDER BY id LIMIT 200", latest.convener_id);
           const tasks = paused.map(row => ({ taskId: row.id, generation: row.generation, resumeAt: row.quota_resume_at, contextTokens: this.store.usage(row.id).contextTokens }));
-          this.store.notice(latest.convener_id, `task:${latest.id}:${latest.generation}:quota:${latest.quota_resume_at}`, "task:quota_ready", {
-            taskId: latest.id, generation: latest.generation, title: latest.title, status: "quota_paused", notify: "wake", tasks,
+          this.store.notice(latest.convener_id, `task:${latest.id}:${latest.generation}:quota:${latest.quota_resume_at}:${latest.revision}`, "task:quota_ready", {
+            taskId: latest.id, generation: latest.generation, revision: latest.revision, title: latest.title, status: "quota_paused", notify: "wake", triggerTurn: true, tasks,
             summary: `额度重置时间已到。暂停任务及上下文 token：${tasks.map(item => `${item.taskId}=${item.contextTokens}`).join("，")}。请决定 recover resume 续跑或停止后改派；续跑父任务不会续跑下级。`,
           });
           this.store.run("UPDATE tasks SET quota_notified_at=? WHERE id=?", now(), latest.id);

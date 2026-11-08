@@ -182,6 +182,29 @@ test('D15 额度暂停不失败、不占名额，到期通知上级并附上下�
   await main.request('POST', `/v1/tasks/${parent.taskId}/stop`, {}); assert.equal(f.daemon.store.task(child.taskId).status, 'stopped');
 });
 
+test('D15 同代相同重置时间再次暂停产生新通知，已确认的旧事件不吞掉新事件', async t => {
+  const f = await setup(t), main = await f.main(), task = await f.spawn(main), h = await f.handle(task);
+  const reset = new Date(Date.now() - 1000).toISOString();
+  await pause(f, h, reset);
+  const first = await until(() => f.daemon.store.get("SELECT * FROM outbox WHERE kind='task:quota_ready'"));
+  f.daemon.store.run('UPDATE outbox SET acked_at=? WHERE id=?', new Date().toISOString(), first.id);
+  await main.request('POST', `/v1/tasks/${task.taskId}/recover`, { mode: 'resume' });
+  const resumed = await f.handle(task);
+  assert.notEqual(resumed, h);
+  await pause(f, resumed, reset);
+  await until(() => f.daemon.store.task(task.taskId).quota_notified_at);
+  const notices = f.daemon.store.all("SELECT * FROM outbox WHERE kind='task:quota_ready' ORDER BY rowid");
+  assert.equal(notices.length, 2);
+  assert.notEqual(notices[0].dedupe_key, notices[1].dedupe_key);
+  assert.ok(notices[0].acked_at); assert.equal(notices[1].acked_at, null);
+  assert.equal(f.daemon.store.task(task.taskId).generation, 1);
+  const inbox = await main.request('GET', '/v1/inbox');
+  assert.deepEqual(inbox.items.filter(item => item.kind === 'task:quota_ready').map(item => item.noticeId), [notices[1].id]);
+  f.daemon.tasks.armQuotaTimer(f.daemon.store.task(task.taskId));
+  await delay(20); await f.daemon.tasks.flush();
+  assert.equal(f.daemon.store.get("SELECT COUNT(*) AS n FROM outbox WHERE kind='task:quota_ready'").n, 2);
+});
+
 test('R4 未知额度停止失败仍立即唤醒 waiting_children 父任务，未确认运行禁止恢复', async t => {
   const f = await setup(t), main = await f.main(), parent = await f.spawn(main), p = await f.handle(parent);
   const child = await f.spawn(p.client, { notify: 'silent' }), c = await f.handle(child);

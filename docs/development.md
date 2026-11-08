@@ -112,6 +112,21 @@ shutdown 默认排空，超时后保留 daemon；force 中断并清理运行。�
 - **迁移**：当前 schema v5。v3 保存任务树、限制、返工、提问与 worktree；v4 保存 skill 名单、额度恢复和逐请求用量；v5 增加任务预算与接管来源、答复证明、budget_grants、devices、pending_confirmations、security_alerts 和 security_audit。旧库依次升级到 v5，已有 v2 任务按第一层、默认两层回填。迁移前从同一 SQLite 连接做一致性 backup、只读 integrity_check，DDL 同事务，提交前 foreign_key_check；失败回滚原库。
 - **恢复**：旧 run 未确认退出不能拉起写者；resume 代数不变，reopen / replace 新建继承会话并增加代数，历史 result 指向所属代数的会话。连续 resume 失败两次后需重开、换人或放弃，不自动重放副作用。
 
+### 通知事件身份
+
+通知在同一次状态变化内去重，但不能把恢复后的新事件并入旧确认。各类事件的边界如下：
+
+| 场景 | 持久去重身份 | 唤醒规则 |
+| --- | --- | --- |
+| 完成、失败、停止 | task + generation + 终态 | 复用 notifyConvener；silent 下级结束时，waiting_children 父任务仍进入真实回合 |
+| 中断 | task + generation + runId | 同代恢复的新运行不吞掉下一次中断 |
+| 未知额度重置时间 | task + generation + runId | 立即唤醒；不编造自动恢复时间 |
+| 已知额度到期 | task + generation + resetAt + 暂停 revision | 到期唤醒；同代恢复后即使服务重复返回同一 resetAt，仍产生新通知 |
+| 预算耗尽 | task + generation + 耗尽预算节点 + 暂停 revision | 状态和通知提交后唤醒，忽略 silent；回滚后随机 notice ID 不存在，不停止运行或唤醒 |
+| 用户接管及提问转交 | 资源 + generation / revision | 提交后核验本次通知身份再调度；回滚重试不能借用旧回调 |
+
+重复 usage、停止尾量和重启不会制造新暂停；显式恢复后再次暂停才是新事件。设备签名、状态、nonce 和审计的事务边界不因通知唤醒而改变。
+
 ## 测试与 CI
 
 测试使用真实 pi 1.5.0 和本地假 provider，不访问模型服务。HOME、USERPROFILE、APPDATA、LOCALAPPDATA、agent 配置、会话、数据与锁全部隔离。PI_PACKAGE 可指定安装；KEEP_FIXTURES=1 可保留现场。
@@ -122,7 +137,7 @@ shutdown 默认排空，超时后保留 daemon；force 中断并清理运行。�
 | `test/security-http-1c.test.mjs` | 真实 daemon / HTTP / CLI 的设备签名答复、host.key 与伪造身份不能冒充用户、幂等结果随确认更新、参数和 revision 变化拒绝、租约接管、在线签名关闭与终端离线关闭 / 重启 / 直接答复 / 重新开启的闭环；不依赖浏览器界面 |
 | `test/task-security-1c.test.mjs` | main / child / host 资源矩阵、提问 ACL 与证明、可达召集人显式接管及 none 通路、接管边界 / 排队复核 / task_busy / outbox 回滚与重投、祖先替换保留接管；共享日授予与增额差额、settings 优先级和计数口径、整子树预算暂停与尾量去重、同代逐次暂停事件及分别确认、回滚立即重试、单名额与回收后的上级唤醒、quota 自动恢复门禁、逐项显式恢复及重启账本 |
 | `test/task-1b.test.mjs` | generation、幂等 steer / answer、送达追踪、中断旧代结果与用量、D14 七项规则、失败与额度通知唤醒、静默投递、直接停止孙任务、恢复后的提问路由、父提交 worktree、回收、看门狗、配置及 v2 旧库至当前版本迁移 |
-| `test/task-d15.test.mjs`、`driver-d15.test.mjs`、`d15-e2e.test.mjs` | 子代理标记、skill 白名单与只读授权、同项目双主会话的提问路由、任务 / 代 / 树用量及 stop / interrupt 收尾记账、静默终态唤醒与未知重置时间提示的持久化恢复、额度暂停与通知 / 自动恢复、v3 旧库备份和迁移回滚；真实 pi 的本地 429 与 skill 加载 |
+| `test/task-d15.test.mjs`、`driver-d15.test.mjs`、`d15-e2e.test.mjs` | 子代理标记、skill 白名单与只读授权、同项目双主会话的提问路由、任务 / 代 / 树用量及 stop / interrupt 收尾记账、静默终态唤醒与未知重置时间提示的持久化恢复、相同重置时间下同代多次暂停通知、额度暂停与通知 / 自动恢复、v3 旧库备份和迁移回滚；真实 pi 的本地 429 与 skill 加载 |
 | `test/budget-wake-e2e.test.mjs` | 真实 pi 单名额预算循环：silent 下级触发父真实回合，agora_task limits 增额后显式恢复，同代第二次耗尽再次通知并停止；覆盖父进程复用及回收重拉、两条事件各自落盘确认 |
 | `test/tree-e2e.test.mjs` | 真实子代理调用 agora_task 再派下级；单名额下静默下级通知真正启动父回合，覆盖父进程未回收及回收重拉、通知落盘；恶意 MCP / 扩展不启动；Windows 原生 PowerShell 实际工具调用 |
 | `test/permissions-1b.test.mjs`、`git-1b.test.mjs`、`git-paths-review.test.mjs`、`git-contexts-review.test.mjs` | 三档精确工具集合、受保护路径及祖先、新文件、真实 junction、Unicode / 大小写、Windows 8.3 短名（所在卷不分配短名时说明原因并跳过）；Git 字面路径与 cwd 边界、非提交对象拒绝、范围端点固定 OID、恶意配置、worktree 创建/清理的条件 filter / hooks 正负控及进程退出、子模块递归与清理边界 |
