@@ -229,6 +229,13 @@ export function createViews(runtime: PluginRuntime): {
           } else {
             // 非树对象也推进来源水位，避免分页等待一个永远不会推送的修订号。
             emit({ type: "upsert", revision, node: group(revision) });
+            if (change.objectType === "request" && !change.tombstone) {
+              const request = await get(`/v1/requests/${encoded(change.objectId)}`, stream!.signal);
+              if (request.taskId) {
+                const task = await get(`/v1/tasks/${encoded(request.taskId)}`, stream!.signal);
+                if (stream!.active() && task.agoraSessionId) runtime.context.panelChanged({ panelId: TASK_PANEL, revision, nodeId: nodeId(task.agoraSessionId) });
+              }
+            }
           }
           seq = revision;
         }).catch(error => { if (!stopped && stream!.active()) { warn(error); reset(); } });
@@ -323,6 +330,7 @@ export function createViews(runtime: PluginRuntime): {
         add("档位", task.profile ?? item.profile); add("思考", task.thinking ?? item.thinking);
         add("代数", task.generation); add("worktree", task.worktree); add("工作目录", task.cwd);
         add("任务用量", task.usage); add("任务树用量", task.treeUsage); add("上下文 token", task.usage?.contextTokens);
+        if (task.budget !== undefined) add("任务预算", task.budget);
         if (Number.isSafeInteger(task.generation) && task.generation > 0) {
           const start = Math.max(1, task.generation - RESULT_LIMIT + 1);
           if (start > 1) add("结果范围", `显示最近 ${RESULT_LIMIT} 代（第 ${start}—${task.generation} 代）`);
@@ -332,6 +340,26 @@ export function createViews(runtime: PluginRuntime): {
             add(`第 ${generation} 代用量`, result.generationUsage);
           }
         } else add("结果", task.resultText);
+        let cursor: string | undefined;
+        const seen = new Set<string>();
+        let count = 0;
+        do {
+          const page: { items: any[]; nextCursor?: string | null } = await get(query("/v1/requests", { taskId: item.taskId, state: "answered", limit: 200, cursor }));
+          if (!Array.isArray(page.items)) throw new Error("提问记录响应无效");
+          count += page.items.length;
+          if (count > 4096) throw new Error("答复记录超过面板读取上限，请通过 API 分页查看");
+          for (const request of page.items) {
+            if (request.taskId !== item.taskId || request.state !== "answered") continue;
+            add(`提问 ${request.id} 的答复`, request.answers);
+            const proof = request.answeredVia;
+            add(`提问 ${request.id} 的确认来源`, proof?.confirmedBy === "device"
+              ? `由 ${request.answeredBy ?? "用户"} 答复，经设备 ${proof.deviceId ?? "未知"} 确认`
+              : `由 ${request.answeredBy ?? "未知"} 答复，未经设备确认`);
+          }
+          cursor = page.nextCursor ?? undefined;
+          if (cursor && seen.has(cursor)) throw new Error("提问记录分页游标未前进");
+          if (cursor) seen.add(cursor);
+        } while (cursor);
       }
       return { type: "keyValue", rows } satisfies PanelContent;
     },

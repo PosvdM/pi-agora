@@ -150,7 +150,7 @@ cleanup 在有未提交改动且未指定 `discard` 时返回 `409 worktree_dirt
 | | `GET /v1/tasks`、`GET /v1/tasks/:id`、`GET /v1/tasks/:id/result?generation=` | 列表、当前详情、指定代结果 | 同上 |
 | | `POST /v1/tasks/:id/steer`、`/stop`、`/cleanup`、`/recover`、`/takeover` | 返工、停止、清理 worktree、中断后的处理、接管 | 同上 |
 | 提问 | `POST /v1/requests` | 提问 | 协作会话扩展 |
-| | `GET /v1/requests`、`GET /v1/requests/:id` | 当前身份可见提问，支持重复 state 参数及 limit / cursor 分页 | 全部 |
+| | `GET /v1/requests`、`GET /v1/requests/:id` | 当前身份可见提问，支持 taskId、重复 state 参数及 limit / cursor 分页 | 全部 |
 | | `POST /v1/requests/:id/answer`、`/escalate`、`/cancel` | 答复、逐级转交、取消；保留原 requestId，答案回原提问者 | 直接接收方、提问者取消、host:cli 答复 |
 | board | `GET /v1/boards/:id`、`GET /v1/boards/:id/entries?afterSeq=` | 元数据、公开条目 | 成员、`host:*` |
 | | `POST /v1/boards/:id/entries` | 发条目（`sealed` 仅会议密封阶段） | 成员、召集人、`host:*`（作者为 user，用户级） |

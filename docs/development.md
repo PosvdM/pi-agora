@@ -2,11 +2,11 @@
 
 ## 实现范围
 
-切片 1b 提供任务核心。四个 workspace 为 protocol、daemon、extension、cli，不依赖 pi-pane。任务动作包括 spawn、list、status、result、steer、stop、cleanup 和 recover；权限档位为 explore、review、implement。子代理可以继续派出下级，daemon 强制核对 principal、直接召集关系、任务树、层数、下级数和档位。
+切片 1b 提供任务核心，protocol、daemon、extension、cli 不依赖 pi-pane。切片 2 的 `pane-plugin` 单独承担 pane 协议映射；daemon 同时提供持久变更流、按父分页和原子热节点快照。任务动作包括 spawn、list、status、result、steer、stop、cleanup 和 recover；权限档位为 explore、review、implement。子代理可以继续派出下级，daemon 强制核对 principal、直接召集关系、任务树、层数、下级数和档位。
 
 提问由 `agora_request` 创建、答复、逐级转交或取消；CLI 提供 pending 和 answer。父任务有未完成下级时进入 `waiting_children`，有未答复提问时进入 `waiting_decision`。两者 settled 后都释放推理名额，可空闲回收。需要推理的通知重新排队取得名额，必要时拉起原会话，再由扩展注入持久通知；静默投递与等待下级时的强制唤醒规则见 [tasks.md](tasks.md#工具一览)。
 
-尚未提供：用户设备确认、预算与完整资源 ACL、配对及安全状态审计（1c），可选扩展 / MCP 白名单及 `implement.projectTrust: "saved"`（建议随 1c 跟进），存档读取与会话视图（1d），board、会议和 pane 插件。生产子会话固定 `-ne --no-mcp --no-approve`，只显式加载 agora；测试 driver 可以独立注入假 provider，不开放生产 HTTP 注入。
+尚未提供：用户设备确认、预算与完整资源 ACL、配对及安全状态审计（1c），可选扩展 / MCP 白名单及 `implement.projectTrust: "saved"`（建议随 1c 跟进），存档读取与会话视图（1d），board 和会议。pane 插件的安全与离线通路分别对接 1c、1d；插件本身不实现这些 daemon / adapter 接口，不提供浏览器前端。生产子会话固定 `-ne --no-mcp --no-approve`，只显式加载 agora；测试 driver 可以独立注入假 provider，不开放生产 HTTP 注入。
 
 **1b 的 CLI 答复未经设备确认，无法区分用户与 Agent。** 完整用户级安全模型仍以 [security.md](security.md) 为设计目标，不能把此通路视为已完成的用户身份验证。
 
@@ -36,6 +36,8 @@ npm test
 | `packages/daemon/src/store.ts` | schema v4、一致性备份、迁移、条件更新、outbox 和逐请求用量 |
 | `packages/daemon/src/tasks.ts` | 控制队列、树限制、调度、返工、恢复、回收和看门狗 |
 | `packages/daemon/src/requests.ts`、`worktrees.ts` | 提问及逐级转交、按仓库串行的 worktree 操作 |
+| `packages/daemon/src/changes.ts`、`session-list.ts` | 持久变更游标、保留与 reset、背压、原子会话树列表及父关系投影 |
+| `packages/pane-plugin/src/` | pane 服务端数据插件，模块与持久化边界见 [pane-plugin.md](pane-plugin.md) |
 | `packages/daemon/src/driver.ts` | 既有导出的兼容入口，转出 pi 驱动实现 |
 | `packages/daemon/src/harness/types.ts` | 中立的启动规格、技能结果与逐请求用量 / 额度事件 |
 | `packages/daemon/src/harness/pi/` | pi 的 RPC、会话写锁、整树停止、UI 取消、心跳、诊断、skill 解析、参数与用量 / 额度适配 |
@@ -43,7 +45,7 @@ npm test
 | `packages/extension/src/notifications.ts` | 在途去重、完整磁盘记录核对和确认 |
 | `packages/cli/src/index.ts`、`main.ts` | CLI 参数和命令 |
 
-扩展的路径检查只加载 `pi-hostkit/paths`，不加载原生模块。archive 和 pane-plugin 包在对应切片创建。Harness 适配层边界及高成本保留项见 [总体架构](architecture.md#harness-适配层) 和 [耦合清单](harness-portability.md)。
+扩展的路径检查只加载 `pi-hostkit/paths`，不加载原生模块。archive 包由 1d 提供；pane-plugin 的协议副本、离线构建及测试入口见 [pane-plugin.md](pane-plugin.md)。Harness 适配层边界及高成本保留项见 [总体架构](architecture.md#harness-适配层) 和 [耦合清单](harness-portability.md)。
 
 ## 启动与配置
 
@@ -118,6 +120,8 @@ shutdown 默认排空，超时后保留 daemon；force 中断并清理运行。�
 | `test/notification-clear-1b.test.mjs`、`claim-fork-1b.test.mjs` | 真实主 pi 清队列 / abort 后重投、同代只唤醒一次与返工再次唤醒；fork 与原会话并发认领、同 sessionId 并发租约 |
 | `test/extension-client.test.mjs`、`extension-wire.test.mjs` | 双向认证、协议与发现记录故障，Windows 原子发布重试 |
 | `test/cli.test.mjs`、`protocol-cli.test.mjs` | 独立 CLI 进程、单实例复用、参数和协议 |
+| `test/changes-s2.test.mjs`、`pane-daemon-s2.test.mjs` | daemon 重启与变更流 reset、原子热快照、按父分页、持续鉴权和背压；真实 HTTP 插件树重新收敛 |
+| `test/pane-*-s2.test.mjs`、`pane-api-vendor.test.mjs` | 插件在线/离线映射、动态动作、持久表单、确认与横幅、重启幂等和生命周期；详细映射见 [pane-plugin.md](pane-plugin.md#测试) |
 
 CI 在 Windows、macOS、Linux auto / snapshot 四个组合执行 npm test。Linux auto 要求真实 cgroup 可用。Windows 完整测试后额外重复 shell 后代退出核对十次；每次在停止报告返回后立即查询独立 oracle 的已知身份，保留完整 StopReport 和单次观测诊断，不设置额外观察窗口，也不补杀。driver-faults 在 Windows 与 Linux 隔离 worker 中均断言单次核对、失败保锁及显式重试不重放底层停止。
 

@@ -111,10 +111,11 @@ export class Requests {
     if (actor !== 'user' && actor !== row.asker_id && actor !== row.target_id) throw new AgoraError(403, 'forbidden', '不能访问其他会话的提问');
     return this.view(row);
   }
-  list(conn: Connection, states: string[] = [], limit = 50, cursor = 0) {
+  list(conn: Connection, states: string[] = [], limit = 50, cursor = 0, taskId?: string) {
     this.expire();
     const actor = this.actor(conn);
-    const rows = this.store.all<RequestRow & { cursor: number }>(`SELECT rowid AS cursor,* FROM requests WHERE rowid>? AND (?='user' OR asker_id=? OR target_id=?) ${states.length ? `AND state IN (${states.map(() => '?').join(',')})` : ''} ORDER BY rowid LIMIT ?`, cursor, actor, actor, actor, ...states, limit + 1);
+    if (taskId !== undefined) text(taskId, 'taskId', 128);
+    const rows = this.store.all<RequestRow & { cursor: number }>(`SELECT rowid AS cursor,* FROM requests WHERE rowid>? AND (?='user' OR asker_id=? OR target_id=?) AND (? IS NULL OR task_id=?) ${states.length ? `AND state IN (${states.map(() => '?').join(',')})` : ''} ORDER BY rowid LIMIT ?`, cursor, actor, actor, actor, taskId ?? null, taskId ?? null, ...states, limit + 1);
     return { items: rows.slice(0, limit).map(row => this.view(row)), nextCursor: rows.length > limit ? String(rows[limit - 1]!.cursor) : null };
   }
   ask(conn: Connection, body: Record<string, unknown>) {

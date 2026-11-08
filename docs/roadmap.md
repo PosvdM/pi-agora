@@ -1,6 +1,6 @@
 # 路线图
 
-> 状态：代码覆盖切片 1b 的任务核心；用户级安全、存档、pane、board 和会议按后续切片推进。实现与测试入口见 [development.md](development.md)。
+> 状态：代码覆盖切片 1b 的任务核心，以及切片 2 的 daemon 变更流和 pane 服务端数据插件。用户级安全与存档分别按 1c、1d 接入；pane 浏览器联调、board 和会议按对应切片推进。实现与测试入口见 [development.md](development.md)。
 
 ## P0 验证项
 

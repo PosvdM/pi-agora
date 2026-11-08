@@ -29,6 +29,7 @@ function setup(t, handler = () => undefined) {
         const result = await handler({ method, path, body, options, url: new URL(path, 'http://agora') });
         if (result !== undefined) return result;
         if (path.startsWith('/v1/sessions?')) return { status: 200, body: page() };
+        if (path.startsWith('/v1/requests?')) return { status: 200, body: { items: [], nextCursor: null } };
         throw new Error(`Unexpected request: ${method} ${path}`);
       },
       subscribe(path, emit, failed) {
@@ -308,6 +309,27 @@ test('保活拒绝停滞分页，停用阻止迟到登记', async t => {
   pending.resolve({ status: 200, body: page([item()]) });
   await refresh;
   assert.equal(h.held.length, 0);
+});
+
+test('任务面板展示答复者与设备确认来源，提问变化刷新相关面板', async t => {
+  const h = setup(t, ({ path, url }) => {
+    if (path === '/v1/sessions/s1') return { status: 200, body: item() };
+    if (path === '/v1/tasks/t-s1') return { status: 200, body: { agoraSessionId: 's1', resultText: '结果' } };
+    if (path === '/v1/requests/rq-one') return { status: 200, body: { taskId: 't-s1' } };
+    if (url.pathname === '/v1/requests') {
+      assert.equal(url.searchParams.get('taskId'), 't-s1');
+      assert.equal(url.searchParams.get('state'), 'answered');
+      return { status: 200, body: { items: [{ id: 'rq-one', taskId: 't-s1', state: 'answered', answers: [{ id: 'q', selected: ['甲'] }], answeredBy: 'user', answeredVia: { confirmedBy: 'device', deviceId: '工作电脑' } }] } };
+    }
+  });
+  const content = await h.views.panels.content('agora.task', 'agora:session:s1');
+  assert.ok(content.rows.some(row => row.value.includes('经设备 工作电脑 确认')));
+  const emitted = [];
+  h.views.tree.subscribe({ epoch: 'db', revision: 0 }, value => emitted.push(value));
+  change(h.streams[0], 1, 'request', 'rq-one');
+  await tick(); await tick();
+  assert.equal(emitted[0].node.id, 'agora:root:user-tasks');
+  assert.ok(h.panels.some(panel => panel.nodeId === 'agora:session:s1'));
 });
 
 test('任务面板显示任务树用量、上下文和有界各代结果', async t => {

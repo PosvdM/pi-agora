@@ -147,7 +147,7 @@ async function route(context: ServerContext, method: string, url: URL, conn: Con
   }
   if (pathname === "/v1/requests") {
     if (method === "POST") return { status: 201, body: context.requests.ask(conn, body) };
-    if (method === "GET") return ok(context.requests.list(conn, url.searchParams.getAll("state"), positive(url.searchParams.get("limit"), 50, 200), positive(url.searchParams.get("cursor"), 0, Number.MAX_SAFE_INTEGER, true)));
+    if (method === "GET") return ok(context.requests.list(conn, url.searchParams.getAll("state"), positive(url.searchParams.get("limit"), 50, 200), positive(url.searchParams.get("cursor"), 0, Number.MAX_SAFE_INTEGER, true), url.searchParams.get("taskId") ?? undefined));
   }
   const question = pathname.match(/^\/v1\/requests\/([^/]+)(?:\/(answer|escalate|cancel))?$/);
   if (question) {
