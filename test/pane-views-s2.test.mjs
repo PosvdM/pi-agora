@@ -186,6 +186,70 @@ test('树重置和取消使排队读取失效，禁止迟到更新', async t => 
   }
 });
 
+test('树映射积压最多 256 条，溢出关流且迟到详情不能继续更新', async t => {
+  for (const outcome of ['resolve', 'reject']) {
+    const pending = deferred();
+    const h = setup(t, ({ path }) => path === '/v1/sessions/s1' ? pending.promise : undefined);
+    const emitted = [];
+    h.views.tree.subscribe({ epoch: 'db', revision: 0 }, value => emitted.push(value));
+    const stream = h.streams[0];
+    change(stream, 1);
+    await tick();
+    for (let seq = 2; seq <= 256; seq++) change(stream, seq);
+    assert.equal(stream.closed, false);
+    assert.deepEqual(emitted, []);
+    change(stream, 257);
+    assert.equal(stream.closed, true);
+    assert.equal(h.requests[0].options.signal.aborted, true);
+    assert.deepEqual(emitted, [{ type: 'reset', epoch: 'db' }]);
+    for (let seq = 258; seq <= 10_000; seq++) change(stream, seq);
+    stream.failed(new Error('late transport failure'));
+    stream.emit({ type: 'reset', data: { epoch: 'late' } });
+    if (outcome === 'resolve') pending.resolve({ status: 200, body: item() });
+    else pending.reject(new Error('aborted detail'));
+    await tick(); await tick();
+    assert.deepEqual(emitted, [{ type: 'reset', epoch: 'db' }]);
+    assert.equal(h.requests.length, 1);
+    assert.equal(h.panels.length, 0);
+    assert.equal(h.held.length, 0);
+  }
+});
+
+test('树映射积压同时限制总字节，未达到数量上限也会关闭', async t => {
+  const pending = deferred();
+  const h = setup(t, () => pending.promise);
+  const emitted = [];
+  h.views.tree.subscribe({ epoch: 'db', revision: 0 }, value => emitted.push(value));
+  const stream = h.streams[0];
+  change(stream, 1);
+  await tick();
+  // 每帧低于 transport 的 4 MiB 限制，总积压超过 8 MiB。
+  const payload = '中'.repeat(1024 * 1024);
+  change(stream, 2, 'session', 's1', { payload });
+  change(stream, 3, 'session', 's1', { payload });
+  assert.equal(stream.closed, false);
+  change(stream, 4, 'session', 's1', { payload });
+  assert.equal(stream.closed, true);
+  pending.resolve({ status: 200, body: item() });
+  await tick(); await tick();
+  assert.deepEqual(emitted, [{ type: 'reset', epoch: 'db' }]);
+  assert.equal(h.requests.length, 1);
+});
+
+test('树映射完成后归还积压预算，持续变更仍按修订号串行映射', async t => {
+  const h = setup(t, ({ path }) => path === '/v1/sessions/s1'
+    ? { status: 200, body: item() } : undefined);
+  const emitted = [];
+  h.views.tree.subscribe({ epoch: 'db', revision: 0 }, value => emitted.push(value));
+  for (let batch = 0; batch < 3; batch++) {
+    for (let n = 1; n <= 256; n++) change(h.streams[0], batch * 256 + n);
+    await tick();
+  }
+  assert.equal(h.streams[0].closed, false);
+  assert.deepEqual(emitted.map(value => value.revision), Array.from({ length: 768 }, (_, i) => i + 1));
+  assert.ok(emitted.every(value => value.type === 'upsert'));
+});
+
 test('HTTP 失败触发重置，仅 tombstone 删除节点', async t => {
   const h = setup(t, ({ path }) => path === '/v1/sessions/s1'
     ? { status: 404, body: { error: { message: 'missing metadata' } } } : undefined);
@@ -338,6 +402,70 @@ test('树变更刷新保活，停用释放保活与事件流', async t => {
   h.views.dispose();
   assert.equal(h.held[1].releases, 1); assert.ok(h.streams.every(stream => stream.closed));
   assert.throws(() => h.views.tree.subscribe({ epoch: 'db', revision: 12 }, () => {}), /视图已关闭/);
+});
+
+test('保活合并大量变更，追赶扫描中的变更仍会再扫描并收敛', async t => {
+  const scans = [];
+  let blocked = false, active = 0, maxActive = 0;
+  const h = setup(t, async ({ url }) => {
+    if (url.pathname === '/v1/sessions/s1') return { status: 200, body: item() };
+    if (url.pathname !== '/v1/sessions') return;
+    if (!blocked) return { status: 200, body: page([item()]) };
+    const scan = deferred();
+    scans.push(scan);
+    maxActive = Math.max(maxActive, ++active);
+    try { return await scan.promise; } finally { active--; }
+  });
+  await h.views.refreshHolds();
+  blocked = true;
+  h.views.tree.subscribe({ epoch: 'db', revision: 0 }, () => {});
+  const refresh = h.views.refreshHolds();
+  await tick();
+  for (let round = 0; round < 2; round++) {
+    for (let seq = 1; seq <= 200; seq++) change(h.streams[0], round * 200 + seq);
+    for (let n = 0; n < 1000; n++) {
+      h.mainChanged();
+      assert.equal(h.views.refreshHolds(), refresh);
+    }
+    await tick();
+    assert.equal(scans.length, round + 1);
+    assert.equal(active, 1);
+    scans[round].resolve({ status: 200, body: page(round === 0 ? [item()] : [item(), item('s2')]) });
+    await tick();
+    assert.equal(scans.length, round + 2);
+  }
+  scans[2].resolve({ status: 200, body: page([item('s1', { status: 'completed' }), item('s2', { status: 'completed' })]) });
+  await refresh;
+  await tick();
+  assert.equal(scans.length, 3);
+  assert.equal(maxActive, 1);
+  assert.equal(active, 0);
+  assert.equal(h.held.length, 2);
+  assert.equal(h.held[1].reason, '等待子代理（2 个）');
+  assert.ok(h.held.every(hold => hold.releases === 1));
+});
+
+test('停用释放已有保活并取消 dirty 追赶，迟到分页不得登记新保活', async t => {
+  const pending = deferred();
+  let blocked = false;
+  const h = setup(t, ({ url }) => url.pathname === '/v1/sessions'
+    ? blocked ? pending.promise : { status: 200, body: page([item()]) } : undefined);
+  await h.views.refreshHolds();
+  blocked = true;
+  const refresh = h.views.refreshHolds();
+  await tick();
+  for (let n = 0; n < 1000; n++) h.mainChanged();
+  assert.equal(h.requests.length, 2);
+  h.views.dispose();
+  assert.equal(h.requests[1].options.signal.aborted, true);
+  assert.equal(h.held[0].releases, 1);
+  pending.resolve({ status: 200, body: page([item(), item('s2')], { nextCursor: 'late' }) });
+  await refresh;
+  await h.views.refreshHolds();
+  await tick();
+  assert.equal(h.requests.length, 2);
+  assert.equal(h.held.length, 1);
+  assert.equal(h.held[0].releases, 1);
 });
 
 test('保活拒绝停滞分页，停用阻止迟到登记', async t => {
