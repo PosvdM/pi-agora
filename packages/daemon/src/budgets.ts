@@ -11,19 +11,23 @@ export interface UserExecutionProof {
   confirmedBy: 'device' | 'none';
 }
 export interface BudgetOptions {
-  taskLimitDefaults?: { maxTokens: number };
-  agentLimitCap?: { perTaskFactor: number; dailyTokens: number };
+  taskLimitDefaults?: { maxTokens?: number };
+  agentLimitCap?: { perTaskFactor?: number; dailyTokens?: number };
   tokenAccounting?: 'all' | 'uncached';
 }
+export const taskBudgetDefaults = {
+  taskLimitDefaults: { maxTokens: 50_000_000 },
+  agentLimitCap: { perTaskFactor: 2, dailyTokens: 2_500_000_000 },
+} as const;
 export function budgetConfig(store: Store, options: BudgetOptions = {}) {
   function setting<T>(key: string, fallback: T): T {
     const row = store.get<{ value: string }>('SELECT value FROM settings WHERE key=?', key);
     return row ? JSON.parse(row.value) as T : fallback;
   }
-  const defaults = setting('taskLimitDefaults', options.taskLimitDefaults ?? { maxTokens: 2_000_000 });
-  const cap = setting('agentLimitCap', options.agentLimitCap ?? { perTaskFactor: 2, dailyTokens: 6_000_000 });
+  const defaults = setting('taskLimitDefaults', { ...taskBudgetDefaults.taskLimitDefaults, ...options.taskLimitDefaults });
+  const cap = setting('agentLimitCap', { ...taskBudgetDefaults.agentLimitCap, ...options.agentLimitCap });
   const accounting = setting('tokenAccounting', options.tokenAccounting ?? 'all');
-  if (!Number.isSafeInteger(defaults.maxTokens) || defaults.maxTokens < 1 || !Number.isFinite(cap.perTaskFactor) || cap.perTaskFactor < 1 || !Number.isSafeInteger(cap.dailyTokens) || cap.dailyTokens < 1 || !['all', 'uncached'].includes(accounting)) throw new Error('任务预算配置无效');
+  if (!Number.isSafeInteger(defaults.maxTokens) || defaults.maxTokens < 1 || !Number.isSafeInteger(cap.perTaskFactor) || cap.perTaskFactor < 1 || !Number.isSafeInteger(cap.dailyTokens) || cap.dailyTokens < 1 || !['all', 'uncached'].includes(accounting)) throw new Error('任务预算配置无效');
   return { defaults, cap, accounting };
 }
 export function countTokens(usage: UsageSummary, accounting: 'all' | 'uncached'): number {

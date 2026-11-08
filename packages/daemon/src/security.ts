@@ -3,7 +3,7 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { acquireInstanceLock } from "pi-hostkit";
 import type { Connection } from "./auth.js";
-import { budgetConfig } from "./budgets.js";
+import { budgetConfig, taskBudgetDefaults, type BudgetOptions } from "./budgets.js";
 import { AgoraError, invalid, text } from "./errors.js";
 import { Store, id, now, openStore } from "./store.js";
 
@@ -171,6 +171,47 @@ export class Security {
   private put(key: string, value: unknown): void {
     this.store.run("INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", key, jcs(value));
   }
+  /** 调用方须持有 daemon 独占锁；文件来源逐字段比较，避免覆盖在线签名配置。 */
+  importBudgetConfig(options: BudgetOptions): void {
+    const groups = ["taskLimitDefaults", "agentLimitCap"] as const;
+    for (const group of groups) {
+      if (options[group] === undefined) continue;
+      const values = record(options[group]);
+      const fields = Object.keys(taskBudgetDefaults[group]);
+      for (const [field, value] of Object.entries(values)) {
+        if (!fields.includes(field) || typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) invalid("文件预算配置字段或数值无效");
+      }
+    }
+    this.store.transaction(() => {
+      const previous = this.setting<Record<string, number | null> | null>("budgetFileSource", null);
+      const source: Record<string, number | null> = {};
+      const config = budgetConfig(this.store);
+      const changes: { field: string; from: number; to: number }[] = [];
+      for (const group of groups) {
+        const current = this.setting<Record<string, number>>(group, group === "taskLimitDefaults" ? config.defaults : config.cap);
+        const next = { ...current };
+        let touched = false;
+        for (const [field, fallback] of Object.entries(taskBudgetDefaults[group])) {
+          const name = `${group}.${field}`;
+          const value = (options[group] as Record<string, number> | undefined)?.[field] ?? null;
+          source[name] = value;
+          // 首次没有明确文件值时，保留已有数据库设置，只记录来源默认。
+          if (previous === null ? value === null : previous[name] === value) continue;
+          const to = value ?? fallback, from = current[field]!;
+          next[field] = to; touched = true;
+          if (from !== to) changes.push({ field: name, from, to });
+        }
+        if (touched) this.put(group, next);
+      }
+      if (previous === null || jcs(previous) !== jcs(source)) this.put("budgetFileSource", source);
+      for (const change of changes) {
+        const target = change.field.split(".")[0]!;
+        this.log("agora.settings.set", target, "offline", "none", "applied", { via: "offline", details: change });
+        this.store.change("security", target);
+      }
+      if (changes.some(change => change.to > change.from)) this.alert("budget-config-changed", { changes }, "offline");
+    });
+  }
   private actor(conn: Connection): string {
     if (conn.type === "agent:child") fail("forbidden", "子代理不能发起或确认用户级操作");
     if (conn.expiresAt <= Date.now()) fail("token_expired", "连接已过期", 401);
@@ -285,7 +326,7 @@ export class Security {
     if (action === "agora.device.approve") return `批准设备：${target}`;
     if (action === "agora.device.revoke") return `撤销设备 ${target}：若这是最后一台设备，撤销后没有设备可以批准新设备，只能离线重置再配对`;
     if (action === "agora.device.reset") return "重置设备配对：保留签名设备，删除其余设备";
-    if (action === "agora.security.acknowledge") return `确认知悉设备重置警告：${target}，revision ${params.revision}`;
+    if (action === "agora.security.acknowledge") return `确认知悉安全警告：${target}，revision ${params.revision}`;
     if (action === "agora.settings.set" && target === "userConfirmation" && params.value === "off") return "关闭用户确认保护：任何可运行 CLI 的进程都可执行用户操作";
     if (action === "agora.settings.set") return `设置 ${target}：${jcs(params.value)}`;
     return `${action}：${target}`;
@@ -489,7 +530,7 @@ export class Security {
         case "agora.settings.set": this.put(target, params.value); this.checkState(); result = { key: target, value: params.value }; break;
         case "agora.security.acknowledge": {
           const alert = this.store.get<AlertRow>("SELECT * FROM security_alerts WHERE id=?", target);
-          if (!alert || alert.kind !== "devices-reset") fail("forbidden", "只有设备重置警告可以确认知悉");
+          if (!alert || !["devices-reset", "budget-config-changed"].includes(alert.kind)) fail("forbidden", "此警告不能通过确认知悉清除");
           if (alert.acknowledged_at || alert.revision !== params.revision) fail("conflict", "警告已变化，请重新确认", 409);
           this.store.run("UPDATE security_alerts SET acknowledged_at=?,acknowledged_by=? WHERE id=?", now(), proof!.deviceId, target);
           this.store.change("security_alert", target); result = { acknowledged: true }; break;
