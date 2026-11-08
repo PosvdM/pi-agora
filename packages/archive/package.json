@@ -1,0 +1,19 @@
+{
+  "name": "@pi-agora/archive",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "@pi-agora/harness-pi": "0.1.0",
+    "@pi-agora/protocol": "0.1.0"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

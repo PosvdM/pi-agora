@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { connectHost } from "@pi-agora/protocol";
+import { runArchiveCli, type ArchiveCliDependencies } from "./archive.js";
 import { offline } from "@pi-agora/daemon";
 
 export const HELP = `agora：pi 协作引擎
@@ -11,7 +12,11 @@ export const HELP = `agora：pi 协作引擎
   agora daemon start [--home <目录>]
   agora shutdown [--force] [--timeout <秒>] [--home <目录>]
   agora status [--home <目录>]
-  agora ls [--limit <数量>] [--cursor <游标>] [--home <目录>]
+  agora ls [--tree] [--limit <数量>] [--cursor <游标>] [--home <目录>]
+  agora log <任务或会话 ID> [--limit <数量>] [--before <条目 ID>] [--home <目录>]
+  agora tail <任务或会话 ID> [--limit <数量>] [--home <目录>]
+  agora verify-archive [任务或会话 ID] [--offline] [--home <目录>]
+  agora archive delete <会话 ID> [--wait] [--timeout <秒>] [--offline] [--home <目录>]
   agora show <任务或会话 ID> [--home <目录>]
   agora pending [--home <目录>]
   agora answer <提问 ID> --answers <JSON 数组> [--revision <版本>] [--wait] [--home <目录>]
@@ -25,7 +30,8 @@ export const HELP = `agora：pi 协作引擎
   agora offline pair-reset [--home <目录>]
   agora offline set userConfirmation off|device [--home <目录>]
 
-查询和任务控制不自动启动 daemon。用户级操作默认生成待确认，需已配对设备签名。
+查询和任务控制不自动启动 daemon。归档查询仅在健康连接不可达时读取离线存档。
+用户级操作默认生成待确认，需已配对设备签名；CLI 读到 host.key 不能冒充用户。
 仅用终端时，先停止 daemon，再运行 agora offline set userConfirmation off；关闭后无法区分用户与 Agent。
 `;
 
@@ -36,8 +42,8 @@ function parseArgs(argv: string[]): { words: string[]; options: Map<string, stri
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
     if (!arg.startsWith("--")) { words.push(arg); continue; }
-    if (["--force", "--help", "--discard", "--wait", "--reset"].includes(arg)) { options.set(arg, true); continue; }
-    if (!["--home", "--timeout", "--limit", "--cursor", "--answers", "--revision", "--mode", "--max-tokens"].includes(arg)) throw new Error(`未知选项：${arg}`);
+    if (["--force", "--help", "--discard", "--tree", "--offline", "--wait", "--reset"].includes(arg)) { options.set(arg, true); continue; }
+    if (!["--home", "--timeout", "--limit", "--cursor", "--before", "--answers", "--revision", "--mode", "--max-tokens"].includes(arg)) throw new Error(`未知选项：${arg}`);
     const value = argv[++i];
     if (!value || value.startsWith("--")) throw new Error(`选项 ${arg} 缺少参数`);
     options.set(arg, value);
@@ -56,7 +62,7 @@ function settingValue(raw: string): unknown {
 interface Confirmation { confirmationId: string; state?: string; result?: unknown }
 interface ConfirmationReply { confirmation?: Confirmation }
 
-export async function runCli(argv: string[], io: CliIo = { out: console.log, error: console.error }): Promise<number> {
+export async function runCli(argv: string[], io: CliIo = { out: console.log, error: console.error }, archiveDependencies: Partial<ArchiveCliDependencies> = {}): Promise<number> {
   let client: Awaited<ReturnType<typeof connectHost>> | undefined;
   try {
     const { words, options } = parseArgs(argv);
@@ -69,12 +75,15 @@ export async function runCli(argv: string[], io: CliIo = { out: console.log, err
       return 0;
     }
     const start = command === "daemon" && operand === "start";
-    if (!start && !["shutdown", "status", "ls", "show", "pending", "answer", "task", "confirmations", "devices", "pair", "config", "takeover"].includes(command!)) throw new Error("不支持的命令，请运行 agora --help");
-    const arity = command === "config" ? (operand === "get" ? [2, 3] : [4]) : command === "task" ? [3] : ["show", "answer", "takeover"].includes(command!) ? [2] : command === "confirmations" ? [1, 2] : start ? [2] : [1];
+    if (!start && !["shutdown", "status", "ls", "show", "log", "tail", "verify-archive", "archive", "pending", "answer", "task", "confirmations", "devices", "pair", "config", "takeover"].includes(command!)) throw new Error("不支持的命令，请运行 agora --help");
+    const arity = command === "archive" ? [3] : command === "verify-archive" ? [1, 2] : command === "config" ? (operand === "get" ? [2, 3] : [4]) : command === "task" ? [3] : ["show", "log", "tail", "answer", "takeover"].includes(command!) ? [2] : command === "confirmations" ? [1, 2] : start ? [2] : [1];
     if (!arity.includes(words.length)) throw new Error("参数无效，请运行 agora --help");
     if (command === "pair" && !options.has("--reset")) throw new Error("终端仅支持 pair --reset；设备配对由浏览器签名完成");
     if (command === "answer" && !options.has("--answers")) throw new Error("请提供 --answers JSON 数组");
     if (command === "task" && !["stop", "cleanup", "recover", "limits", "takeover"].includes(operand!)) throw new Error("请指定有效任务动作和 ID");
+    if (options.has("--tree") && command !== "ls") throw new Error("--tree 仅用于 ls");
+    if (options.has("--offline") && !["archive", "verify-archive"].includes(command!)) throw new Error("--offline 仅用于 archive delete 或 verify-archive");
+    if (["ls", "show", "log", "tail", "verify-archive", "archive"].includes(command!) && await runArchiveCli({ command: command!, operand, rest, options, home, io }, archiveDependencies)) return 0;
     client = await connectHost({ home, as: "host:cli", autoStart: start });
     const post = (route: string, body: unknown) => client!.request("POST", route, body, { idempotencyKey: randomUUID() });
     const encode = (value: string) => encodeURIComponent(value);

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { locatePi } from "pi-hostkit";
+import { assertIsolatedTestHome } from "./test-home.mjs";
 export const here = path.dirname(fileURLToPath(import.meta.url));
 export const providerPath = path.join(here, "driver-fake-provider.ts");
 export const extensionPath = path.join(here, "driver-extension.ts");
@@ -59,6 +60,12 @@ export async function piFixture(script = { turns: [] }) {
   env.LOCALAPPDATA = path.join(home, "AppData", "Local");
   const saved = new Map(["HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA"].map((name) => [name, process.env[name]]));
   for (const name of saved.keys()) process.env[name] = env[name];
+  try { await assertIsolatedTestHome(root); }
+  catch (error) {
+    for (const [name, value] of saved) { if (value === undefined) delete process.env[name]; else process.env[name] = value; }
+    await rm(root, { recursive: true, force: true });
+    throw error;
+  }
   return { root, cwd, home, agentDir, env, install,
     sessionPath: (name) => path.join(agentDir, "sessions", `${name}.jsonl`),
     async setScript(value) { await writeFile(scriptPath, JSON.stringify(value)); },
