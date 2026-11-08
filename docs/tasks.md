@@ -1,6 +1,6 @@
 # 任务（子代理）
 
-> 切片 1b 提供完整任务动作、多层委派、三个权限档位、worktree、提问与逐级转交，以及 skill 白名单、用量记录和额度暂停。用户确认、接管、board 和会议相关权限仍是后续设计目标；CLI 答复尚无设备签名。实现与测试见 [development.md](development.md)。
+> 切片 1c 提供任务核心、多层委派、三个权限档位、worktree、提问与逐级转交、skill 白名单、用量记录、额度暂停、任务树软预算、设备签名确认和显式用户接管。浏览器配对与确认界面在切片 2 接入，1c 由测试签名器验收；仅使用终端时需离线关闭保护。board 和会议按后续切片提供。实现与测试映射见 [development.md](development.md)。
 
 任务是召集人派给一个协作会话（`kind = task`）的一件工作。它覆盖现有“派子代理”的核心用法：按模型和权限档位派任务、worktree 隔离、完成后叫醒召集人、steer 返工、查看列表和结果、停止、子代理提问并由召集人答复或转给用户。
 
@@ -12,12 +12,12 @@ agora 扩展按连接 token 的权限注册工具。子代理功能只注册 `ag
 
 | 工具 | 谁能用 | 用途 |
 | --- | --- | --- |
-| `agora_task` | 主代理及任务子代理（最终就绪后） | 派任务、列表、取结果、返工、停止子树、清理 worktree、恢复 |
+| `agora_task` | 主代理及任务子代理（最终就绪后） | 派任务、列表、取结果、返工、停止子树、清理 worktree、恢复、调整软预算 |
 | `agora_request` | 所有 agora 会话 | 子代理提问；召集人答复、转给用户、取消 |
-| `agora_board` | 绑定了 board 的会话 | 读写共享桌面，见 [board.md](board.md) |
-| `agora_meeting` | 主代理；参会者只有 `endorse` | 召开和管理会议，见 [meetings.md](meetings.md) |
+| `agora_board`（后续切片） | 绑定了 board 的会话 | 读写共享桌面，见 [board.md](board.md) |
+| `agora_meeting`（后续切片） | 主代理；参会者只有 `endorse` | 召开和管理会议，见 [meetings.md](meetings.md) |
 
-任务子代理可以继续派出下级。默认层数为 2（子代理、孙代理），每个任务同时存在的未结束下级数默认不限，整棵树共用并发名额。配置、主代理派活和下级派活可以逐层收紧，不能放宽；下级档位不能高于父任务，skill 名单只能取父任务名单的子集。谁派的谁管理：子代理只能查看、返工、停止和答复自己直接派出的下级；主代理可查看、停止整棵树，但只返工直接下级。CLI 在 1b 可操作任意任务；完整用户确认在 1c。
+任务子代理可以继续派出下级。默认层数为 2（子代理、孙代理），每个任务同时存在的未结束下级数默认不限，整棵树共用并发名额。配置、主代理派活和下级派活可以逐层收紧，不能放宽；下级档位不能高于父任务，skill 名单只能取父任务名单的子集。谁派的谁管理：子代理只能查看、返工、停止和答复自己直接派出的下级；主代理可查看、停止整棵树，但只返工直接下级。CLI 以 `host:cli` 身份操作；返工仅限召集人为 `user` 的任务，恢复 Agent 任务前必须由用户显式接管。接管后的边界见“用户接管”。
 
 父任务 settled 时仍有未结束下级，进入 `waiting_children`，不交付最终结果，也不占推理名额。下级进入终态（完成、启动失败、fatal、异常退出、结果读取失败或停止）时，由统一的状态结算入口通知召集人。父任务处于 `waiting_children` 时，不论下级 `notify` 是否为 `silent`，均领取推理名额并通过通知启动真实回合；父进程已回收时重新拉起后投递。父任务不在等待下级时，静默消息只投递，不领取名额，也不延长空闲进程的存活时间；已回收进程的静默消息保留到下一次运行。额度暂停的未知重置时间提示与到时通知也通过同一调度入口。父任务自行核对并交出最终结果后才完成。停止父任务时逐层停止整棵子树，返回每层 StopReport。
 
@@ -36,10 +36,10 @@ type AgoraTaskParams =
       title?: string;                // 侧栏显示用，默认取 prompt 首行
       cwd?: string;                  // 默认召集人的 cwd
       isolation?: "none" | "worktree"; // 默认 "none"
-      boardId?: string;              // 可选，挂到已有 board（调用方须是该 board 的 owner）
       notify?: "wake" | "silent";    // 默认 wake；父任务等待下级时始终叫醒
       maxDepth?: number;              // 以新任务为第一层的子树层数，不能超过父任务剩余层数
       maxChildren?: number | null;    // 每个任务同时存在的未结束下级数，null 为不限
+      maxTokens?: number;              // 本任务及子树的累计软预算；下级只能收紧
     }
   | { action: "list"; status?: TaskStatus[]; scope?: "mine" | "all" }  // 默认 mine
   | { action: "status"; taskId: string }                          // 当前任务详情
@@ -47,6 +47,7 @@ type AgoraTaskParams =
   | { action: "steer"; taskId: string; message: string; interrupt?: boolean }
   | { action: "stop"; taskId: string; reason?: string }
   | { action: "cleanup"; taskId: string; discard?: boolean }
+  | { action: "limits"; taskId: string; maxTokens: number; expectedRevision?: number }
   | { action: "recover"; taskId: string; mode: "resume" | "reopen" | "replace" | "abandon"; model?: string; profile?: "explore" | "review" | "implement" };
 ```
 
@@ -73,6 +74,7 @@ type AgoraTaskParams =
 - **steer**：见“返工 generation”。
 - **stop**：取消当前运行，包括排队的消息：先 RPC `clear_queue`，再 `abort`（带超时，见 [pi-hostkit 设计文档的“进程树终止”](https://github.com/PosvdM/pi-hostkit/blob/main/docs/design.md#进程树终止)），等旧运行结束；abort 超时则终止进程树。任务进入 `stopped`。`clear_queue` 返回的排队文本中属于 agora 返工消息的，对应的 steer 记录标为 `dropped` 并在 stop 的结果里列出。停止不回滚文件。
 - **cleanup**：清理 worktree，规则见 [architecture.md](architecture.md#worktree)。
+- **limits**：调整自己直接下级的任务树软预算；主 Agent 在封顶内可直接增额，超出封顶发起用户确认。预算暂停后仍须明确 recover resume，不自动恢复下级。
 
 agora 对任务只提供“取消（含队列）”这一种停止。协作会话的 pi 队列里只有 agora 自己发的消息，被清掉的消息都有记录，召集人可以重新发送。
 
@@ -86,7 +88,27 @@ agora 对任务只提供“取消（含队列）”这一种停止。协作会�
 
 `status` 和 `result` 的 `usage` 汇总当前任务全部代数，`treeUsage` 汇总该任务及全部后代；`result.generationUsage` 只汇总请求的代数。字段为 `requests`、`inputTokens`、`cacheReadTokens`、`cacheWriteTokens`、`outputTokens`、`reasoningTokens`、`contextTokens`。result 的 `usage` 同时保留原 `get_session_stats` 数据（如 `tokens`、`cost`），新字段以逐请求记录为准。
 
-每次模型请求结束记录一条用量，关联 taskId、generation、agoraSessionId、runId 和驱动提供的 requestId；重复事件不重复记账。禁止继续执行与接收用量分别控制：stop、额度暂停或中断返工的 abort 收尾期间，旧运行确认结束前收到的合法用量仍记入原任务、原代和原会话。复用进程时，在旧回合中断确认、开始新代回合后才切换记账代数；运行退出后拒收事件。输入、缓存读、缓存写、输出和推理 token 按请求相加。模型未单独返回推理 token 时记为 0，不把输出 token 推测为推理 token。`contextTokens` 取最近一次非零的 `input + cacheRead + cacheWrite`，代表服务最近报告的输入上下文大小；没有可用数据时为 0。任务树的上下文大小是各任务最近值之和，不是历史请求的输入总和，也不是模型上下文窗口上限。CLI 的专用展示在 1d，pane 展示在切片 2。
+每次模型请求结束记录一条用量，关联 taskId、generation、agoraSessionId、runId 和驱动提供的 requestId；重复事件不重复记账。禁止继续执行与接收用量分别控制：stop、额度暂停、预算暂停或中断返工的 abort 收尾期间，旧运行确认结束前收到的合法用量仍记入原任务、原代和原会话。复用进程时，在旧回合中断确认、开始新代回合后才切换记账代数；运行退出后拒收事件。输入、缓存读、缓存写、输出和推理 token 各字段分别按请求相加；预算计数不重复叠加推理 token，见“任务树软预算”。模型未单独返回推理 token 时记为 0，不把输出 token 推测为推理 token。`contextTokens` 取最近一次非零的 `input + cacheRead + cacheWrite`，代表服务最近报告的输入上下文大小；没有可用数据时为 0。任务树的上下文大小是各任务最近值之和，不是历史请求的输入总和，也不是模型上下文窗口上限。CLI 的专用展示在 1d，pane 展示在切片 2。
+
+### 任务树软预算
+
+每个任务的 `maxTokens` 限制该任务及全部后代的累计用量，跨 generation、会话替换和 daemon 重启保留。HTTP `POST /v1/tasks` 可指定 `maxTokens`；根任务省略时取数据库 `settings` 中的 `taskLimitDefaults.maxTokens`，子任务省略时继承父任务上限。下级不能超过任何祖先的预算，不单独预留或重复占用每日授予。根任务默认上限为 50,000,000 token，可在派活时显式收紧。
+
+根任务的未签名授予受两项限制：主 Agent 的单树上限为 `taskLimitDefaults.maxTokens × agentLimitCap.perTaskFactor`，host 的单树上限为 `taskLimitDefaults.maxTokens`；所有 principal 共用同一数据目录的 `agentLimitCap.dailyTokens`。`perTaskFactor` 默认为 2，主 Agent 在封顶内可将单树提高到 100,000,000 token；`dailyTokens` 默认为 2,500,000,000 token，按授权额计算。超出任一限制均需设备签名；`userConfirmation = off` 产生的 `confirmedBy: "none"` 仍属于未签名授予，不能绕过封顶。
+
+`budget_grants` 按本地日历日记录根任务的预算授予，创建时记全额，提高时只记新旧上限的正差额；调低、停止或清理均不退还当日授予。设备签名授予保留在账本中，但不占未签名日封顶。授予检查、账本与任务写入共用事务，不能通过并发创建或更换 principal 绕过。
+
+预算计数使用逐请求去重后的 `treeUsage`。`tokenAccounting: "all"` 计入 `inputTokens + cacheReadTokens + cacheWriteTokens + outputTokens`；`"uncached"` 排除 `cacheReadTokens`。`reasoningTokens` 单独展示，不额外叠加到预算计数中；默认口径为 `"all"`，包含 cacheRead，不按缓存价格折扣。`spawn`、`status`、`result` 和调整上限的响应包含 `budget`：`maxTokens`、`usedTokens`、`remainingTokens`、`tokenAccounting` 与 `ancestors`；`ancestors` 列出每个祖先的上限、用量和暂停标志，剩余值最低为 0，用量不截断。
+
+任一任务或祖先累计用量达到上限时，daemon 将耗尽预算的任务及其子树内所有非终态任务置为 `budget_paused`，持久化 `task:budget_paused` 通知，并通过现有调度唤醒召集人；即使下级指定 `notify: "silent"`，预算暂停仍须处理。通知身份包含本次暂停后的 revision，同代增额恢复后再次耗尽会产生新事件；同一次暂停中的重复 usage 和停止尾量不重复通知。然后按任务控制队列执行 `clear_queue`、`abort` 和进程停止，释放名额并保存停止报告与诊断。已结束任务保留终态；停止期间的合法尾量仍按原任务、原代、原会话去重入账，可能超过上限。这是请求结束后执行的软预算，不能保证恰好在指定 token 数停止。
+
+调度、spawn 下级、steer、通知唤醒、额度自动恢复和 recover 都检查当前任务及祖先预算。预算不足返回 `409 budget_exhausted`，下级上限超过祖先返回 `403 budget_limit_exceeded`。增额不会改变暂停状态；调用方须先补足相关预算，再显式 `recover`、`mode: "resume"`，且旧运行必须已确认退出。恢复父任务不会恢复任何下级；下级仍须由其直接召集人逐一决定。未曾启动的任务恢复时保留原任务书。
+
+默认值按历史实现树与返工的请求用量校准：普通实现树约 2,900–3,200 万 token，较大实现树可超过 1 亿；每日封顶按创建和增额的授权额计算，不能以当天实际消耗替代。小任务应在派活时收紧预算。
+
+上限可由 `agora_task` 的 `limits`、`POST /v1/tasks/:id/limits`、`{ "maxTokens": <正整数> }` 或 `agora task limits <任务 ID> --max-tokens <数量>` 调整；召集人为 `user` 的任务增额走用户确认。预算配置、签名要求和接管边界见 [security.md](security.md#任务预算与设置)。
+
+用户接管后，尚交给子树外部 Agent 的提问同事务转给用户，保留原 requestId 与 asker 并增加 revision；子树内部的提问继续由内部直接接收方处理。旧 Agent 对这些问题不能继续读取、答复、取消或转交，问题列表也不再返回越过接管边界的记录。
 
 ### 额度暂停
 
@@ -106,6 +128,8 @@ created ──► running ──► completed ───────────�
               │  │                                               │
               ├────► quota_paused ── recover resume / 自动续跑 ──► running
               │             └── stop / abandon ──► stopped
+              ├────► budget_paused ── 增额后显式 recover resume ──► running
+              │             └── stop / abandon ──► stopped
               ▼  │ 答复送达                                      │
         waiting_decision / waiting_children                      │
               │                                                  │
@@ -121,6 +145,7 @@ created ──► running ──► completed ───────────�
 | `waiting_decision` | 会话 settled 时，该任务还有 `open` 或 `escalated` 状态的提问 |
 | `waiting_children` | 会话 settled 时，该任务还有未结束的下级且没有未决提问；释放名额并等待通知 |
 | `quota_paused` | 模型额度用完；不占推理名额，保留会话和代数，等待上级决定或配置的自动恢复 |
+| `budget_paused` | 任务或祖先软预算耗尽；停止进程并释放名额，保留代数，增额后仍须显式恢复 |
 | `completed` | 会话 settled、`aborted: false`、没有助手错误、未决提问或未结束的下级 |
 | `failed` | 会话 settled 且最后一条助手消息是错误（已识别的额度暂停除外），或 spawn 校验、就绪检查失败 |
 | `stopped` | 召集人或用户调用 stop，或放弃中断的任务 |
@@ -227,12 +252,11 @@ interface AgoraRequest {
   route: string[];               // 已经转交过的直接上级 principal
   answers?: RequestAnswer[];
   answeredBy?: string;
-  answeredVia?: {                // 答复者是 user 时由 daemon 填写，来自审计记录
+  answeredVia?: {                // 答复者是 user 时由 daemon 填写，来自可信确认入口
     confirmedBy: "device" | "none"; // none：userConfirmation = off
     deviceId?: string;
-    deviceLabel?: string;
+    confirmationId?: string;
     requestedBy: string;         // 发起答复的 principal，如 host:pane、host:cli
-    at: string;
   };
   expiresAt?: string;            // 可选，ISO 时间
   revision: number;
@@ -256,7 +280,7 @@ interface RequestAnswer { id: string; selected: string[]; custom?: string }
 
 `RequestQuestion` 的字段与 pane 协议 v1 的 `FormQuestion` 相同（名称、类型和默认值以 pi-pane 仓库的 `docs/plugin-api.md` 为准；`allowCustom` 缺省为 `true`），转给用户时逐字段复制即可渲染；映射方式见 [integration.md](integration.md#表单)。pane 协议以后给 `FormQuestion` 增加的字段，agora 在升级 `paneProtocol` 时再决定是否跟进，未跟进的字段取 pane 的缺省值。daemon 校验 `dependsOn` 指向同一提问中排在前面的题目，`allowCustom: false` 时拒绝带 `custom` 的答复。核心包不引用 pi-pane 的类型，`RequestQuestion` 在 `packages/protocol` 中独立定义。
 
-完整安全设计中，用户答复（无论来自 CLI 还是 pi-pane）都是用户级操作，需要已配对浏览器签名确认，并写入审计；提问详情和提问者收到的通知里显示 `answeredVia`，如“由用户答复（设备：工作电脑 Chrome，2026-11-05 10:21）”。见 [security.md](security.md#用户确认)。
+host 发起的答复和取消都是用户级操作，保护开启时需要设备签名确认并写入审计；保护关闭时仅 CLI 可走 `none` 通路。提问详情和通知的 `answeredVia` 返回实际确认方式、发起方、设备 ID 与确认 ID，证明持久保存在 `requests.answer_proof`，不接受调用方伪造。见 [security.md](security.md#用户确认)。
 
 ### 状态
 
@@ -313,9 +337,19 @@ type AgoraRequestParams =
 - 对中断的任务选择恢复、重开、换人或放弃；
 - 接管任务：把任务的召集人改为 user，之后的通知都进入“待处理”。
 
-完整安全设计将这些操作列为用户级：pi-pane 由浏览器确认，CLI 生成待确认（见 [security.md](security.md#经-cli-发起)）。1b 仅提供提问的转交和 CLI 直接答复 / 取消通路，`answeredVia.confirmedBy` 为 `none`；没有设备确认、接管或其他用户级动作，不能把磁盘凭证当作用户身份。
+这些操作使用用户级确认：保护开启时 CLI 生成待确认，由设备签名执行；浏览器界面在切片 2 接入。仅使用终端时，先停止 daemon，再执行 `agora offline set userConfirmation off`；关闭后无法区分用户与 Agent，实际操作记录 `confirmedBy: "none"`。不能把磁盘凭证当作用户身份。
 
 召集人恢复后，补送的通知按产生顺序送达；已被用户处理的事项送达一条“已由用户处理”的说明，不再要求召集人决定。
+
+## 用户接管
+
+`POST /v1/tasks/:id/takeover` 或 `agora task takeover <任务 ID>` 显式将目标任务的召集人改为 `user`。用户可接管召集人仍可达的任务；保护开启时须设备签名，保护关闭时 CLI 可通过可信的 `none` 通路执行。普通 host 即使持有签名，也不能跳过接管直接恢复 Agent 的任务：召集人可达时返回 `convener_reachable`，不可达时返回 `takeover_required`。
+
+接管在同一事务内写入 `tasks.taken_over_from`、更新当前会话召集人与 worktree 所有者，并向原召集人写入 `task:taken_over` outbox 通知，提交后才尝试唤醒。通知按既有至少一次投递规则重投，事务回滚不唤醒。`parent_task_id`、任务层级、用量和祖先预算归属保持不变，接管不会重新授予预算；正常预算耗尽仍可暂停包含接管任务的对应子树。
+
+原 Agent 对目标及其子树的读取和管理返回 `403 task_taken_over`。祖先的 stop、abandon 和调低预算若会跨越接管边界，均在停止、改预算等副作用前拒绝。目标、祖先或后代正在执行控制操作时，接管返回 `409 task_busy`；已排队的旧控制操作在执行时重查权限。祖先 reopen / replace 不能收回已接管下级。
+
+接管不禁止目标任务运行时管理自己的直接下级，也不改变其自身状态的有限读取权限；嵌套接管形成新的边界，外层运行时不能跨越。接管后，目标任务后续通知发给 `user`，恢复及增额按用户任务规则确认。
 
 ## 中断任务的处理选项
 

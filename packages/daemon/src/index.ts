@@ -6,10 +6,12 @@ import { acquireInstanceLock, assertLocalFilesystem } from "pi-hostkit";
 import { Auth, proof } from "./auth.js";
 import { AgoraError } from "./errors.js";
 import { Requests } from "./requests.js";
+import { Security } from "./security.js";
 import { openStore, id, type Store } from "./store.js";
 import { TaskManager, type TaskOptions } from "./tasks.js";
 import { createHttpServer, VERSION, PROTOCOL_RANGE } from "./server.js";
 import { RpcSubprocessDriver, type SessionDriver } from "./driver.js";
+import { listenOnFetchPort } from "./ports.js";
 
 export interface DaemonOptions extends Omit<TaskOptions, "home" | "url" | "instanceId"> {
   skillDirectories?: string[];
@@ -19,7 +21,7 @@ export interface DaemonOptions extends Omit<TaskOptions, "home" | "url" | "insta
   driver?: SessionDriver;
 }
 export interface RunningDaemon {
-  url: string; instanceId: string; store: Store; auth: Auth; tasks: TaskManager;
+  url: string; instanceId: string; store: Store; auth: Auth; tasks: TaskManager; security: Security;
   close(options?: { force?: boolean; timeoutMs?: number }): Promise<void>;
 }
 export function childEnvironment(source: NodeJS.ProcessEnv = process.env): Record<string, string> {
@@ -54,12 +56,22 @@ async function configured(options: DaemonOptions): Promise<DaemonOptions> {
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return options; throw new Error("daemon 配置文件无法读取或不是合法 JSON"); }
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("daemon 配置必须为对象");
   const config = value as Record<string, unknown>;
-  const allowed = ["maxConcurrentRuns", "readyTimeoutMs", "maxTaskDepth", "maxChildren", "worktreeRoot", "idleReclaimMs", "toolStallMinutes", "protectedPaths", "allowedRoots", "powershell", "skillDirectories", "defaultSkills", "quotaRecovery"];
+  const allowed = ["maxConcurrentRuns", "readyTimeoutMs", "maxTaskDepth", "maxChildren", "worktreeRoot", "idleReclaimMs", "toolStallMinutes", "protectedPaths", "allowedRoots", "powershell", "skillDirectories", "defaultSkills", "quotaRecovery", "taskLimitDefaults", "agentLimitCap"];
   if (Object.keys(config).some(key => !allowed.includes(key))) throw new Error("daemon 配置包含不支持的字段");
   for (const key of ["maxConcurrentRuns", "readyTimeoutMs", "maxTaskDepth", "maxChildren", "idleReclaimMs"]) {
     const item = config[key];
     if (item === undefined || key === "maxChildren" && item === null) continue;
     if (typeof item !== "number" || !Number.isSafeInteger(item) || item < (["maxChildren", "idleReclaimMs"].includes(key) ? 0 : 1) || item > 2_147_483_647) throw new Error(`配置 ${key} 必须为有界整数`);
+  }
+  for (const key of ["taskLimitDefaults", "agentLimitCap"]) {
+    const item = config[key];
+    if (item === undefined) continue;
+    if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error(`配置 ${key} 必须为对象`);
+    const fields = key === "taskLimitDefaults" ? ["maxTokens"] : ["perTaskFactor", "dailyTokens"];
+    for (const [field, value] of Object.entries(item)) {
+      if (!fields.includes(field)) throw new Error(`配置 ${key} 包含不支持的字段`);
+      if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) throw new Error(`配置 ${key}.${field} 必须为正的安全整数`);
+    }
   }
   if (config.toolStallMinutes !== undefined && (typeof config.toolStallMinutes !== "number" || !Number.isFinite(config.toolStallMinutes) || config.toolStallMinutes <= 0 || config.toolStallMinutes > 35791)) throw new Error("toolStallMinutes 必须为正数");
   if (config.powershell !== undefined && typeof config.powershell !== "boolean") throw new Error("powershell 必须为布尔值");
@@ -85,6 +97,7 @@ export async function startDaemon(options: DaemonOptions): Promise<RunningDaemon
   if (!lock) return existingDaemon(home);
   let store: Store | undefined;
   let server: ReturnType<typeof createHttpServer> | undefined;
+  let requests: Requests | undefined;
   const closing = new AbortController();
   const instanceId = id("in");
   const discoveryFile = path.join(runDirectory, "daemon.json");
@@ -92,6 +105,8 @@ export async function startDaemon(options: DaemonOptions): Promise<RunningDaemon
   try {
     store = await openStore(home);
     const auth = await Auth.create(store, instanceId);
+    const security = new Security(store);
+    security.importBudgetConfig(options);
     store.run("UPDATE operations SET state='failed',status=409,result=? WHERE state='in_progress'", JSON.stringify({ error: { code: "operation_interrupted", message: "操作被 daemon 重启中断，请核对任务状态" } }));
     const driver = options.driver ?? new RpcSubprocessDriver({ home, piPath: options.piPath,
       extensionPath: options.extensionPath ?? fileURLToPath(new URL("../../extension/dist/index.js", import.meta.url)),
@@ -119,22 +134,21 @@ export async function startDaemon(options: DaemonOptions): Promise<RunningDaemon
       })().catch(error => { closePromise = undefined; throw error; });
       return closePromise;
     };
-    server = createHttpServer({ store, auth, tasks, requests: new Requests(store, auth, tasks), instanceId, close, closing: closing.signal });
-    await new Promise<void>((resolve, reject) => {
-      server!.once("error", reject);
-      server!.listen(0, "127.0.0.1", () => { server!.off("error", reject); resolve(); });
+    const { port } = await listenOnFetchPort(() => {
+      requests = new Requests(store!, auth, tasks);
+      server = createHttpServer({ store: store!, auth, tasks, security, requests, instanceId, close, closing: closing.signal });
+      return server;
     });
-    const address = server.address();
-    if (!address || typeof address === "string") throw new Error("daemon 监听地址无效");
-    const url = `http://127.0.0.1:${address.port}`;
+    const url = `http://127.0.0.1:${port}`;
     taskOptions.url = url;
-    await writeFile(temporaryFile, JSON.stringify({ port: address.port, pid: process.pid, instanceId, daemonVersion: VERSION, protocol: PROTOCOL_RANGE }), { flag: "wx", mode: 0o600 });
+    await writeFile(temporaryFile, JSON.stringify({ port, pid: process.pid, instanceId, daemonVersion: VERSION, protocol: PROTOCOL_RANGE }), { flag: "wx", mode: 0o600 });
     await rename(temporaryFile, discoveryFile);
     tasks.startQueue();
-    return { url, instanceId, store, auth, tasks, close };
+    return { url, instanceId, store, auth, tasks, security, close };
   } catch (error) {
     closing.abort();
     if (server?.listening) await new Promise<void>(resolve => { server!.close(() => resolve()); server!.closeAllConnections(); });
+    requests?.close();
     await unlink(temporaryFile).catch(() => {});
     store?.close();
     await lock.release();
@@ -145,5 +159,7 @@ export async function startDaemon(options: DaemonOptions): Promise<RunningDaemon
 export { Auth, proof } from "./auth.js";
 export { Store, openStore, consistentBackup, SCHEMA_VERSION } from "./store.js";
 export { AgoraError } from "./errors.js";
+export { Security } from "./security.js";
+export { offline } from "./offline.js";
 export { RpcSubprocessDriver } from "./driver.js";
 export type { DriverHandle, SessionDriver, LaunchSpec } from "./driver.js";

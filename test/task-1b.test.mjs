@@ -11,6 +11,7 @@ import { connectHost, createClient, gitExec, gitEnvironment } from '../packages/
 import { DatabaseSync } from 'node:sqlite';
 import { Store, openStore, schemaMigrations } from '../packages/daemon/dist/store.js';
 import { NoticeDelivery } from '../packages/extension/dist/notifications.js';
+import { confirmUser } from './fixtures/security-signer.mjs';
 
 async function until(fn, ms = 4000) {
   const deadline = Date.now() + ms;
@@ -280,7 +281,7 @@ test('主代理与子代理同时提问不互相阻塞；孙代理提问逐级�
   await p.client.request('POST', `/v1/requests/${another.id}/escalate`, {});
   assert.equal((await main.request('POST', `/v1/requests/${another.id}/escalate`, {})).targetId, 'user');
   const cli = await f.main('host:cli');
-  assert.equal((await cli.request('POST', `/v1/requests/${rootQ.id}/answer`, answer)).answeredVia.confirmedBy, 'none');
+  assert.equal((await confirmUser(cli, await cli.request('POST', `/v1/requests/${rootQ.id}/answer`, answer))).answeredVia.confirmedBy, 'device');
 });
 
 for (const mode of ['reopen', 'replace']) test(`F5：父任务 ${mode} 后现存下级 ask 与更深下级 escalate 路由当前 principal`, async t => {
@@ -382,7 +383,7 @@ test('v2 到 v3 迁移有一致性备份并保留旧任务，新树与提问表�
   db.exec("CREATE TABLE schema_version(version INTEGER,migrated_at TEXT); INSERT INTO schema_version VALUES(2,'v2'); PRAGMA journal_mode=WAL;");
   db.prepare("INSERT INTO principals(id,type,created_at) VALUES('main','agent:main','time')").run(); db.close();
   const store = await openStore(home); assert.equal(store.principal('main').type, 'agent:main');
-  assert.equal(store.get('SELECT version FROM schema_version').version, 4); assert.deepEqual(store.all('PRAGMA foreign_key_check'), []);
+  assert.equal(store.get('SELECT version FROM schema_version').version, 5); assert.deepEqual(store.all('PRAGMA foreign_key_check'), []);
   for (const name of ['requests', 'steer_messages', 'worktrees']) assert.ok(store.get('SELECT name FROM sqlite_master WHERE name=?', name));
   store.close(); const backup = (await readdir(join(home, 'backups'))).find(f => f.endsWith('.db'));
   const old = new DatabaseSync(join(home, 'backups', backup), { readOnly: true });
@@ -425,7 +426,12 @@ test('带期限的提问过期不表示同意；转给用户后不再计时；CL
   assert.equal(await runCli(['pending', '--home', f.home], io), 0);
   assert.ok(JSON.parse(out.at(-1)).items.some(row => row.id === q2.id));
   assert.equal(await runCli(['answer', q2.id, '--home', f.home, '--answers', JSON.stringify([{ id: 'q', selected: [], custom: '用户答复' }])], io), 0, errors.join('\n'));
-  assert.equal(JSON.parse(out.at(-1)).state, 'answered');
+  const pending = JSON.parse(out.at(-1));
+  assert.equal(pending.code, 'confirmation_required');
+  const cli = await f.main('host:cli');
+  const answered = await confirmUser(cli, pending);
+  assert.equal(answered.state, 'answered');
+  assert.equal(answered.answeredVia.confirmedBy, 'device');
 });
 
 test('配置文件约束子树与名额，非法配置拒绝启动；v3 迁移失败回滚全部树字段并保留 v2 备份', async t => {

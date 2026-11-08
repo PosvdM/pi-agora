@@ -1,0 +1,890 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtemp, rm, readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { randomUUID, generateKeyPairSync, sign } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
+import { openStore } from '../packages/daemon/dist/store.js';
+import { Auth, proof as hostProof } from '../packages/daemon/dist/auth.js';
+import { TaskManager } from '../packages/daemon/dist/tasks.js';
+import { Requests } from '../packages/daemon/dist/requests.js';
+import { startDaemon } from '../packages/daemon/dist/index.js';
+import { connectHost } from '../packages/protocol/dist/client.js';
+import { runCli } from '../packages/cli/dist/index.js';
+import { Budgets, budgetConfig, countTokens, localBudgetDay } from '../packages/daemon/dist/budgets.js';
+
+const signed = { deviceId: 'device-test', confirmationId: 'confirm-test', requestedBy: 'host:pane', confirmedBy: 'device' };
+const unsigned = { ...signed, confirmedBy: 'none' };
+const errorCode = code => error => error.code === code;
+const usage = (requestId, n = 1) => ({ type: 'usage_record', requestId, inputTokens: 10 * n, cacheReadTokens: 20 * n, cacheWriteTokens: 3 * n, outputTokens: 4 * n, reasoningTokens: 2 * n, contextTokens: 33 * n });
+async function until(fn) {
+  const deadline = Date.now() + 4000;
+  do { const value = fn(); if (value) return value; await delay(2); } while (Date.now() < deadline);
+  assert.fail('等待模拟运行超时');
+}
+class Driver {
+  handles = [];
+  async start(spec) {
+    const auth = this.auth;
+    const launched = auth.launch({ ticket: spec.env.AGORA_LAUNCH_TICKET });
+    const conn = auth.authenticate(`Bearer ${launched.token}`);
+    const events = new Set(), exits = new Set(); let resolveExit;
+    const h = { spec, conn, commands: [], ready: false, stopped: false,
+      identity: { pid: 88000 + this.handles.length, startTime: 'fake', runId: spec.runId, instanceId: spec.instanceId },
+      exited: new Promise(resolve => { resolveExit = resolve; }),
+      onEvent(fn) { events.add(fn); return () => events.delete(fn); }, onExit(fn) { exits.add(fn); return () => exits.delete(fn); },
+      emit(event) { for (const fn of events) fn(event); }, markReady() { this.ready = true; }, diagnostics() { return {}; }, respondUi() {},
+      async send(command) {
+        this.commands.push(command);
+        if (this.barrier?.type === command.type) await this.barrier.promise;
+        if (command.type === 'abort') { this.onAbort?.(); this.emit({ type: 'agent_settled', aborted: true }); }
+        const data = command.type === 'get_available_models' ? { models: ['test/model'] }
+          : command.type === 'get_state' ? { model: 'test/model', thinkingLevel: spec.thinking, sessionFile: spec.sessionFile }
+          : command.type === 'get_last_assistant_text' ? { text: '私有结果' } : {};
+        return { success: true, data };
+      },
+      async stop() {
+        if (this.failStop) throw new Error('模拟退出未确认');
+        if (this.stopped) return this.report;
+        // 模拟 pi 适配器 stop 的取消与停止顺序，领域层只调用中立 stop。
+        await this.send({ type: 'clear_queue' });
+        await this.send({ type: 'abort' });
+        this.onStop?.(); this.stopped = true;
+        this.report = { coverage: 'snapshot_visible', steps: [{ step: 'verify', ok: true }], leftovers: [] };
+        const exit = { identity: this.identity, code: 0, signal: null, cleanupConfirmed: true, stopReport: this.report };
+        resolveExit(exit); for (const fn of exits) fn(exit); return this.report;
+      },
+    };
+    this.handles.push(h);
+    queueMicrotask(() => this.tasks.ready(conn, { ...launched.policy, tools: spec.tools }, spec.runId).catch(() => {}));
+    return h;
+  }
+  async recoverOldRun() { return { coverage: 'snapshot_visible', steps: [], leftovers: [] }; }
+}
+async function setup(t, options = {}) {
+  const home = await mkdtemp(join(tmpdir(), 'agora-security-1c-'));
+  const store = await openStore(home);
+  const auth = await Auth.create(store, 'test-instance'), driver = new Driver();
+  const tasks = new TaskManager(store, auth, driver, { home, instanceId: 'test-instance', url: 'http://test', maxTaskDepth: 4, maxConcurrentRuns: 8, taskLimitDefaults: { maxTokens: 1000 }, agentLimitCap: { perTaskFactor: 2, dailyTokens: 10000 }, ...options });
+  driver.auth = auth; driver.tasks = tasks; tasks.startQueue();
+  const requests = new Requests(store, auth, tasks);
+  t.after(async () => { requests.close(); for (const h of driver.handles) h.failStop = false; await tasks.shutdown(true, 1000); store.close(); await rm(home, { recursive: true, force: true }); });
+  // 真实读取 host.key 完成挑战认证，以验证主机凭证不等于用户签名。
+  async function connect(type) {
+    const key = await readFile(join(home, 'secret', 'host.key'));
+    const challenge = auth.challenge({ clientNonce: randomUUID() });
+    const response = auth.exchange({ challengeId: challenge.challengeId, clientProof: hostProof(key, ['client', challenge.serverNonce, 'test-instance']), as: type });
+    const conn = auth.authenticate(`Bearer ${response.token}`);
+    if (type === 'agent:main') await auth.register(conn, { sessionId: randomUUID(), ephemeral: true, cwd: home });
+    return conn;
+  }
+  const main = () => connect('agent:main'), host = await connect('host:cli');
+  const spawn = (conn, body = {}, proof) => tasks.spawn(conn, { model: 'test/model', profile: 'explore', prompt: '私有任务书', cwd: home, ...body }, proof);
+  const handle = task => until(() => driver.handles.findLast(h => h.spec.agoraSessionId === task.agoraSessionId && h.ready && !h.stopped && h.commands.some(c => c.type === 'prompt')));
+  const settle = async h => { h.emit({ type: 'agent_settled', aborted: false }); await tasks.flush(); };
+  return { home, store, auth, driver, tasks, requests, main, host, spawn, handle, settle };
+}
+
+test('1c main、child、host 资源矩阵与跨级操作保护', async t => {
+  const f = await setup(t), m1 = await f.main(), m2 = await f.main();
+  const root = await f.spawn(m1), p = await f.handle(root), child = await f.spawn(p.conn), c = await f.handle(child), sibling = await f.spawn(p.conn);
+  await f.handle(sibling);
+  assert.equal(f.tasks.status(m1, child.taskId).prompt, '私有任务书');
+  assert.equal(f.tasks.status(f.host, child.taskId).prompt, '私有任务书');
+  assert.throws(() => f.tasks.status(m2, root.taskId), errorCode('forbidden'));
+  assert.throws(() => f.tasks.result(m2, root.taskId), errorCode('forbidden'));
+  const summary = f.tasks.list(m2, 'all', 50, 0).items[0];
+  assert.deepEqual(Object.keys(summary).sort(), ['convener', 'status', 'taskId', 'title']);
+  assert.equal(f.tasks.status(c.conn, child.taskId).prompt, undefined);
+  assert.throws(() => f.tasks.result(c.conn, child.taskId), errorCode('forbidden'));
+  assert.throws(() => f.tasks.result(c.conn, sibling.taskId), errorCode('forbidden'));
+  assert.throws(() => f.tasks.status(c.conn, root.taskId), errorCode('forbidden'));
+  assert.throws(() => f.tasks.list(c.conn, 'all', 50, 0), errorCode('forbidden'));
+  assert.deepEqual(f.tasks.list(p.conn, 'mine', 50, 0).items.map(x => x.taskId).sort(), [child.taskId, sibling.taskId].sort());
+  for (const action of ['steer', 'cleanup', 'recover']) await assert.rejects(f.tasks[action](m1, child.taskId, { message: '越级', mode: 'resume' }), errorCode('forbidden'));
+  await assert.rejects(f.tasks.steer(f.host, root.taskId, { message: '主机越权' }), errorCode('forbidden'));
+  await assert.rejects(f.tasks.stop(c.conn, sibling.taskId, {}), errorCode('forbidden'));
+  await f.tasks.stop(m1, root.taskId, {});
+  assert.equal(f.store.task(child.taskId).status, 'stopped');
+  assert.equal(f.store.task(sibling.taskId).status, 'stopped');
+  await f.tasks.cleanup(f.host, root.taskId, {});
+});
+
+test('1c host.key 不能直接答复，可信答复保留证明与签名前后 revision', async t => {
+  const f = await setup(t), m = await f.main();
+  const q = f.requests.ask(m, { questions: [{ id: 'q', question: '继续？' }] });
+  const body = { answers: [{ id: 'q', selected: [], custom: '同意' }], expectedRevision: q.revision, user: true, proof: signed };
+  assert.throws(() => f.requests.update(f.host, q.id, 'answer', body), e => e.code === 'confirmation_required' && e.details.action === 'agora.request.answer' && e.details.target === q.id && e.details.params === body);
+  assert.throws(() => f.requests.update(f.host, q.id, 'cancel', body), e => e.code === 'confirmation_required' && e.details.action === 'agora.request.cancel');
+  assert.throws(() => f.requests.updateUser(f.host, q.id, 'answer', { ...body, expectedRevision: 0 }, signed), errorCode('conflict'));
+  const answered = f.requests.updateUser(f.host, q.id, 'answer', body, signed);
+  assert.equal(answered.answeredBy, 'user'); assert.deepEqual(answered.answeredVia, signed);
+  assert.deepEqual(JSON.parse(f.store.get('SELECT answer_proof FROM requests WHERE id=?', q.id).answer_proof), signed);
+  assert.throws(() => f.requests.updateUser(f.host, q.id, 'answer', body, signed), errorCode('already_handled'));
+  const off = f.requests.ask(m, { questions: [{ id: 'q', question: '关闭保护后的来源？' }] });
+  assert.deepEqual(f.requests.updateUser(f.host, off.id, 'cancel', {}, unsigned).answeredVia, unsigned);
+});
+
+test('1c 提问只允许 asker/target 访问，逐级转交后不能撤销用户问题', async t => {
+  const f = await setup(t), m = await f.main(), other = await f.main(), root = await f.spawn(m), p = await f.handle(root), child = await f.spawn(p.conn), c = await f.handle(child);
+  assert.throws(() => f.requests.ask(f.host, { questions: [{ id: 'q', question: '主机' }] }), errorCode('forbidden'));
+  const q = f.requests.ask(c.conn, { questions: [{ id: 'q', question: '子级问题' }] });
+  assert.equal(q.targetId, p.conn.principalId);
+  assert.throws(() => f.requests.detail(m, q.id), errorCode('forbidden'));
+  assert.equal(f.requests.detail(f.host, q.id).id, q.id);
+  assert.equal(f.requests.list(other).items.length, 0);
+  assert.throws(() => f.requests.update(c.conn, q.id, 'answer', { answers: [] }), errorCode('forbidden'));
+  const escalated = f.requests.update(p.conn, q.id, 'escalate', { expectedRevision: q.revision });
+  assert.equal(escalated.targetId, m.principalId);
+  assert.throws(() => f.requests.update(c.conn, q.id, 'cancel', {}), errorCode('forbidden'));
+  f.requests.update(m, q.id, 'escalate', {});
+  assert.equal(f.requests.detail(f.host, q.id).targetId, 'user');
+  for (const actor of [c.conn, p.conn, m]) assert.throws(() => f.requests.update(actor, q.id, 'cancel', {}), errorCode('forbidden'));
+  f.requests.updateUser(f.host, q.id, 'cancel', {}, signed);
+  const open = f.requests.ask(c.conn, { questions: [{ id: 'q', question: '仍由父级接收' }] });
+  const answered = f.requests.updateUser(f.host, open.id, 'answer', { answers: [{ id: 'q', selected: [], custom: '用户代答' }] }, signed);
+  assert.equal(answered.answeredBy, 'user');
+});
+
+test('1c host 不得直接恢复 Agent 任务，用户可显式签名接管可达召集人的任务', async t => {
+  const f = await setup(t), m = await f.main(), root = await f.spawn(m), p = await f.handle(root);
+  await p.stop(); await f.tasks.flush();
+  assert.equal(f.store.task(root.taskId).status, 'interrupted');
+  await assert.rejects(f.tasks.recover(f.host, root.taskId, { mode: 'resume' }, signed), errorCode('convener_reachable'));
+  assert.throws(() => f.tasks.takeOver(f.host, root.taskId, { user: true, proof: signed }), errorCode('confirmation_required'));
+  const taken = f.tasks.takeOver(f.host, root.taskId, {}, signed);
+  assert.equal(typeof taken.then, 'undefined');
+  assert.equal(f.store.task(root.taskId).taken_over_from, m.principalId);
+  await assert.rejects(f.tasks.recover(f.host, root.taskId, { mode: 'resume' }), e => e.code === 'confirmation_required' && e.details.action === 'agora.task.recover');
+  await f.tasks.recover(f.host, root.taskId, { mode: 'resume' }, signed);
+  await f.handle(root);
+});
+
+test('1c 活跃 ready child 的任务须显式接管，可信 none proof 允许接管', async t => {
+  const f = await setup(t), m = await f.main(), root = await f.spawn(m), p = await f.handle(root), child = await f.spawn(p.conn), c = await f.handle(child);
+  await c.stop(); await f.tasks.flush();
+  await assert.rejects(f.tasks.recover(f.host, child.taskId, { mode: 'resume' }, signed), errorCode('convener_reachable'));
+  f.tasks.takeOver(f.host, child.taskId, {}, unsigned);
+  assert.equal(f.store.task(child.taskId).taken_over_from, p.conn.principalId);
+  await f.tasks.recover(f.host, child.taskId, { mode: 'resume' }, unsigned);
+  await f.handle(child);
+});
+
+test('1c 接管统一阻断旧 Agent 管理子树，任务 runtime 仍可管理自己的下级', async t => {
+  const f = await setup(t), m = await f.main(), root = await f.spawn(m), p = await f.handle(root);
+  const child = await f.spawn(p.conn), c = await f.handle(child), grandchild = await f.spawn(c.conn), g = await f.handle(grandchild);
+  await f.tasks.flush();
+  p.emit(usage('parent')); c.emit(usage('child'));
+  const grants = f.store.get('SELECT SUM(tokens) AS n FROM budget_grants').n;
+  f.tasks.takeOver(f.host, child.taskId, {}, signed);
+  assert.equal(f.store.task(child.taskId).parent_task_id, root.taskId);
+  assert.equal(f.store.usage(root.taskId, true).inputTokens, 20);
+  c.emit(usage('child-after-takeover'));
+  assert.equal(f.store.usage(root.taskId, true).inputTokens, 30);
+  assert.equal(f.store.get('SELECT SUM(tokens) AS n FROM budget_grants').n, grants);
+  for (const actor of [m, p.conn]) for (const task of [child, grandchild]) {
+    for (const action of ['steer', 'cleanup', 'recover', 'stop']) {
+      await assert.rejects(f.tasks[action](actor, task.taskId, { message: '旧召集人', mode: 'resume', expectedRevision: 0 }), errorCode('task_taken_over'));
+    }
+    assert.throws(() => f.tasks.limits(actor, task.taskId, { maxTokens: 500 }), errorCode('task_taken_over'));
+    assert.throws(() => f.tasks.status(actor, task.taskId), errorCode('task_taken_over'));
+  }
+  assert.equal(f.tasks.status(c.conn, child.taskId).prompt, undefined);
+  await f.tasks.steer(f.host, child.taskId, { message: '用户管理接管任务' });
+  await f.tasks.steer(c.conn, grandchild.taskId, { message: 'runtime 管理下级' });
+  f.tasks.limits(c.conn, grandchild.taskId, { maxTokens: 900 });
+  await g.stop(); await f.tasks.flush();
+  await f.tasks.recover(c.conn, grandchild.taskId, { mode: 'resume' });
+  const resumed = await f.handle(grandchild);
+  await f.tasks.stop(c.conn, grandchild.taskId, {});
+  await f.tasks.cleanup(c.conn, grandchild.taskId, {});
+  assert.equal(resumed.stopped, true);
+  const next = await f.spawn(c.conn); await f.handle(next);
+  assert.equal(f.store.task(next.taskId).parent_task_id, child.taskId);
+});
+
+for (const scope of ['root', 'nested']) test(`1c ${scope} 接管转交外部提问，保留内部协作、路由与 asker 读取`, async t => {
+  const f = await setup(t), m = await f.main(), root = await f.spawn(m), p = await f.handle(root);
+  const child = await f.spawn(p.conn), c = await f.handle(child), grandchild = await f.spawn(c.conn), g = await f.handle(grandchild);
+  await f.tasks.flush();
+  const ask = (actor, label, extra = {}) => f.requests.ask(actor, { questions: [{ id: 'q', question: label }], ...extra });
+  const internal = ask(g.conn, '子树内协作');
+  let external = ask(g.conn, '已上交外部祖先');
+  external = f.requests.update(c.conn, external.id, 'escalate', {});
+  external = f.requests.update(p.conn, external.id, 'escalate', {});
+  const alreadyUser = ask(g.conn, '已经交给用户');
+  f.requests.update(c.conn, alreadyUser.id, 'escalate', {});
+  f.requests.update(p.conn, alreadyUser.id, 'escalate', {});
+  const userBefore = f.requests.update(m, alreadyUser.id, 'escalate', {});
+  const boundary = scope === 'root' ? root : child, asker = scope === 'root' ? p : c;
+  const direct = ask(asker.conn, '正在等待旧召集人', { expiresAt: new Date(Date.now() + 200).toISOString() });
+  f.tasks.takeOver(f.host, boundary.taskId, {}, signed);
+  for (const before of [direct, external]) {
+    const row = f.requests.detail(f.host, before.id);
+    assert.equal(row.targetId, 'user'); assert.equal(row.state, 'escalated');
+    assert.equal(row.revision, before.revision + 1);
+    assert.deepEqual(row.route, before.route); assert.equal(row.askerId, before.askerId);
+  }
+  const internalAfter = f.requests.detail(f.host, internal.id);
+  assert.equal(internalAfter.targetId, c.conn.principalId);
+  assert.equal(internalAfter.revision, internal.revision);
+  assert.deepEqual(f.requests.detail(f.host, alreadyUser.id), userBefore);
+  const oldActors = scope === 'root' ? [m] : [m, p.conn];
+  for (const actor of oldActors) for (const q of [direct, external, internal]) {
+    assert.throws(() => f.requests.detail(actor, q.id), errorCode('task_taken_over'));
+    for (const action of ['answer', 'cancel', 'escalate']) for (const expectedRevision of [undefined, q.revision, q.revision + 1]) {
+      assert.throws(() => f.requests.update(actor, q.id, action, { answers: [], expectedRevision }), errorCode('task_taken_over'));
+    }
+    assert.equal(f.requests.list(actor).items.some(item => item.id === q.id), false);
+  }
+  for (const action of ['answer', 'cancel']) assert.throws(() => f.requests.updateUser(f.host, direct.id, action, { expectedRevision: direct.revision, answers: [] }, signed), errorCode('conflict'));
+  assert.throws(() => f.requests.update(f.host, direct.id, 'answer', { answers: [] }), errorCode('confirmation_required'));
+  // 接管前安排的 timer 触发时，用户待办不能变成 expired。
+  await delay(220);
+  assert.equal(f.requests.detail(asker.conn, direct.id).state, 'escalated');
+  assert.equal(f.requests.detail(asker.conn, direct.id).revision, direct.revision + 1);
+  const answers = [{ id: 'q', selected: [], custom: '由用户确认' }];
+  f.requests.updateUser(f.host, direct.id, 'answer', { answers, expectedRevision: direct.revision + 1 }, signed);
+  assert.deepEqual(f.requests.detail(asker.conn, direct.id).answers, answers);
+  for (const actor of oldActors) for (const action of ['answer', 'cancel', 'escalate']) {
+    assert.throws(() => f.requests.update(actor, direct.id, action, { expectedRevision: direct.revision }), errorCode('task_taken_over'));
+  }
+  // resume 保留 principal，新的 runtime token 仍可答复内部下级的问题。
+  await c.stop(); await f.tasks.flush();
+  await f.tasks.recover(scope === 'root' ? p.conn : f.host, child.taskId, { mode: 'resume' }, signed);
+  const resumed = await f.handle(child);
+  assert.notEqual(resumed.conn.token, c.conn.token);
+  assert.equal(f.requests.update(resumed.conn, internal.id, 'answer', { answers }).answeredBy, resumed.conn.principalId);
+  assert.deepEqual(f.requests.detail(g.conn, internal.id).answers, answers);
+  assert.equal(ask(scope === 'root' ? p.conn : resumed.conn, '接管后新提问').targetId, 'user');
+});
+
+test('1c 嵌套接管仅转交内层外部问题，内部 runtime 仍能答复下级', async t => {
+  const f = await setup(t), m = await f.main(), root = await f.spawn(m), p = await f.handle(root);
+  const child = await f.spawn(p.conn), c = await f.handle(child), grandchild = await f.spawn(c.conn), g = await f.handle(grandchild);
+  const leaf = await f.spawn(g.conn), l = await f.handle(leaf);
+  const outer = f.requests.ask(c.conn, { questions: [{ id: 'q', question: '外层问题' }] });
+  const inner = f.requests.ask(g.conn, { questions: [{ id: 'q', question: '内层向外提问' }] });
+  const internal = f.requests.ask(l.conn, { questions: [{ id: 'q', question: '内层协作' }] });
+  f.tasks.takeOver(f.host, child.taskId, {}, signed);
+  assert.equal(f.requests.detail(c.conn, inner.id).targetId, c.conn.principalId);
+  f.tasks.takeOver(f.host, grandchild.taskId, {}, signed);
+  assert.equal(f.requests.detail(f.host, outer.id).revision, outer.revision + 1);
+  assert.equal(f.requests.detail(g.conn, inner.id).targetId, 'user');
+  assert.equal(f.requests.detail(g.conn, inner.id).revision, inner.revision + 1);
+  assert.equal(f.requests.detail(g.conn, internal.id).revision, internal.revision);
+  for (const q of [inner, internal]) {
+    assert.throws(() => f.requests.detail(c.conn, q.id), errorCode('task_taken_over'));
+    assert.throws(() => f.requests.update(c.conn, q.id, 'answer', { expectedRevision: q.revision }), errorCode('task_taken_over'));
+  }
+  assert.equal(f.requests.list(c.conn).items.some(q => q.id === inner.id), false);
+  const answers = [{ id: 'q', selected: [], custom: '内层 runtime 答复' }];
+  f.requests.update(g.conn, internal.id, 'answer', { answers });
+  assert.deepEqual(f.requests.detail(l.conn, internal.id).answers, answers);
+});
+
+test('1c 问题列表逐项检查边界并正确翻页，兼容无 task_id 的提问', async t => {
+  const f = await setup(t), m = await f.main(), root = await f.spawn(m), p = await f.handle(root);
+  const child = await f.spawn(p.conn), c = await f.handle(child), sibling = await f.spawn(p.conn), s = await f.handle(sibling);
+  const hidden = [];
+  for (let i = 0; i < 4; i++) {
+    const q = f.requests.ask(c.conn, { questions: [{ id: 'q', question: `已答复的私有问题 ${i}` }] });
+    hidden.push(f.requests.update(p.conn, q.id, 'answer', { answers: [{ id: 'q', selected: [], custom: '答复' }] }));
+  }
+  f.store.run('UPDATE requests SET task_id=NULL WHERE id=?', hidden[0].id);
+  const fallback = f.requests.ask(c.conn, { questions: [{ id: 'q', question: '无 task_id 的待办' }] });
+  f.store.run('UPDATE requests SET task_id=NULL WHERE id=?', fallback.id);
+  const own = f.requests.ask(p.conn, { questions: [{ id: 'q', question: '自己的问题' }] });
+  const allowed = f.requests.ask(s.conn, { questions: [{ id: 'q', question: '未接管的同级问题' }] });
+  f.tasks.takeOver(f.host, child.taskId, {}, signed);
+  assert.equal(f.requests.detail(c.conn, fallback.id).targetId, 'user');
+  assert.equal(f.requests.detail(c.conn, fallback.id).revision, fallback.revision + 1);
+  for (const q of [...hidden, fallback]) assert.throws(() => f.requests.detail(p.conn, q.id), errorCode('task_taken_over'));
+  const first = f.requests.list(p.conn, [], 1);
+  assert.deepEqual(first.items.map(q => q.id), [own.id]); assert.ok(first.nextCursor);
+  const second = f.requests.list(p.conn, [], 1, Number(first.nextCursor));
+  assert.deepEqual(second.items.map(q => q.id), [allowed.id]); assert.equal(second.nextCursor, null);
+  assert.equal(f.requests.list(p.conn, ['answered'], 1).items.length, 0);
+  assert.equal(f.requests.list(c.conn, ['answered'], 2).items.length, 2);
+  for (const q of hidden) for (const action of ['answer', 'cancel', 'escalate']) {
+    assert.throws(() => f.requests.update(p.conn, q.id, action, {}), errorCode('task_taken_over'));
+  }
+});
+
+test('1c 提问转交和接管同事务回滚，旧通知仅标记业务完成且保留接管通知', async t => {
+  const f = await setup(t), m = await f.main(), root = await f.spawn(m), p = await f.handle(root);
+  const child = await f.spawn(p.conn), c = await f.handle(child), grandchild = await f.spawn(c.conn), g = await f.handle(grandchild);
+  const direct = f.requests.ask(c.conn, { questions: [{ id: 'q', question: '直接问题' }] });
+  const internal = f.requests.ask(g.conn, { questions: [{ id: 'q', question: '内部问题' }] });
+  let external = f.requests.ask(g.conn, { questions: [{ id: 'q', question: '多级转交' }] });
+  external = f.requests.update(c.conn, external.id, 'escalate', {});
+  external = f.requests.update(p.conn, external.id, 'escalate', {});
+  await delay(0); await f.tasks.flush();
+  const wakes = []; f.tasks.wake = principal => wakes.push(principal);
+  const snapshot = () => ['tasks', 'agora_sessions', 'requests', 'outbox', 'changes'].map(table => f.store.all(`SELECT * FROM ${table} ORDER BY rowid`));
+  const before = snapshot();
+  assert.throws(() => f.store.transaction(() => {
+    f.tasks.takeOver(f.host, child.taskId, {}, signed);
+    assert.equal(f.requests.detail(f.host, direct.id).targetId, 'user');
+    assert.equal(f.requests.detail(f.host, external.id).targetId, 'user');
+    assert.equal(f.requests.detail(f.host, internal.id).targetId, c.conn.principalId);
+    assert.equal(wakes.length, 0);
+    throw new Error('提问接管事务回滚');
+  }), /提问接管事务回滚/);
+  assert.deepEqual(snapshot(), before);
+  const change = f.store.change;
+  f.store.change = function(kind, objectId) {
+    if (kind === 'request') throw new Error('写提问 changes 失败');
+    return change.call(this, kind, objectId);
+  };
+  try { assert.throws(() => f.tasks.takeOver(f.host, child.taskId, {}, signed), /写提问 changes 失败/); }
+  finally { f.store.change = change; }
+  assert.deepEqual(snapshot(), before);
+  // 回滚的转交和随后接管可能得到同一 revision，旧回调不能误唤醒外部祖先。
+  assert.throws(() => f.store.transaction(() => {
+    f.requests.update(p.conn, direct.id, 'escalate', {});
+    throw new Error('转交回滚后立即接管');
+  }), /转交回滚后立即接管/);
+  assert.deepEqual(snapshot(), before);
+  f.store.transaction(() => f.tasks.takeOver(f.host, child.taskId, {}, signed));
+  await delay(0);
+  assert.deepEqual(wakes, [p.conn.principalId]);
+  for (const q of [direct, external]) {
+    const notices = f.store.all("SELECT * FROM outbox WHERE json_extract(payload,'$.requestId')=?", q.id);
+    assert.equal(notices.filter(n => n.recipient_id === 'user').length, 1);
+    for (const n of notices.filter(n => n.recipient_id !== 'user')) {
+      assert.ok(n.processed_at); assert.equal(n.acked_at, null); assert.equal(n.persisted_at, null);
+    }
+    assert.equal(f.store.get("SELECT COUNT(*) AS n FROM changes WHERE object_type='request' AND object_id=?", q.id).n,
+      before[4].filter(row => row.object_type === 'request' && row.object_id === q.id).length + 1);
+  }
+  assert.equal(f.store.get("SELECT processed_at FROM outbox WHERE json_extract(payload,'$.requestId')=?", internal.id).processed_at, null);
+  const notice = f.store.get("SELECT * FROM outbox WHERE kind='task:taken_over'");
+  assert.equal(notice.recipient_id, p.conn.principalId); assert.equal(notice.processed_at, null);
+  assert.equal(JSON.parse(notice.payload).triggerTurn, true);
+  assert.equal(f.store.takeInbox(p.conn.principalId, 0).some(n => n.id === notice.id), true);
+  f.tasks.takeOver(f.host, child.taskId, {}, signed);
+  assert.equal(f.store.get("SELECT COUNT(*) AS n FROM outbox WHERE kind='task:taken_over'").n, 1);
+  assert.equal(f.store.get("SELECT COUNT(*) AS n FROM outbox WHERE recipient_id='user' AND kind='request:escalated'").n, 2);
+});
+
+test('1c 接管使签名前的提问 revision 失效，CLI 仍走用户确认通路', async t => {
+  const home = await mkdtemp(join(tmpdir(), 'agora-request-takeover-http-')), driver = new Driver();
+  const daemon = await startDaemon({ home, driver });
+  driver.auth = daemon.auth; driver.tasks = daemon.tasks;
+  const main = await connectHost({ home, as: 'agent:main', autoStart: false });
+  const cli = await connectHost({ home, as: 'host:cli', autoStart: false });
+  const pane = await connectHost({ home, as: 'host:pane', autoStart: false });
+  t.after(async () => {
+    main.close(); cli.close(); pane.close();
+    await daemon.close({ force: true, timeoutMs: 1000 }); await rm(home, { recursive: true, force: true });
+  });
+  await main.request('POST', '/v1/principals/register', { sessionId: randomUUID(), ephemeral: true, cwd: home });
+  const http = async (conn, method, route, body) => {
+    const response = await fetch(daemon.url + route, { method, headers: { 'Agora-Protocol': '1', Authorization: `Bearer ${conn.token}`, 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(5000) });
+    return { status: response.status, body: await response.json() };
+  };
+  const canonical = value => Array.isArray(value) ? `[${value.map(canonical).join(',')}]`
+    : value && typeof value === 'object' ? `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonical(value[key])}`).join(',')}}` : JSON.stringify(value);
+  const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+  const deviceId = randomUUID(), spki = publicKey.export({ type: 'spki', format: 'der' }).toString('base64url');
+  const confirm = async confirmation => http(pane, 'POST', `/v1/confirmations/${confirmation.confirmationId}/sign`, {
+    deviceId, publicKey: spki, alg: 'ECDSA-P256-SHA256',
+    signature: sign('sha256', Buffer.from(canonical({ domain: 'pi-pane/user-presence/v1', payload: confirmation.challenge })), { key: privateKey, dsaEncoding: 'ieee-p1363' }).toString('base64url'),
+  });
+  const pairing = await http(pane, 'POST', '/v1/devices/pair', { deviceId, publicKey: spki, label: '接管测试设备' });
+  assert.equal(pairing.status, 202); assert.equal((await confirm(pairing.body.confirmation)).status, 200);
+  const root = await main.request('POST', '/v1/tasks', { model: 'test/model', profile: 'explore', prompt: '待提问任务', cwd: home });
+  const child = await until(() => driver.handles.find(h => h.ready && h.commands.some(c => c.type === 'prompt')));
+  const asked = await http(child.conn, 'POST', '/v1/requests', { questions: [{ id: 'q', question: '需要用户决定' }] });
+  assert.equal(asked.status, 201);
+  const q = asked.body, answers = [{ id: 'q', selected: [], custom: '用户批准' }];
+  const pending = await http(cli, 'POST', `/v1/requests/${q.id}/answer`, { answers, expectedRevision: q.revision });
+  assert.equal(pending.status, 202);
+  const takeover = await http(cli, 'POST', `/v1/tasks/${root.taskId}/takeover`, {});
+  assert.equal(takeover.status, 202);
+  const taken = await confirm(takeover.body.confirmation);
+  assert.equal(taken.status, 200, JSON.stringify(taken.body));
+  assert.equal((await confirm(pending.body.confirmation)).status, 409);
+  assert.equal((await cli.request('GET', `/v1/requests/${q.id}`)).state, 'escalated');
+  for (const action of ['answer', 'cancel', 'escalate']) {
+    const denied = await http(main, 'POST', `/v1/requests/${q.id}/${action}`, { expectedRevision: q.revision, answers });
+    assert.equal(denied.status, 403); assert.equal(denied.body.error.code, 'task_taken_over');
+  }
+  const detail = await http(main, 'GET', `/v1/requests/${q.id}`);
+  assert.equal(detail.status, 403); assert.equal(detail.body.error.code, 'task_taken_over');
+  assert.equal((await main.request('GET', '/v1/requests')).items.some(item => item.id === q.id), false);
+  const output = [], errors = [];
+  assert.equal(await runCli(['answer', q.id, '--answers', JSON.stringify(answers), '--home', home], { out: value => output.push(value), error: value => errors.push(value) }), 0, errors.join('\n'));
+  const fresh = JSON.parse(output.at(-1));
+  assert.equal(fresh.code, 'confirmation_required');
+  const answered = await confirm(fresh.confirmation);
+  assert.equal(answered.status, 200, JSON.stringify(answered.body));
+  const result = await http(child.conn, 'GET', `/v1/requests/${q.id}`);
+  assert.equal(result.status, 200); assert.deepEqual(result.body.answers, answers);
+  assert.equal(result.body.answeredBy, 'user'); assert.equal(result.body.answeredVia.confirmedBy, 'device');
+});
+
+test('1c 祖先停止和调低预算在副作用前拒绝跨接管边界', async t => {
+  const f = await setup(t), m = await f.main(), root = await f.spawn(m), p = await f.handle(root);
+  const child = await f.spawn(p.conn), c = await f.handle(child), sibling = await f.spawn(p.conn), s = await f.handle(sibling);
+  await f.tasks.flush();
+  f.tasks.takeOver(f.host, child.taskId, {}, signed);
+  const revision = f.store.task(root.taskId).revision;
+  await assert.rejects(f.tasks.stop(m, root.taskId, {}), errorCode('task_taken_over'));
+  await assert.rejects(f.tasks.recover(m, root.taskId, { mode: 'abandon' }), errorCode('task_taken_over'));
+  assert.throws(() => f.tasks.limits(m, root.taskId, { maxTokens: 1 }), errorCode('task_taken_over'));
+  assert.equal(f.store.task(root.taskId).revision, revision);
+  for (const task of [root, child, sibling]) {
+    assert.equal(f.store.task(task.taskId).status, 'running');
+    assert.equal(f.store.session(task.agoraSessionId).control_state, null);
+  }
+  for (const h of [p, c, s]) {
+    assert.equal(h.stopped, false);
+    assert.equal(h.commands.some(c => ['abort', 'clear_queue'].includes(c.type)), false);
+  }
+  f.tasks.limits(m, root.taskId, { maxTokens: 1100 }, signed);
+  await f.tasks.stop(p.conn, sibling.taskId, {});
+  assert.equal(s.stopped, true);
+  await f.tasks.stop(f.host, root.taskId, {});
+  assert.equal(c.stopped, true);
+});
+
+test('1c 已排队的旧 Agent 控制及祖先停止在接管后重新检查权限', async t => {
+  const f = await setup(t), m = await f.main(), root = await f.spawn(m), p = await f.handle(root);
+  const child = await f.spawn(p.conn), c = await f.handle(child);
+  await f.tasks.flush();
+  const pending = Promise.allSettled([
+    f.tasks.steer(p.conn, child.taskId, { message: '已排队返工' }),
+    f.tasks.cleanup(p.conn, child.taskId, {}),
+    f.tasks.recover(p.conn, child.taskId, { mode: 'resume' }),
+    f.tasks.stop(p.conn, child.taskId, {}),
+    f.tasks.stop(m, root.taskId, {}),
+  ]);
+  f.tasks.takeOver(f.host, child.taskId, {}, signed);
+  for (const result of await pending) {
+    assert.equal(result.status, 'rejected'); assert.equal(result.reason.code, 'task_taken_over');
+  }
+  assert.equal(c.stopped, false); assert.equal(p.stopped, false);
+  assert.equal(c.commands.some(c => c.message?.includes('已排队返工')), false);
+});
+
+test('1c 嵌套接管阻断上级 runtime，内部 runtime 保留管理权限', async t => {
+  const f = await setup(t), m = await f.main(), root = await f.spawn(m), p = await f.handle(root);
+  const child = await f.spawn(p.conn), c = await f.handle(child), grandchild = await f.spawn(c.conn), g = await f.handle(grandchild);
+  const leaf = await f.spawn(g.conn); await f.handle(leaf); await f.tasks.flush();
+  f.tasks.takeOver(f.host, child.taskId, {}, signed);
+  f.tasks.takeOver(f.host, grandchild.taskId, {}, signed);
+  await assert.rejects(f.tasks.stop(c.conn, leaf.taskId, {}), errorCode('task_taken_over'));
+  assert.throws(() => f.tasks.limits(c.conn, grandchild.taskId, { maxTokens: 500 }), errorCode('task_taken_over'));
+  await f.tasks.steer(g.conn, leaf.taskId, { message: '内层 runtime 继续管理' });
+  await f.tasks.stop(g.conn, leaf.taskId, {});
+  assert.equal(f.store.task(leaf.taskId).status, 'stopped');
+});
+
+test('1c 接管保留祖先预算归属，正常用量耗尽仍暂停整树', async t => {
+  const f = await setup(t), m = await f.main(), root = await f.spawn(m, { maxTokens: 60 }), p = await f.handle(root);
+  const child = await f.spawn(p.conn), c = await f.handle(child); await f.tasks.flush();
+  f.tasks.takeOver(f.host, child.taskId, {}, signed);
+  p.emit(usage('parent')); c.emit(usage('child'));
+  await f.tasks.flush();
+  assert.equal(f.store.task(root.taskId).status, 'budget_paused');
+  assert.equal(f.store.task(child.taskId).status, 'budget_paused');
+  assert.equal(f.store.usage(root.taskId, true).inputTokens, 20);
+  assert.equal(f.store.get('SELECT COUNT(*) AS n FROM budget_grants').n, 1);
+});
+
+test('1c 接管遇到正在执行的控制操作时拒绝，操作结束后允许重试', async t => {
+  const f = await setup(t), m = await f.main(), root = await f.spawn(m), h = await f.handle(root);
+  let release;
+  h.barrier = { type: 'clear_queue', promise: new Promise(resolve => { release = resolve; }) };
+  const pending = f.tasks.steer(m, root.taskId, { message: '中断返工', interrupt: true });
+  await until(() => h.commands.some(c => c.type === 'clear_queue'));
+  assert.throws(() => f.tasks.takeOver(f.host, root.taskId, {}, signed), errorCode('task_busy'));
+  assert.equal(f.store.task(root.taskId).convener_id, m.principalId);
+  release(); await pending;
+  f.tasks.takeOver(f.host, root.taskId, {}, signed);
+  assert.equal(f.store.task(root.taskId).convener_id, 'user');
+});
+
+test('1c 接管与 outbox 同步复用签名事务，回滚不唤醒且通知可重投', async t => {
+  const f = await setup(t), m = await f.main(), root = await f.spawn(m), p = await f.handle(root);
+  const child = await f.spawn(p.conn); await f.handle(child); await f.tasks.flush();
+  const wakes = [];
+  f.tasks.wake = principal => wakes.push(principal);
+  const revision = f.store.task(child.taskId).revision;
+  assert.throws(() => f.store.transaction(() => {
+    const taken = f.tasks.takeOver(f.host, child.taskId, { expectedRevision: revision }, signed);
+    assert.equal(typeof taken.then, 'undefined');
+    assert.equal(f.store.get("SELECT COUNT(*) AS n FROM outbox WHERE kind='task:taken_over'").n, 1);
+    assert.equal(wakes.length, 0);
+    throw new Error('模拟接管事务回滚');
+  }), /模拟接管事务回滚/);
+  await delay(0);
+  assert.equal(wakes.length, 0);
+  assert.equal(f.store.task(child.taskId).taken_over_from, null);
+  assert.equal(f.store.task(child.taskId).convener_id, p.conn.principalId);
+  assert.equal(f.store.get("SELECT COUNT(*) AS n FROM outbox WHERE kind='task:taken_over'").n, 0);
+  // 同一轮事件循环内回滚再提交，回滚回调不得借用重试的通知唤醒。
+  assert.throws(() => f.store.transaction(() => {
+    f.tasks.takeOver(f.host, child.taskId, {}, signed);
+    throw new Error('立即重试前回滚');
+  }), /立即重试前回滚/);
+  f.store.transaction(() => f.tasks.takeOver(f.host, child.taskId, { expectedRevision: revision }, unsigned));
+  assert.equal(wakes.length, 0);
+  await delay(0);
+  assert.deepEqual(wakes, [p.conn.principalId]);
+  const notice = f.store.takeInbox(p.conn.principalId, 0).find(n => n.kind === 'task:taken_over');
+  assert.equal(JSON.parse(notice.payload).summary, '任务已被用户接管');
+  assert.equal(JSON.parse(notice.payload).triggerTurn, true);
+  assert.equal(f.store.takeInbox(p.conn.principalId, 0).find(n => n.id === notice.id).id, notice.id);
+  f.tasks.takeOver(f.host, child.taskId, {}, signed);
+  await delay(0);
+  assert.deepEqual(wakes, [p.conn.principalId]);
+  assert.equal(f.store.get("SELECT COUNT(*) AS n FROM outbox WHERE kind='task:taken_over'").n, 1);
+  assert.equal(f.store.get('SELECT COUNT(*) AS n FROM security_audit').n, 0);
+});
+
+test('1c 不可达召集人仍需显式接管，祖先替换不能收回已接管下级', async t => {
+  const f = await setup(t), m = await f.main(), root = await f.spawn(m), p = await f.handle(root);
+  const child = await f.spawn(p.conn); await f.handle(child); await f.tasks.flush();
+  f.tasks.takeOver(f.host, child.taskId, {}, signed);
+  await p.stop(); await f.tasks.flush();
+  await f.tasks.recover(m, root.taskId, { mode: 'replace' });
+  const replacement = await f.handle(f.tasks.status(m, root.taskId));
+  assert.equal(f.store.task(child.taskId).convener_id, 'user');
+  assert.equal(f.store.task(child.taskId).taken_over_from, p.conn.principalId);
+  await assert.rejects(f.tasks.stop(replacement.conn, child.taskId, {}), errorCode('task_taken_over'));
+  const other = await f.spawn(m), h = await f.handle(other); await h.stop(); await f.tasks.flush();
+  f.auth.release(m);
+  await assert.rejects(f.tasks.recover(f.host, other.taskId, { mode: 'resume' }, signed), errorCode('takeover_required'));
+  f.tasks.takeOver(f.host, other.taskId, {}, unsigned);
+  await f.tasks.recover(f.host, other.taskId, { mode: 'resume' }, unsigned); await f.handle(other);
+});
+
+test('1c 多 principal 并发授予共用日账本，none proof 不能绕过封顶', async t => {
+  const f = await setup(t, { taskLimitDefaults: { maxTokens: 100 }, agentLimitCap: { perTaskFactor: 2, dailyTokens: 150 } }), m1 = await f.main(), m2 = await f.main();
+  const results = await Promise.allSettled([f.spawn(m1, { maxTokens: 80 }), f.spawn(m2, { maxTokens: 80 })]);
+  assert.equal(results.filter(r => r.status === 'fulfilled').length, 1);
+  assert.equal(results.find(r => r.status === 'rejected').reason.code, 'confirmation_required');
+  assert.equal(f.store.get('SELECT SUM(tokens) AS n FROM budget_grants').n, 80);
+  await assert.rejects(f.spawn(f.host, { maxTokens: 101 }, unsigned), errorCode('confirmation_required'));
+  await assert.rejects(f.spawn(f.host, { maxTokens: 101, user: true, proof: signed, principalId: m1.principalId }), errorCode('confirmation_required'));
+  await assert.rejects(f.spawn(m2, { maxTokens: 201 }, unsigned), errorCode('confirmation_required'));
+  await assert.rejects(f.spawn(f.host, { maxTokens: 71 }, unsigned), e => e.code === 'confirmation_required' && e.details.target === 'new');
+  const privileged = await f.spawn(f.host, { maxTokens: 900 }, signed); await f.handle(privileged);
+  assert.equal(f.store.get("SELECT SUM(tokens) AS n FROM budget_grants WHERE confirmed_by!='device'").n, 80);
+  assert.equal(f.store.get("SELECT tokens FROM budget_grants WHERE resource_id=?", privileged.taskId).tokens, 900);
+});
+
+test('1c 增额仅记差额，调低不退款，用户任务增额需可信入口', async t => {
+  const f = await setup(t, { taskLimitDefaults: { maxTokens: 100 }, agentLimitCap: { perTaskFactor: 2, dailyTokens: 150 } }), m = await f.main();
+  const root = await f.spawn(m, { maxTokens: 50 });
+  await f.tasks.limits(m, root.taskId, { maxTokens: 100 });
+  await f.tasks.limits(m, root.taskId, { maxTokens: 40 });
+  assert.equal(f.store.get('SELECT SUM(tokens) AS n FROM budget_grants').n, 100);
+  await f.tasks.limits(m, root.taskId, { maxTokens: 90 });
+  assert.equal(f.store.get('SELECT SUM(tokens) AS n FROM budget_grants').n, 150);
+  assert.throws(() => f.tasks.limits(m, root.taskId, { maxTokens: 91 }, unsigned), errorCode('confirmation_required'));
+  await f.tasks.limits(m, root.taskId, { maxTokens: 1000 }, signed);
+  const user = await f.spawn(f.host, { maxTokens: 300 }, signed);
+  await f.tasks.limits(f.host, user.taskId, { maxTokens: 200 });
+  assert.throws(() => f.tasks.limits(f.host, user.taskId, { maxTokens: 201 }), e => e.code === 'confirmation_required' && e.details.action === 'agora.task.limits');
+  assert.throws(() => f.tasks.limits(f.host, user.taskId, { maxTokens: 201 }, unsigned), errorCode('confirmation_required'));
+  await f.tasks.limits(f.host, user.taskId, { maxTokens: 1000 }, signed);
+});
+
+test('1c 预算配置优先读取 settings，计数包含缓存但不重复 reasoning', async t => {
+  const f = await setup(t);
+  f.store.run('INSERT INTO settings(key,value) VALUES(?,?)', 'taskLimitDefaults', JSON.stringify({ maxTokens: 73 }));
+  f.store.run('INSERT INTO settings(key,value) VALUES(?,?)', 'agentLimitCap', JSON.stringify({ perTaskFactor: 3, dailyTokens: 222 }));
+  f.store.run('INSERT INTO settings(key,value) VALUES(?,?)', 'tokenAccounting', JSON.stringify('uncached'));
+  const config = budgetConfig(f.store, { taskLimitDefaults: { maxTokens: 1 } });
+  assert.equal(config.defaults.maxTokens, 73); assert.equal(config.cap.dailyTokens, 222); assert.equal(config.accounting, 'uncached');
+  const tokens = usage('q');
+  assert.equal(countTokens(tokens, 'all'), 37); assert.equal(countTokens(tokens, 'uncached'), 17);
+  const task = await f.spawn(await f.main()), h = await f.handle(task);
+  h.emit(usage('one')); h.emit(usage('one')); h.emit(usage('two'));
+  assert.equal(f.tasks.status(f.host, task.taskId).budget.usedTokens, 34);
+  assert.equal(f.store.usage(task.taskId).requests, 2);
+  f.store.run('UPDATE settings SET value=? WHERE key=?', JSON.stringify('all'), 'tokenAccounting');
+  assert.equal(f.tasks.result(f.host, task.taskId).budget.usedTokens, 74);
+});
+
+test('1c 祖先预算暂停整树，停止尾量去重，增额与恢复不隐式恢复下级', async t => {
+  const f = await setup(t), m = await f.main(), root = await f.spawn(m, { maxTokens: 100 }), p = await f.handle(root);
+  const child = await f.spawn(p.conn), c = await f.handle(child), sibling = await f.spawn(p.conn), s = await f.handle(sibling);
+  p.emit(usage('parent')); c.emit(usage('child'));
+  c.onAbort = () => { c.emit(usage('abort-tail')); c.emit(usage('abort-tail')); };
+  s.emit(usage('sibling'));
+  assert.equal(f.store.task(root.taskId).status, 'budget_paused');
+  assert.equal(f.store.task(child.taskId).status, 'budget_paused');
+  assert.equal(f.store.task(sibling.taskId).status, 'budget_paused');
+  await f.tasks.flush();
+  assert.equal(f.tasks.activeCount(), 0);
+  for (const h of [p, c, s]) assert.deepEqual(h.commands.filter(c => ['clear_queue', 'abort'].includes(c.type)).map(c => c.type), ['clear_queue', 'abort']);
+  assert.equal(f.tasks.status(m, root.taskId).budget.usedTokens, 148);
+  assert.equal(f.store.usage(child.taskId).requests, 2);
+  c.emit(usage('after-exit')); assert.equal(f.store.usage(child.taskId).requests, 2);
+  assert.ok(JSON.parse(f.store.task(root.taskId).status_detail).stopReport);
+  const diagnosticPath = f.store.get('SELECT diagnostics_path FROM process_runs WHERE id=?', p.spec.runId).diagnostics_path;
+  assert.equal(JSON.parse(await readFile(diagnosticPath, 'utf8')).cleanupConfirmed, true);
+  await assert.rejects(f.tasks.recover(m, root.taskId, { mode: 'resume' }), errorCode('budget_exhausted'));
+  await assert.rejects(f.tasks.steer(m, root.taskId, { message: '不能返工绕过' }), errorCode('budget_exhausted'));
+  f.tasks.wake(p.conn.principalId); assert.equal(f.driver.handles.length, 3);
+  await f.tasks.limits(m, root.taskId, { maxTokens: 300 });
+  assert.equal(f.store.task(root.taskId).status, 'budget_paused');
+  await f.tasks.recover(m, root.taskId, { mode: 'resume' });
+  const p2 = await f.handle(root);
+  assert.ok(JSON.parse(await readFile(diagnosticPath, 'utf8')).stopReport);
+  assert.equal(f.store.task(child.taskId).status, 'budget_paused'); assert.equal(f.driver.handles.length, 4);
+  await f.tasks.recover(p2.conn, child.taskId, { mode: 'resume' }); await f.handle(child);
+  assert.equal(f.store.task(sibling.taskId).status, 'budget_paused');
+});
+
+test('1c 祖先预算暂停取消 quota 自动恢复，增额不会唤醒下级', async t => {
+  const f = await setup(t, { quotaRecovery: 'auto' }), m = await f.main(), root = await f.spawn(m, { maxTokens: 50 }), p = await f.handle(root), child = await f.spawn(p.conn), c = await f.handle(child);
+  c.emit({ type: 'quota_exhausted', resumeAt: new Date(Date.now() + 100).toISOString(), reason: '模拟额度' });
+  await f.settle(c);
+  assert.equal(f.store.task(child.taskId).status, 'quota_paused');
+  p.emit(usage('ancestor-cap', 2)); await f.tasks.flush();
+  assert.equal(f.store.task(child.taskId).status, 'budget_paused');
+  f.tasks.limits(m, root.taskId, { maxTokens: 150 });
+  await delay(130); await f.tasks.flush();
+  assert.equal(f.driver.handles.length, 2);
+  assert.equal(f.store.task(child.taskId).status, 'budget_paused');
+});
+
+for (const reclaimed of [false, true]) test(`1c 静默预算事件唤醒单名额 waiting_children 父回合（已回收=${reclaimed}）`, async t => {
+  const f = await setup(t, { maxConcurrentRuns: 1, idleReclaimMs: reclaimed ? 10 : 60_000 }), m = await f.main();
+  const parent = await f.spawn(m), p = await f.handle(parent);
+  const child = await f.spawn(p.conn, { maxTokens: 30, notify: 'silent' });
+  await f.settle(p);
+  const c = await f.handle(child);
+  assert.equal(f.store.task(parent.taskId).status, 'waiting_children');
+  assert.equal(f.tasks.activeCount(), 1);
+  if (reclaimed) await until(() => p.stopped);
+  const pendingStop = new Promise(resolve => { c.releaseStop = resolve; });
+  c.barrier = { type: 'clear_queue', promise: pendingStop };
+  c.emit(usage('budget-child'));
+  await until(() => c.commands.some(command => command.type === 'clear_queue'));
+  // 子运行未释放唯一名额时，父回合只能排队。
+  assert.equal(f.store.task(parent.taskId).status, 'waiting_children');
+  assert.equal(f.tasks.activeCount(), 1);
+  c.releaseStop();
+  await until(() => f.store.task(parent.taskId).status === 'running');
+  const parentRun = reclaimed ? await until(() => f.driver.handles.findLast(h => h.spec.agoraSessionId === parent.agoraSessionId && h.ready && !h.stopped)) : p;
+  assert.equal(f.driver.handles.filter(h => h.spec.agoraSessionId === parent.agoraSessionId).length, reclaimed ? 2 : 1);
+  assert.equal(f.tasks.inboxSilentOnly(parentRun.conn), false);
+  const notice = f.store.takeInbox(parentRun.conn.principalId, 0).find(n => n.kind === 'task:budget_paused');
+  assert.ok(notice);
+  const payload = JSON.parse(notice.payload);
+  assert.equal(payload.notify, 'wake'); assert.equal(payload.triggerTurn, true);
+  assert.equal(f.store.task(child.taskId).status, 'budget_paused');
+  assert.equal(f.tasks.activeCount(), 1);
+  await f.tasks.stop(parentRun.conn, child.taskId, {});
+  await f.settle(parentRun);
+  assert.equal(f.store.task(parent.taskId).status, 'completed');
+});
+
+test('1c 下级预算事件保留通知但不能自动恢复 quota_paused 父任务', async t => {
+  const f = await setup(t, { quotaRecovery: 'auto' }), m = await f.main(), parent = await f.spawn(m), p = await f.handle(parent);
+  const child = await f.spawn(p.conn, { maxTokens: 30, notify: 'silent' }), c = await f.handle(child);
+  p.emit({ type: 'quota_exhausted', resumeAt: null, reason: '等待用户处理额度' });
+  await f.settle(p);
+  assert.equal(f.store.task(parent.taskId).status, 'quota_paused');
+  c.emit(usage('child-cap')); await f.tasks.flush();
+  assert.equal(f.store.task(parent.taskId).status, 'quota_paused');
+  assert.equal(f.store.task(child.taskId).status, 'budget_paused');
+  assert.equal(f.driver.handles.length, 2); assert.equal(f.tasks.activeCount(), 0);
+  const notice = f.store.takeInbox(p.conn.principalId, 0).find(n => n.kind === 'task:budget_paused');
+  assert.equal(JSON.parse(notice.payload).triggerTurn, true);
+});
+
+test('1c 同代两次预算暂停分别投递确认，重复用量和尾量去重，重启保留事件', async t => {
+  const f = await setup(t), m = await f.main(), root = await f.spawn(m, { maxTokens: 30 });
+  const firstRun = await f.handle(root);
+  firstRun.onAbort = () => { firstRun.emit(usage('first-tail')); firstRun.emit(usage('first-tail')); };
+  firstRun.emit(usage('first')); firstRun.emit(usage('first'));
+  await f.tasks.flush();
+  const first = f.store.takeInbox(m.principalId, 0).find(n => n.kind === 'task:budget_paused');
+  assert.ok(first);
+  f.store.run("UPDATE outbox SET acked_at=datetime('now') WHERE id=?", first.id);
+  f.tasks.limits(m, root.taskId, { maxTokens: 100 });
+  await f.tasks.recover(m, root.taskId, { mode: 'resume' });
+  const secondRun = await f.handle(root);
+  secondRun.onAbort = () => { secondRun.emit(usage('second-tail')); secondRun.emit(usage('second-tail')); };
+  secondRun.emit(usage('second')); secondRun.emit(usage('second'));
+  await f.tasks.flush();
+  const second = f.store.takeInbox(m.principalId, 0).find(n => n.kind === 'task:budget_paused');
+  assert.ok(second); assert.notEqual(second.id, first.id); assert.notEqual(second.dedupe_key, first.dedupe_key);
+  const firstPayload = JSON.parse(first.payload), secondPayload = JSON.parse(second.payload);
+  assert.equal(firstPayload.generation, 1); assert.equal(secondPayload.generation, 1);
+  assert.equal(f.store.task(root.taskId).generation, 1);
+  assert.ok(secondPayload.revision > firstPayload.revision);
+  for (const notice of [first, second]) {
+    const payload = JSON.parse(notice.payload);
+    assert.equal(notice.dedupe_key, `task:${root.taskId}:1:budget:${root.taskId}:${payload.revision}`);
+    assert.equal(payload.exhaustedTaskId, root.taskId);
+  }
+  assert.equal(f.store.get("SELECT COUNT(*) AS n FROM outbox WHERE kind='task:budget_paused'").n, 2);
+  assert.equal(f.store.usage(root.taskId).requests, 4);
+  await f.tasks.shutdown(true, 1000);
+  // 用新的 Store、Auth 和 TaskManager 读取持久记录，不继承运行内存。
+  const store = await openStore(f.home), auth = await Auth.create(store, 'restart-budget'), driver = new Driver();
+  const tasks = new TaskManager(store, auth, driver, { home: f.home, instanceId: 'restart-budget', url: 'http://test' });
+  driver.auth = auth; driver.tasks = tasks;
+  try {
+    await tasks.recoverPreviousRuns(); tasks.startQueue(); await tasks.flush();
+    assert.equal(driver.handles.length, 0);
+    assert.equal(store.task(root.taskId).status, 'budget_paused');
+    const remaining = store.takeInbox(m.principalId, 0).filter(n => n.kind === 'task:budget_paused');
+    assert.deepEqual(remaining.map(n => n.id), [second.id]);
+    assert.equal(store.takeInbox(m.principalId, 0).find(n => n.id === second.id).dedupe_key, second.dedupe_key);
+    store.run("UPDATE outbox SET acked_at=datetime('now') WHERE id=?", second.id);
+    tasks.reconcileBudgets(); await tasks.flush();
+    assert.equal(store.get("SELECT COUNT(*) AS n FROM outbox WHERE kind='task:budget_paused'").n, 2);
+    assert.equal(store.takeInbox(m.principalId, 0).filter(n => n.kind === 'task:budget_paused').length, 0);
+  } finally { await tasks.shutdown(true, 1000); store.close(); }
+  const reopened = await openStore(f.home);
+  try {
+    assert.equal(reopened.get("SELECT COUNT(*) AS n FROM outbox WHERE kind='task:budget_paused' AND acked_at IS NOT NULL").n, 2);
+    assert.equal(reopened.takeInbox(m.principalId, 0).filter(n => n.kind === 'task:budget_paused').length, 0);
+  } finally { reopened.close(); }
+});
+
+test('1c 预算签名事务回滚不唤醒、不停止，立即重试仅提交事件生效', async t => {
+  const f = await setup(t), m = await f.main(), parent = await f.spawn(m), p = await f.handle(parent);
+  const child = await f.spawn(p.conn, { maxTokens: 100, notify: 'silent' }), c = await f.handle(child);
+  c.emit(usage('before-limits')); await f.settle(p);
+  const wakes = [];
+  f.tasks.wake = principal => wakes.push(principal);
+  const pause = () => f.tasks.limits(p.conn, child.taskId, { maxTokens: 10 }, signed);
+  const rollback = () => assert.throws(() => f.store.transaction(() => {
+    pause();
+    assert.equal(f.store.task(child.taskId).status, 'budget_paused');
+    assert.equal(f.store.get("SELECT COUNT(*) AS n FROM outbox WHERE kind='task:budget_paused'").n, 1);
+    assert.equal(c.stopped, false); assert.equal(wakes.length, 0);
+    throw new Error('预算事务回滚');
+  }), /预算事务回滚/);
+  rollback(); await delay(0); await f.tasks.flush();
+  assert.equal(c.stopped, false); assert.deepEqual(wakes, []);
+  assert.equal(f.store.task(child.taskId).status, 'running');
+  assert.equal(f.store.get("SELECT COUNT(*) AS n FROM outbox WHERE kind='task:budget_paused'").n, 0);
+  assert.equal(f.tasks.inboxAllowed(c.conn), true);
+  rollback();
+  f.store.transaction(pause);
+  assert.equal(c.stopped, false); assert.deepEqual(wakes, []);
+  await delay(0); await f.tasks.flush();
+  assert.equal(c.stopped, true);
+  assert.deepEqual(wakes, [p.conn.principalId]);
+  assert.equal(f.store.get("SELECT COUNT(*) AS n FROM outbox WHERE kind='task:budget_paused'").n, 1);
+});
+
+test('1c child 不能用 proof 放宽祖先预算、权限或跨级恢复', async t => {
+  const f = await setup(t), m = await f.main(), root = await f.spawn(m, { maxTokens: 60 }), p = await f.handle(root), child = await f.spawn(p.conn), c = await f.handle(child);
+  await assert.rejects(f.spawn(p.conn, { maxTokens: 61 }, signed), errorCode('budget_limit_exceeded'));
+  await assert.rejects(f.spawn(p.conn, { profile: 'implement' }, signed), errorCode('profile_upgrade'));
+  assert.throws(() => f.tasks.limits(p.conn, child.taskId, { maxTokens: 61 }, signed), errorCode('budget_limit_exceeded'));
+  assert.throws(() => f.tasks.limits(c.conn, root.taskId, { maxTokens: 500 }, signed), errorCode('forbidden'));
+  const grandchild = await f.spawn(c.conn); await f.handle(grandchild);
+  await assert.rejects(f.tasks.recover(p.conn, grandchild.taskId, { mode: 'resume' }, signed), errorCode('forbidden'));
+});
+
+test('1c 异步 settled 期间越额不得改成 completed 或 failed', async t => {
+  const f = await setup(t), m = await f.main(), root = await f.spawn(m, { maxTokens: 30 }), h = await f.handle(root);
+  let release;
+  h.barrier = { type: 'get_last_assistant_text', promise: new Promise(resolve => { release = resolve; }) };
+  h.emit({ type: 'agent_settled' });
+  await until(() => h.commands.some(c => c.type === 'get_last_assistant_text'));
+  h.emit(usage('concurrent'));
+  assert.equal(f.store.task(root.taskId).status, 'budget_paused');
+  release(); await f.tasks.flush();
+  assert.equal(f.store.task(root.taskId).status, 'budget_paused');
+});
+
+test('1c 停止中晚到用量保留账本，不重写终态或自动恢复', async t => {
+  const f = await setup(t), m = await f.main(), root = await f.spawn(m, { maxTokens: 30 }), h = await f.handle(root);
+  await f.settle(h); assert.equal(f.store.task(root.taskId).status, 'completed');
+  h.onStop = () => { h.emit(usage('stop-tail')); h.emit(usage('stop-tail')); };
+  await f.tasks.stop(m, root.taskId, {}); await f.tasks.flush();
+  assert.equal(f.store.task(root.taskId).status, 'completed');
+  assert.equal(f.tasks.status(m, root.taskId).budget.usedTokens, 37);
+  await assert.rejects(f.tasks.steer(m, root.taskId, { message: '预算不能重置' }), errorCode('budget_exhausted'));
+});
+
+test('1c 同步 limits 与用户答复复用签名事务，回滚不停止运行', async t => {
+  const f = await setup(t), m = await f.main(), root = await f.spawn(m, { maxTokens: 100 }), h = await f.handle(root);
+  h.emit(usage('before-sign'));
+  const revision = f.store.task(root.taskId).revision;
+  const updated = f.store.transaction(() => f.tasks.limits(m, root.taskId, { maxTokens: 110, expectedRevision: revision }, signed));
+  assert.equal(typeof updated.then, 'undefined'); assert.equal(updated.budget.maxTokens, 110);
+  const grants = f.store.get('SELECT SUM(tokens) AS n FROM budget_grants').n;
+  assert.throws(() => f.store.transaction(() => {
+    f.tasks.limits(m, root.taskId, { maxTokens: 10 }, signed);
+    assert.equal(f.store.task(root.taskId).status, 'budget_paused');
+    throw new Error('模拟签名审计事务回滚');
+  }), /模拟签名/);
+  await delay(0); await f.tasks.flush();
+  assert.equal(f.store.task(root.taskId).status, 'running'); assert.equal(h.stopped, false);
+  assert.equal(f.tasks.status(m, root.taskId).budget.maxTokens, 110);
+  assert.throws(() => f.store.transaction(() => {
+    f.tasks.limits(m, root.taskId, { maxTokens: 120 }, signed);
+    throw new Error('模拟增额回滚');
+  }), /模拟增额/);
+  assert.equal(f.store.get('SELECT SUM(tokens) AS n FROM budget_grants').n, grants);
+  const q = f.requests.ask(m, { questions: [{ id: 'q', question: '签名事务答复' }] });
+  assert.throws(() => f.store.transaction(() => {
+    const answer = f.requests.updateUser(f.host, q.id, 'answer', { answers: [{ id: 'q', selected: [], custom: '同意' }] }, signed);
+    assert.equal(typeof answer.then, 'undefined');
+    throw new Error('模拟答复回滚');
+  }), /模拟答复/);
+  await delay(0);
+  assert.equal(f.requests.detail(f.host, q.id).state, 'open');
+  const answered = f.store.transaction(() => f.requests.updateUser(f.host, q.id, 'answer', { expectedRevision: q.revision, answers: [{ id: 'q', selected: [], custom: '同意' }] }, signed));
+  assert.deepEqual(answered.answeredVia, signed);
+});
+
+test('1c 尚未启动的预算暂停任务恢复仍发送原任务书', async t => {
+  const f = await setup(t, { maxConcurrentRuns: 1 }), m = await f.main(), root = await f.spawn(m, { maxTokens: 30 }), p = await f.handle(root), child = await f.spawn(p.conn);
+  assert.equal(f.store.task(child.taskId).status, 'created');
+  p.emit(usage('cap')); await f.tasks.flush();
+  assert.equal(f.store.task(child.taskId).status, 'budget_paused');
+  await f.tasks.limits(m, root.taskId, { maxTokens: 100 });
+  await f.tasks.recover(m, root.taskId, { mode: 'resume' }); const resumed = await f.handle(root);
+  f.tasks.limits(resumed.conn, child.taskId, { maxTokens: 60 });
+  await f.tasks.recover(resumed.conn, child.taskId, { mode: 'resume' });
+  await f.settle(resumed);
+  const c = await f.handle(child);
+  assert.match(c.commands.find(c => c.type === 'prompt').message, /私有任务书/);
+});
+
+test('1c 计数口径变更后立即复核运行中预算，不等待下一条 usage', async t => {
+  const f = await setup(t, { tokenAccounting: 'uncached' }), m = await f.main();
+  const task = await f.spawn(m, { maxTokens: 25 }), h = await f.handle(task);
+  h.emit(usage('accounting-switch'));
+  assert.equal(f.store.task(task.taskId).status, 'running');
+  assert.equal(f.tasks.status(m, task.taskId).budget.usedTokens, 17);
+  f.store.run("INSERT INTO settings(key,value) VALUES('tokenAccounting','\"all\"')");
+  f.tasks.reconcileBudgets();
+  assert.equal(f.store.task(task.taskId).status, 'budget_paused');
+  await f.tasks.flush();
+  assert.equal(h.stopped, true);
+  assert.equal(f.tasks.status(m, task.taskId).budget.usedTokens, 37);
+});
+
+test('1c 重启读取持久日账本，日键使用本地日历日', async t => {
+  const home = await mkdtemp(join(tmpdir(), 'agora-budget-restart-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  let store = await openStore(home);
+  const options = { taskLimitDefaults: { maxTokens: 100 }, agentLimitCap: { perTaskFactor: 2, dailyTokens: 100 } };
+  const conn = { type: 'agent:main', principalId: 'main-one' };
+  store.transaction(() => new Budgets(store, options).grant(conn, 'first', 70, 70, {}, 'spawn'));
+  store.close(); store = await openStore(home);
+  try {
+    assert.throws(() => store.transaction(() => new Budgets(store, options).grant({ ...conn, principalId: 'main-two' }, 'second', 40, 40, {}, 'spawn', unsigned)), errorCode('confirmation_required'));
+    assert.equal(store.get('SELECT SUM(tokens) AS n FROM budget_grants').n, 70);
+    assert.equal(localBudgetDay(new Date(2025, 0, 2, 23, 59)), '2025-01-02');
+  } finally { store.close(); }
+});

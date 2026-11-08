@@ -109,6 +109,19 @@ export class Auth {
     }
     return principal;
   }
+  takeOver(conn: Connection, principalId: string, body: Record<string, unknown>): unknown {
+    this.requireMain(conn);
+    if (!conn.type.startsWith("host:")) throw new AgoraError(403, "forbidden", "控制租约接管仅供用户界面发起");
+    const principal = this.store.principal(principalId);
+    if (!principal || principal.type !== "agent:main") throw new AgoraError(404, "not_found", "主会话不存在");
+    if (body.expectedConnectionId !== undefined && body.expectedConnectionId !== principal.lease_connection_id) throw new AgoraError(409, "conflict", "控制租约已变化，请重新确认");
+    const nextId = body.connectionId === undefined ? null : text(body.connectionId, "connectionId", 128);
+    const next = nextId === null ? undefined : [...this.connections.values()].find(value => value.connectionId === nextId);
+    if (nextId !== null && (!next || next.type !== "agent:main" || next.principalId !== principalId || next.expiresAt <= Date.now())) throw new AgoraError(409, "conflict", "目标连接不再属于此主会话");
+    this.store.run("UPDATE principals SET lease_connection_id=?,lease_expires_at=? WHERE id=?", nextId, nextId === null ? null : Date.now() + LEASE_MS, principalId);
+    this.store.change("principal", principalId);
+    return { principalId, connectionId: nextId, released: nextId === null };
+  }
   private bootstrap(conn: Connection): void {
     if (conn.type !== "agent:main" || conn.principalId) throw new AgoraError(403, "forbidden", "此连接不能注册或认领主会话");
   }

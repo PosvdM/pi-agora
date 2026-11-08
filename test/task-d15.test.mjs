@@ -170,13 +170,39 @@ test('D15 额度暂停不失败、不占名额，到期通知上级并附上下�
   p.emit(usage('p')); c.emit(usage('c', 2));
   const reset = new Date(Date.now() + 200).toISOString(); await pause(f, c, reset); await pause(f, p, reset);
   assert.equal(f.daemon.store.task(parent.taskId).status, 'quota_paused'); assert.equal(f.daemon.store.task(child.taskId).status, 'quota_paused'); assert.equal(f.daemon.tasks.activeCount(), 0);
-  await assert.rejects(main.request('POST', `/v1/tasks/${parent.taskId}/recover`, { mode: 'resume' }), err => err.code === 'quota_not_reset');
+  // 两次 HTTP 暂停在慢 runner 上可能超过 200ms；边界断言固定业务时钟，不放宽生产等待。
+  const clock = t.mock.method(Date, 'now', () => Date.parse(reset) - 1);
+  try { await assert.rejects(main.request('POST', `/v1/tasks/${parent.taskId}/recover`, { mode: 'resume' }), err => err.code === 'quota_not_reset'); }
+  finally { clock.mock.restore(); }
   await until(() => f.daemon.store.get("SELECT id FROM outbox WHERE recipient_id=? AND kind='task:quota_ready'", f.daemon.store.task(parent.taskId).convener_id));
   const notices = await main.request('GET', '/v1/inbox'); assert.equal(notices.items[0].kind, 'task:quota_ready'); assert.equal(notices.items[0].payload.tasks[0].contextTokens, 33);
   assert.equal(f.driver.handles.length, 2);
   await main.request('POST', `/v1/tasks/${parent.taskId}/recover`, { mode: 'resume' });
   const resumed = await f.handle(parent); assert.notEqual(resumed, p); assert.equal(f.daemon.store.task(child.taskId).status, 'quota_paused'); assert.equal(f.driver.handles.length, 3);
   await main.request('POST', `/v1/tasks/${parent.taskId}/stop`, {}); assert.equal(f.daemon.store.task(child.taskId).status, 'stopped');
+});
+
+test('D15 同代相同重置时间再次暂停产生新通知，已确认的旧事件不吞掉新事件', async t => {
+  const f = await setup(t), main = await f.main(), task = await f.spawn(main), h = await f.handle(task);
+  const reset = new Date(Date.now() - 1000).toISOString();
+  await pause(f, h, reset);
+  const first = await until(() => f.daemon.store.get("SELECT * FROM outbox WHERE kind='task:quota_ready'"));
+  f.daemon.store.run('UPDATE outbox SET acked_at=? WHERE id=?', new Date().toISOString(), first.id);
+  await main.request('POST', `/v1/tasks/${task.taskId}/recover`, { mode: 'resume' });
+  const resumed = await f.handle(task);
+  assert.notEqual(resumed, h);
+  await pause(f, resumed, reset);
+  await until(() => f.daemon.store.task(task.taskId).quota_notified_at);
+  const notices = f.daemon.store.all("SELECT * FROM outbox WHERE kind='task:quota_ready' ORDER BY rowid");
+  assert.equal(notices.length, 2);
+  assert.notEqual(notices[0].dedupe_key, notices[1].dedupe_key);
+  assert.ok(notices[0].acked_at); assert.equal(notices[1].acked_at, null);
+  assert.equal(f.daemon.store.task(task.taskId).generation, 1);
+  const inbox = await main.request('GET', '/v1/inbox');
+  assert.deepEqual(inbox.items.filter(item => item.kind === 'task:quota_ready').map(item => item.noticeId), [notices[1].id]);
+  f.daemon.tasks.armQuotaTimer(f.daemon.store.task(task.taskId));
+  await delay(20); await f.daemon.tasks.flush();
+  assert.equal(f.daemon.store.get("SELECT COUNT(*) AS n FROM outbox WHERE kind='task:quota_ready'").n, 2);
 });
 
 test('R4 未知额度停止失败仍立即唤醒 waiting_children 父任务，未确认运行禁止恢复', async t => {
@@ -214,11 +240,11 @@ test('D15 配置 auto 到期只续跑该任务，未知重置时间不编造定�
   assert.equal(f.daemon.store.task(errorTask.taskId).status, 'failed');
 });
 
-test('D15 schema v3 到 v4 迁移前一致性备份，保留数据和默认空名单', async t => {
+test('D15 schema v3 到当前版本迁移前一致性备份，保留数据和默认空名单', async t => {
   const home = await mkdtemp(join(tmpdir(), 'agora-d15-migrate-')); t.after(() => rm(home, { recursive: true, force: true }));
   const db = new DatabaseSync(join(home, 'agora.db')); for (const migration of schemaMigrations.slice(0, 3)) db.exec(migration);
   db.exec("CREATE TABLE schema_version(version INTEGER,migrated_at TEXT); INSERT INTO schema_version VALUES(3,'v3'); INSERT INTO principals(id,type,created_at) VALUES('main','agent:main','time'); PRAGMA journal_mode=WAL;"); db.close();
-  const store = await openStore(home); assert.equal(store.get('SELECT version FROM schema_version').version, 4); assert.equal(store.principal('main').type, 'agent:main'); assert.deepEqual(store.all('PRAGMA foreign_key_check'), []);
+  const store = await openStore(home); assert.equal(store.get('SELECT version FROM schema_version').version, 5); assert.equal(store.principal('main').type, 'agent:main'); assert.deepEqual(store.all('PRAGMA foreign_key_check'), []);
   assert.equal(store.all('PRAGMA table_info(tasks)').find(column => column.name === 'skills').dflt_value, "'[]'");
   assert.equal(store.all('PRAGMA table_info(tasks)').find(column => column.name === 'skill_paths').dflt_value, "'[]'");
   store.close();

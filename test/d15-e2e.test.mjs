@@ -6,6 +6,7 @@ import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { startDaemon, RpcSubprocessDriver } from '../packages/daemon/dist/index.js';
 import { connectHost } from '../packages/protocol/dist/index.js';
 import { piFixture, containment, providerPath, until } from './fixtures/driver-helpers.mjs';
+import { confirmUser } from './fixtures/security-signer.mjs';
 
 const extensionPath = fileURLToPath(new URL('../packages/extension/dist/index.js', import.meta.url));
 async function start(f, options = {}) {
@@ -33,7 +34,7 @@ test('D15 真实 pi：假 provider 返回 429 后暂停、到期通知、原会�
     const notice = (await client.request('GET', '/v1/inbox')).items.find(n => n.kind === 'task:quota_ready');
     assert.equal(notice.payload.tasks[0].contextTokens, 33);
     await f.setScript({ fallback: { usage: { input: 40, cacheRead: 5, output: 7 }, segments: [{ type: 'text', text: '额度恢复后的结果' }] } });
-    await client.request('POST', `/v1/tasks/${task.taskId}/recover`, { mode: 'resume' });
+    await confirmUser(client, await client.request('POST', `/v1/tasks/${task.taskId}/recover`, { mode: 'resume' }));
     await until(() => daemon.store.task(task.taskId).status === 'completed', 30000);
     const result = await client.request('GET', `/v1/tasks/${task.taskId}/result`);
     assert.equal(result.agoraSessionId, task.agoraSessionId); assert.equal(result.generation, 1);
