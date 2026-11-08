@@ -2,7 +2,7 @@
 
 pi-agora 是 [pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) 编码智能体的协作引擎。主代理用它把任务派给子代理、召开多模型会议，所有协作会话的完整对话都会永久保存。
 
-> **当前状态：任务核心与存档（切片 1b、1d）。** 提供 daemon、pi 扩展、CLI 和只读存档库，支持多层子代理、三个权限档位、worktree、返工、提问、恢复、可靠通知、skill 白名单、用量与额度暂停；会话可在线查看、追踪实时流，daemon 关闭后仍可只读查看。用户设备确认、可选扩展 / MCP 白名单、board、会议和 pi-pane 插件属于后续范围；下方“功能”包含完整设计目标。
+> **当前状态：任务核心、安全与存档（切片 1b–1d）。** 提供 daemon、pi 扩展、CLI 和只读存档库，支持多层子代理、权限档位、worktree、提问、恢复、可靠通知、skill 白名单、用量、任务树软预算与资源访问控制。安全层提供待确认、设备签名、离线安全命令和审计；会话可在线查看与追踪，daemon 关闭后仍可只读查看。浏览器配对与确认界面在切片 2 接入，可选扩展 / MCP 白名单及 saved 项目信任隔离推迟至 [#10](https://github.com/PosvdM/pi-agora/issues/10)，board、会议和 pane 插件仍属后续范围。
 
 ## 使用
 
@@ -13,19 +13,27 @@ npm install
 npm run build
 ```
 
+从旧切片升级时，先用旧 CLI 执行 `shutdown`，再更新依赖、构建并重新启动 daemon。后台进程不会随构建热替换；设备签名与预算保护需要运行本切片的 daemon 才生效。
+
 在仓库根目录启动装有 agora 扩展的 pi：
 
 ```sh
 pi -e ./packages/extension/dist/index.js
 ```
 
-向主代理提出任务，并要求使用 `agora_task` 的 `spawn`，指定完整模型名（`provider/id`）、权限档位和任务书。动作包括 `spawn`、`list`、`status`、`result`、`steer`、`stop`、`cleanup` 和 `recover`。子代理也能派出下级，默认最多两层（子代理、孙代理），整棵任务树共用并发上限。下级的档位和子树限制不能放宽，只能管理自己直接派出的任务；主代理能查看、停止整棵树，但只能返工直接下级。
+向主代理提出任务，并要求使用 `agora_task` 的 `spawn`，指定完整模型名（`provider/id`）、权限档位和任务书。动作包括 `spawn`、`list`、`status`、`result`、`steer`、`stop`、`cleanup`、`recover` 和 `limits`。子代理也能派出下级，默认最多两层（子代理、孙代理），整棵任务树共用并发上限。下级的档位和子树限制不能放宽，只能管理自己直接派出的任务；主代理能查看、停止整棵树，但只能返工直接下级。
 
 `explore` 提供只读文件工具和协作工具，`review` 另有加固的 `agora_git`，`implement` 提供文件修改和 shell 工具。只读档位的文件访问限定在允许根内；所有档位的文件工具都拒绝凭证目录。shell 不承诺路径隔离，这属于工具层权限，不是操作系统沙箱。
 
 派活时使用范围明确的任务书，直接附必要接口和结论，并行前先定接口。子代理默认不加载 skill；可用 `skills: ["skill-name"]` 按名字指定用户全局 skill，名单不能超出上级的名单。项目 skill 不参与自动加载，名单内 skill 对文件工具只读放行。配置和边界见 [docs/security.md](docs/security.md#skill-白名单)。
 
 `agora_task status` 和 `result` 返回单任务与任务树的 token 用量及最近报告的上下文大小。模型服务返回可识别的额度用完错误时，任务进入 `quota_paused`，不算失败、不占推理名额；到服务返回的重置时间后通知直接上级决定续跑或改派。`AGORA_HOME/config.json` 可设 `quotaRecovery: "auto"` 到期自动续跑；恢复父任务不会自动恢复下级。详细规则见 [docs/tasks.md](docs/tasks.md#额度暂停)。
+
+任务树默认软预算为 5,000 万 token，计入缓存读；主 Agent 可在配置封顶内提高到默认值的 2 倍，全部未签名创建和增额共用每日 25 亿 token 的授权额封顶。达到本任务或任一祖先上限时，对应子树进入 `budget_paused` 并停止；停止尾量如实记账，可能超额。增额后仍须显式恢复，恢复父任务不会恢复下级。计数与恢复规则见 [任务树软预算](docs/tasks.md#任务树软预算)。
+
+三个默认数值可在 `config.json` 配置；磁盘变更放宽预算会留下需设备签名知悉的常驻警告，见 [任务预算与设置](docs/security.md#任务预算与设置)。
+
+用户可显式接管任务，包括召集人仍可达的任务；保护开启时需设备签名。接管后原 Agent 不能管理目标或其子树，但任务运行时仍可管理自己的下级；用量仍计入原祖先预算。详见 [用户接管](docs/tasks.md#用户接管)。
 
 扩展会自动启动后台 daemon。CLI 也可手动启动和查看：
 
@@ -39,6 +47,11 @@ node packages/cli/dist/main.js tail <任务或会话 ID>
 node packages/cli/dist/main.js verify-archive <会话 ID>
 node packages/cli/dist/main.js pending
 node packages/cli/dist/main.js answer <提问 ID> --answers '<答复 JSON 数组>'
+node packages/cli/dist/main.js confirmations
+node packages/cli/dist/main.js devices
+node packages/cli/dist/main.js task limits <任务 ID> --max-tokens <数量>
+node packages/cli/dist/main.js task takeover <任务 ID>
+node packages/cli/dist/main.js config get
 node packages/cli/dist/main.js shutdown
 ```
 
@@ -47,6 +60,16 @@ node packages/cli/dist/main.js shutdown
 `show` 查看会话快照或任务详情，任务详情包含累计和任务树用量，会话快照包含本段用量与最近已知上下文。`log` 沿当前分支分页，保留压缩前的历史；`tail` 追踪流式事件，按 `Ctrl+C` 结束。`ls --tree` 按任务父关系显示树，继承出的会话仍保留各自元数据。存档查询不会启动 daemon，只在没有可用健康连接时读取离线存档；鉴权或协议错误不会降级。
 
 `verify-archive` 检查格式、消息证据及历史前缀，结果的 `state` 是完整性结论。daemon 离线或显式传 `--offline` 时只读计算、不更新数据库；`status` 的 `archiveBytes` 显示会话目录占用。存档不自动删除，删除需先关闭 daemon，再显式执行 `agora archive delete <会话 ID> --offline`；锁、进程退出或路径状态不明时拒绝，不强制清理。详细规则见 [docs/archive.md](docs/archive.md)。
+
+用户级命令默认只生成待确认，不因 CLI 读到了 `host.key` 就执行。`confirmations <确认 ID> --wait` 可等待结果；浏览器确认界面尚未接入时，仅用终端的用户可执行：
+
+```sh
+node packages/cli/dist/main.js shutdown
+node packages/cli/dist/main.js offline set userConfirmation off
+node packages/cli/dist/main.js daemon start
+```
+
+**关闭保护后无法区分用户与 Agent。** 安全状态持续返回 `protection-off` 警告；运行 `config set userConfirmation device` 可重新开启。曾配对后，没有可用设备时必须停 daemon 再运行 `offline pair-reset`，不能凭磁盘凭证在线重置。详细规则和剩余风险见 [安全模型](docs/security.md)。
 
 `shutdown` 排空运行中的任务；`--timeout <秒>` 默认 600，超时后保留 daemon，需用户显式重试 `shutdown --force`。强制关闭会中断任务并清理受管进程。停止报告会说明覆盖范围：Windows Job Object、Linux cgroup，或 macOS / Linux 的进程快照；快照的空残留列表不能证明整棵进程树均已退出。中断任务可选择 `resume`、`reopen`、`replace` 或 `abandon`；恢复要求旧写者已经确认退出，不自动重放有副作用的工具。
 
@@ -89,7 +112,7 @@ pi-pane 不认识“子代理”“会议”这些概念。pi-agora 提供一个
 - 只有 `pane-plugin` 依赖 pi-pane 的插件接口包，其余包都不依赖 pi-pane。
 - 两者共用平台相关的包 [pi-hostkit](https://github.com/PosvdM/pi-hostkit)（定位 pi、RPC 传输、进程树终止、锁、路径规范化）。它是独立仓库，权威设计见其 [docs/design.md](https://github.com/PosvdM/pi-hostkit/blob/main/docs/design.md)。
 
-完整设计不依赖 pi-pane：Agent 功能通过 pi 扩展和 `agora` CLI 提供，用户级操作由已配对浏览器确认。**切片 1b 的转交和 CLI 答复通路尚无设备确认，daemon 无法区分用户与同一系统用户下的 Agent。** 用户确认和离线安全设置在 1c 实现，见 [docs/security.md](docs/security.md)。
+Agent 功能通过 pi 扩展和 `agora` CLI 提供，不依赖 pi-pane。保护开启时，用户级操作需要设备签名；浏览器侧入口在切片 2 接入。保护关闭时 CLI 可直接执行非强制签名的用户级操作；在线重置设备和关闭保护等安全动作仍受设备规则约束。见 [docs/security.md](docs/security.md)。
 
 ## 组成
 
@@ -119,10 +142,10 @@ npm test         # 构建后用 node --test 验证，真实 pi 测试要求 1.5.
 
 | 文档 | 内容 |
 | --- | --- |
-| [docs/development.md](docs/development.md) | 任务与存档的实现范围、配置、源码结构、构建、CLI、测试映射和限制 |
+| [docs/development.md](docs/development.md) | 任务、安全与存档的实现范围、配置、源码结构、构建、CLI、测试映射和限制 |
 | [docs/architecture.md](docs/architecture.md) | 总体架构、进程模型、受管扩展就绪检查、控制队列、daemon 生命周期、存储、权限档位与路径校验、worktree、崩溃与恢复、资源、平台注意事项 |
 | [docs/security.md](docs/security.md) | 安全模型：principal、主 Agent 级与用户级权限、用户确认、设备配对、只用终端、资源级访问控制、审计、剩余风险 |
-| [docs/tasks.md](docs/tasks.md) | 任务（子代理）：工具接口、状态机、返工与送达追踪、可靠通知、提问与转交、召集人离线 |
+| [docs/tasks.md](docs/tasks.md) | 任务（子代理）：工具接口、状态机、软预算、用户接管、返工与送达追踪、可靠通知、提问与转交、召集人离线 |
 | [docs/board.md](docs/board.md) | 共享桌面：数据模型、条目类型、可见性、投递与增量、工具、prompt cache |
 | [docs/meetings.md](docs/meetings.md) | 会议：召集、定方案流程、认可、反对意见、阶段 fencing、僵局、预算、书记与纪要、插话、崩溃 |
 | [docs/archive.md](docs/archive.md) | 全量对话存档：存什么、存在哪、三种投影、继承关系、完整性校验、只读 adapter |

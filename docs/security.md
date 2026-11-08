@@ -1,6 +1,6 @@
 # 安全模型
 
-> 本文描述完整安全设计。切片 1b 实现 principal、租约、launch ticket、最终就绪、三档路径检查，以及任务树的直接召集关系与权限限制。完整用户级确认、设备配对、审计和资源 ACL 在 1c。1b 的 CLI 可以直接答复提问，尚不能区分用户与同一系统用户下的 Agent。
+> 切片 1c 提供任务与提问的资源访问控制、任务树软预算、待确认、设备签名、离线命令、安全状态与审计。浏览器确认界面在切片 2 接入；board、会议和存档的权限表仍是对应切片的约束，不表示端点已经开放。可选扩展 / MCP 与 saved 项目信任隔离推迟，见 [#10](https://github.com/PosvdM/pi-agora/issues/10)。
 
 本文定义 agora daemon 的身份、鉴权、用户确认、设备配对、资源访问控制、审计和剩余风险。进程与存储见 [architecture.md](architecture.md)，平台相关的实现（密钥目录权限、路径规范化）见 [pi-hostkit 设计文档](https://github.com/PosvdM/pi-hostkit/blob/main/docs/design.md)，HTTP 端点见 [integration.md](integration.md)。
 
@@ -16,7 +16,7 @@
 | 级别 | 谁 | 凭证来源 | 能做什么 |
 | --- | --- | --- | --- |
 | 子 Agent 级 | `agent:child`（任务、参会者、书记） | launch ticket 换来的连接 token | 按档位做自己的工作；任务子代理在限制内派下级，查看、返工、停止及答复自己直接派出的任务；向直接上级提问或逐级转交。不能做主 Agent 级或用户级操作；board 与会议权限随对应切片提供 |
-| 主 Agent 级 | `agent:main`（主代理，用户的代理人）；`host:cli`、`host:pane` | 磁盘凭证（`secret/` 下的文件） | 派任务、召开会议、返工、停止、读取、转发、发起待确认；`agent:main` 还可以裁决自己召集的会议、答复发给自己的提问、在 `agentLimitCap` 以内提高自己会议的上限（见 [meetings.md](meetings.md#参数)） |
+| 主 Agent 级 | `agent:main`（主代理，用户的代理人）；`host:cli`、`host:pane` | 磁盘凭证（`secret/` 下的文件） | 派任务、召开会议、返工、停止、读取、转发、发起待确认；`agent:main` 还可以答复发给自己的提问，在预算封顶内管理自己召集的任务；会议裁决和会议上限随会议切片提供 |
 | 用户级 | `user` | 已配对浏览器的设备密钥对 daemon 挑战的签名 | 见下表 |
 
 **磁盘上的任何凭证都只有主 Agent 级权限**。daemon 没有用户密钥文件；用户身份只来自浏览器设备签名（或在关闭保护后来自 CLI，见“只用终端”）。`host:cli`、`host:pane` 代表用户的界面，但不代表用户本人：它们发起的用户级操作都要用户确认，也不享有 `agent:main` 的封顶内提高上限的权限。
@@ -25,14 +25,14 @@
 
 | 操作 | 说明 |
 | --- | --- |
-| 超过封顶的预算和上限 | 主 Agent 为自己的会议设定或提高的上限超过 `agentLimitCap`；用户召集的会议超过 `meetingLimitDefaults` 或之后的任何提高 |
+| 超过封顶的预算和上限 | 任务的根预算授予超过单树或每日未签名封顶；召集人为 `user` 的任务增额须确认。会议预算按后续切片的对应规则提供 |
 | 以用户身份答复、取消提问 | 主 Agent 明确转给用户（`escalated`）的提问、召集人是 `user` 的提问，以及召集人不可达时转到用户“待处理”的提问 |
 | 用户召集的会议的决定 | 用户召集的会议的 `decide`；召集人不可达时转给用户的会议决策和中断任务的处理（resume / reopen / replace / abandon） |
 | 以 `user` 为作者写 board 条目 | 包括会议插话；条目的权威来自作者身份，所以必须确认 |
-| 设备与安全设置 | 批准、撤销设备；在线重置配对；关闭 `userConfirmation`；调高 `meetingLimitDefaults`、`agentLimitCap`；`agora takeover` 强制转移主会话的控制租约；把任务的召集人改为 `user`（接管） |
+| 设备与安全设置 | 批准、撤销设备；在线重置配对；关闭 `userConfirmation`；调高 `taskLimitDefaults`、`meetingLimitDefaults`、`agentLimitCap` 或改变 `tokenAccounting`；`agora takeover` 强制转移主会话的控制租约；把任务的召集人改为 `user`（接管） |
 | 删除存档 | `agora archive delete` |
 
-主 Agent 对自己召集的任务和会议做的决定（返工、停止、处理中断、裁决、封顶以内的提高上限）不需要用户确认。
+主 Agent 管理自己召集的任务（返工、停止、处理中断、单树和每日未签名封顶以内的增额）不需要用户确认，但不能跨接管边界。会议裁决与预算规则随会议切片提供。
 
 ## principal
 
@@ -91,8 +91,14 @@ CLI、pane 插件和主会话里的扩展用 `host.key` 与 daemon 双向握手�
 daemon 拉起协作会话时生成一次性 launch ticket，经环境变量 `AGORA_LAUNCH_TICKET` 传入。扩展启动后立即用 `POST /v1/auth/launch` 兑换连接 token，并从 `process.env` 删除该变量，避免 `bash` 子进程继承。ticket 绑定 runId，60 秒内有效、只能兑换一次；进程退出后对应 token 作废，重新拉起换新 ticket。环境变量在被删除之前对同一进程里的其他代码可见，实际暴露范围：
 
 - explore、review、会议席位和书记用 `-ne` 只加载 agora 扩展，进程里没有其他扩展。
-- implement 可能按配置加载白名单扩展和 `builtin:mcp`。agora 扩展排在 `-e` 的第一位，在工厂函数里同步读取并删除该变量。P0 实测证明：首位扩展删除该变量后，后续扩展工厂、MCP 服务器进程和 `bash` 子进程均无法读取 ticket；即使 `builtin:mcp` 排在前面，MCP 进程也是在变量删除后才启动。若排在前面的其他扩展读到 ticket 并抢先兑换，pi 会以退出码 1 退出，被宿主捕获为启动故障而不予重试。此外，为了防止未列入白名单的 MCP 服务器产生后台副作用，agora 会为每个子代理单独生成只包含白名单服务器的 MCP 配置文件。
+- 生产 implement 同样固定 `-ne --no-mcp --no-approve`，只显式加载 agora 扩展。可选扩展、`builtin:mcp` 和 saved 项目信任尚不接受配置。agora 扩展在工厂函数的首个异步操作之前读取并删除 ticket；P0 对可选扩展/MCP 的实测只能作为后续隔离设计的依据，不能代替生产配置隔离。
 - 读到 ticket 的代码最多抢先兑换它：ticket 只能兑换一次，被抢先后 agora 扩展兑换失败，就绪检查不通过，run 被结束（见 [architecture.md](architecture.md#受管扩展的就绪检查)）；抢到的 token 只有该协作会话自己的权限，且随进程退出作废。兑换之后还要完成受管扩展的就绪检查，见 [architecture.md](architecture.md#受管扩展的就绪检查)。
+
+## 可选扩展与 MCP 的隔离边界
+
+切片 1c 推迟可选扩展、MCP 白名单与 `implement.projectTrust: "saved"`，见 [#10](https://github.com/PosvdM/pi-agora/issues/10)。这与原设计在 1c 开放这些配置的范围不同：pi 1.5 CLI 没有独立 auth/models 路径；私有 `agentDir` 若复制 OAuth refresh token，会分叉凭证并可能使原登录失效。给 auth 文件建立链接也不能保证不同路径共用同一锁。只有 SDK 支持单独传入这些路径，采用它会扩大驱动和内部 API 的耦合，当前不引入第二种启动路径。
+
+生产配置保持 fail closed。工具白名单不会阻止未列入名单的 MCP 服务器启动，因此不能只添加 `mcp__<server>__*` 就声称实现隔离。待 pi CLI 提供独立凭证路径或 MCP 来源覆盖能力后，再考虑私有配置目录、白名单 MCP 配置和已保存信任的受控投影；当前不复制凭证、不投影配置、不改变项目文件。
 
 ## Skill 白名单
 
@@ -115,7 +121,7 @@ implement 档位可以用 shell 运行 skill 附带的脚本。shell 不做路�
 
 ## 用户确认
 
-本节是 1c 的设计目标。1b 只提供转交和 host:cli 直接答复通路，答复标注 confirmedBy: none；host:pane 不接受此直接执行路径。任何能取得 host.key 的同用户进程都能通过 CLI 身份答复，不能将 1b 声称为已实现用户防冒充。预算封顶、待确认、设备和安全审计尚未开放。
+保护默认为 `device`。`host:cli` 和 `host:pane` 都只能发起待确认，不能凭 `host.key` 直接以用户身份答复。请求体里的 `user`、`principalId`、`confirmedBy` 等字段没有授权作用。浏览器入口尚未接入时，自动化测试使用独立 P-256 签名器验证同一 HTTP 流程；只用终端的用户按“只用终端”一节离线关闭保护。
 
 用户级操作必须由已配对浏览器对 daemon 下发的一次性挑战签名，daemon 验签后才执行。pi-pane 服务端只转发，无法伪造签名；pi-pane 的 HTTP 接口没有任何 Agent 可用的凭证（pi-pane 的鉴权见其 `docs/architecture.md`）。
 
@@ -147,9 +153,13 @@ daemon 收到签名后依次检查，任何一步失败都拒绝并写审计：
 5. 挑战的 `action`、`target`、`paramsHash` 与待确认中保存的请求一致；
 6. 目标对象的当前状态仍允许该操作（如提问仍为 `escalated`）。
 
-通过后 daemon 以 `user` 身份执行原请求，并在同一事务里把待确认标为 `confirmed`、写审计。
+同步动作（提问答复与取消、任务 limits 与 takeover、租约接管、设备和安全设置）在同一事务内完成业务写入、nonce 消费、待确认的 `confirmed` 状态和审计；失败时共同回滚，拒绝审计另行保存。接管通知也在事务内写 outbox，提交后才唤醒。不能在事务回滚前触发停止等外部副作用。
+
+spawn 和 recover 涉及异步文件或进程操作，HTTP 签名入口使用 `signAsync`：先在短事务内验签、消费 nonce 并写 `executing`，再在事务外执行，最后持久化 `confirmed` 与结果或 `failed` 与受控失败原因。nonce 消费后，即使执行失败也不能重放；daemon 重启将遗留的 `executing` 标为 `failed`、`operation_interrupted`，不自动执行。同步动作使用 `sign`，不把异步回调放入 SQLite 事务。
 
 ### 经 pi-pane 确认
+
+以下浏览器流程为切片 2 的集成约束；1c 验收使用测试签名器，不提供正式浏览器界面。
 
 ```text
 浏览器点击动作 ─► pane 插件 invoke（带 RequestOrigin）
@@ -165,7 +175,9 @@ daemon 收到签名后依次检查，任何一步失败都拒绝并写审计：
 
 ### 经 CLI 发起
 
-CLI 执行用户级操作时，daemon 只生成一条待确认并返回 `202 confirmation_required`，CLI 显示“已提交，请在已配对的浏览器中确认（confirmationId）”。pane 插件收到 `confirmation:<id>:created` 通知后，用 `ctx.formAdded()` 在“待处理”区列出，表单写明操作内容、发起方（如“由 CLI 发起，无法区分是你本人还是 Agent”）和过期时间；用户提交时再走上面的签名流程。CLI 可以用 `agora confirmations` 查看状态，用 `--wait` 等待结果。
+保护开启时，CLI 执行用户级操作，daemon 只生成一条待确认并返回 `202 confirmation_required`，CLI 显示“已提交，请在已配对的浏览器中确认（confirmationId）”。pane 插件收到 `confirmation:<id>:created` 通知后，用 `ctx.formAdded()` 在“待处理”区列出，表单写明操作内容、发起方（如“由 CLI 发起，无法区分是你本人还是 Agent”）和过期时间；用户提交时再走上面的签名流程。CLI 可以用 `agora confirmations` 查看状态，用 `--wait` 等待结果；等待超时不代表操作取消，应查询原确认，不应重新发起。
+
+host 可读取全部待确认，主 Agent 只能读取 `requestedBy` 为自己的记录。host 可取消其他 host 或主 Agent 发起的待确认，以支持浏览器拒绝 CLI 请求；主 Agent 只能取消自己发起的待确认。已取消或过期的确认不能执行。
 
 “发起待确认”是主 Agent 级操作；子代理自己的 token 不能发起，但读到 `host.key` 的子代理可以经 CLI 发起。待确认的表单必须显示真实的发起 principal，用户不认识的待确认应当拒绝。
 
@@ -214,13 +226,14 @@ daemon 启动时、以及在线检测到状态变化时，检查以下情况，�
 | 警告 | 判定 | 清除方式 |
 | --- | --- | --- |
 | `devices-reset` | `everPaired = true`，且设备记录与 daemon 记下的指纹不一致（离线重置、手动删除或修改记录）。daemon 在线执行的、经签名的设备变更会同时更新记下的指纹，不触发 | 用户级确认知悉（见下文） |
+| `budget-config-changed` | 启动导入磁盘预算配置后，根默认、单树因子或日封顶比当前生效值更宽松；移除字段恢复默认导致放宽也触发 | 用户级签名确认知悉；再次放宽增加 revision |
 | `protection-off` | `userConfirmation = off` | 只能通过重新开启保护清除，不能“确认知悉” |
 
 - 每条警告有 `alertId` 和 `revision`。同一情况再次被检测到新的差异（如又一次离线修改）时，`revision` 加 1，警告内容更新。
 - 警告产生和更新都写审计（`action: "security.state_alert"`，附检测到的差异）。
 - pane 插件以持久横幅显示，见 [integration.md](integration.md#安全状态横幅)；`agora status` 和 CLI 每次执行用户级相关命令时显示同样的警告。
 
-**确认知悉**（只适用于 `devices-reset`）：
+**确认知悉**（适用于 `devices-reset` 和 `budget-config-changed`，即使保护关闭也必须设备签名）：
 
 1. pane 插件调用 `POST /v1/security/alerts/:alertId/acknowledge`，带用户看到的 `revision`；daemon 生成待确认和挑战（`action: "agora.security.acknowledge"`、`target: alertId`，`paramsHash` 覆盖 `revision`），返回 `202`。
 2. 浏览器签名后，插件走通用的 `POST /v1/confirmations/:id/sign`。签名设备必须是已配对设备（离线重置后重新配对的设备也算）。
@@ -234,7 +247,7 @@ daemon 启动时、以及在线检测到状态变化时，检查以下情况，�
 | 值 | 行为 |
 | --- | --- |
 | `device`（默认） | CLI 的用户级操作只生成待确认，在已配对浏览器里确认后生效 |
-| `off` | CLI 的用户级操作直接以 `user` 身份执行，审计记录 `confirmedBy: "none"` |
+| `off` | CLI 的非强制签名用户级操作可直接以 `user` 身份执行，审计记录 `confirmedBy: "none"`；未签名预算封顶及安全动作的强制签名要求仍有效 |
 
 - 关闭（`off`）后，**daemon 无法区分用户与 Agent**：任何能运行 `agora` 命令的子代理都能以用户身份操作。
 - **在线关闭**：经 API 从 `device` 改为 `off` 是用户级操作，必须由已配对设备签名。
@@ -243,6 +256,8 @@ daemon 启动时、以及在线检测到状态变化时，检查以下情况，�
 - 保护关闭期间，pi-pane 所有标签页常驻警告横幅，见“启动检查与安全警告”。
 
 ## 资源级访问控制
+
+统一入口按“动作 × 调用方级别 × 资源关系”授权：`packages/daemon/src/acl.ts` 处理任务/提问关系，任务与提问服务在读取、列表、状态迁移及异步操作后的复核中使用同一规则；HTTP 身份取自连接 token。下列任务、提问、设备与设置表对应已实现资源，board、会议和存档表对应后续切片的约束。
 
 `user` 没有连接 token，用户级操作都经 CLI 或 pane 插件（`host:*`，即 `host:cli` 和 `host:pane`）发起、确认后以 `user` 身份执行。下表中：✔ 为允许；✘ 为拒绝；“确认”为用户级操作，需要用户确认（见“用户确认”）；“召集人”指资源的 convener；“成员”指 board 成员或会议席位。
 
@@ -253,14 +268,18 @@ daemon 启动时、以及在线检测到状态变化时，检查以下情况，�
 | spawn | ✔（召集人记为 user） | — | ✔（成为新任务的召集人） | ✔，层数、下级数、档位不得放宽 |
 | list `scope: "mine"` | ✔（召集人为 user 的任务） | ✔ | ✔ | 仅直接下级 |
 | list `scope: "all"` | ✔ 全部 | 只返回摘要 | 只返回摘要 | ✘ |
-| 读详情、结果 | ✔ | ✔，包含自己任务树 | ✘ | 直接下级；另可读自己所属任务的状态 |
-| steer、cleanup | ✔ | 仅直接下级 | ✘ | 仅直接下级 |
-| stop | ✔，整个目标子树 | ✔，整个目标子树 | ✘ | 仅直接下级及随其停止的整棵子树 |
-| recover（召集人为 agent:main 且可达） | ✘ | ✔ | ✘ | ✘ |
-| recover（召集人为 user，或已转给用户） | 确认 | ✘（显示“已转给用户”） | ✘ | ✘ |
-| 接管（召集人改为 user） | 确认 | ✘ | ✘ | ✘ |
+| 读详情、结果 | ✔ | ✔，包含自己任务树，受接管边界限制 | ✘ | 直接下级；另可有限读取自己所属任务的状态 |
+| steer | 仅召集人为 `user` 的任务 | 仅直接下级 | ✘ | 仅直接下级 |
+| cleanup | ✔ | 仅直接下级 | ✘ | 仅直接下级 |
+| stop | ✔，整个目标子树 | ✔，整个目标子树，不能跨接管边界 | ✘ | 仅直接下级及其子树，不能跨接管边界 |
+| recover（召集人为 Agent） | ✘，须先显式用户接管 | 仅直接下级 | ✘ | 仅直接下级 |
+| recover（召集人为 `user`） | 确认 | ✘ | ✘ | ✘ |
+| 调整任务预算 | 仅召集人为 `user` 的任务；增额须确认 | 仅直接下级；增额受预算封顶限制 | ✘ | 仅直接下级；不得超过祖先上限 |
+| 接管（召集人改为 `user`） | 确认，召集人可达时也允许 | ✘ | ✘ | ✘ |
 
 `scope: "all"` 对 `host:*` 返回全部任务；对 `agent:main` 只返回摘要（id、标题、状态、召集人显示名），不返回任务书、结果和对话，用于了解并行中的其他工作。
+
+接管持久写入 `tasks.taken_over_from`，原召集人通过 outbox 收到通知。原 Agent 对目标及子树的读取和管理返回 `task_taken_over`；祖先 stop、abandon 和调低预算在任何副作用前检查接管边界。相关控制操作正在执行时返回 `task_busy`，排队操作在执行时重检权限。接管保留 `parent_task_id` 与祖先预算归属，不阻止任务运行时管理自己的下级；正常用量耗尽仍按原树暂停。完整语义见 [tasks.md](tasks.md#用户接管)。
 
 ### 提问
 
@@ -271,9 +290,9 @@ daemon 启动时、以及在线检测到状态变化时，检查以下情况，�
 | answer（`open`，召集人为 agent:main） | 确认 | ✔ | ✘ |
 | answer、cancel（`escalated`，或召集人为 user） | 确认 | ✘ | ✘ |
 | escalate | ✘ | ✔，主代理转给用户 | 作为直接召集人时逐级向上转交 |
-| cancel（`open`，召集人为 agent:main） | ✘ | ✔ | ✔（自己提的） |
+| cancel（`open`，当前接收方为 Agent） | 确认 | ✔ | ✔（自己提的，且尚未转给用户） |
 
-### board
+### board（后续切片）
 
 | 操作 | host:* | 召集人（owner） | writer 成员 | reader 成员、书记 |
 | --- | --- | --- | --- | --- |
@@ -285,7 +304,7 @@ daemon 启动时、以及在线检测到状态变化时，检查以下情况，�
 | 新建独立 board | ✔ | ✔ | ✘ | ✘ |
 | 把 board 绑定到任务（spawn 的 `boardId`） | ✔ | ✔ | ✘ | ✘ |
 
-### 会议
+### 会议（后续切片）
 
 | 操作 | host:* | 召集人（agent:main） | 参会者 | 书记 |
 | --- | --- | --- | --- | --- |
@@ -300,7 +319,7 @@ daemon 启动时、以及在线检测到状态变化时，检查以下情况，�
 | stop | ✔ | ✔ | ✘ | ✘ |
 | endorse | ✘ | ✘ | ✔（自己的席位） | ✘ |
 
-### 存档
+### 存档（后续切片）
 
 | 操作 | host:* | 召集人 | agent:child |
 | --- | --- | --- | --- |
@@ -314,28 +333,58 @@ daemon 启动时、以及在线检测到状态变化时，检查以下情况，�
 | 首台设备配对（`everPaired = false`）、离线重置后的配对（`reTofuArmed = true`） | ✔（新设备自签） | ✘ | ✘ |
 | 新设备配对请求 | ✔（进入待批准） | ✘ | ✘ |
 | 批准、撤销设备；在线重置配对 | 确认 | ✘ | ✘ |
-| 关闭 `userConfirmation`；调高 `meetingLimitDefaults`、`agentLimitCap` | 确认 | ✘ | ✘ |
-| 开启 `userConfirmation`；调低上述配置 | ✔ | ✘ | ✘ |
-| 确认知悉 `devices-reset` 警告 | 确认 | ✘ | ✘ |
+| 关闭 `userConfirmation`；调高预算默认值或封顶；改变 `tokenAccounting` | 确认 | ✘ | ✘ |
+| 开启 `userConfirmation`；调低预算默认值或封顶 | ✔ | ✘ | ✘ |
+| 确认知悉 `devices-reset`、`budget-config-changed` 警告 | 确认 | ✘ | ✘ |
 | 离线重置、离线关闭保护 | 只能在 daemon 停止时用离线命令 | — | — |
+
+用户接管任务时，子树中当前交给外部 Agent 的未处理提问在同一事务内转给 `user`，增加 revision 并写用户 outbox；目标仍在接管子树内部的协作提问保留原目标。旧 Agent 对相关提问的读取、答复、取消和转交同样经过接管边界检查，即使携带旧 revision 也返回 `task_taken_over`。设备签名的旧 revision 答复不能覆盖接管后的问题状态。
+
+## 任务预算与设置
+
+任务软预算的授予、计数、暂停和恢复以 [tasks.md](tasks.md#任务树软预算) 为准。预算检查在 daemon 内执行；子代理携带请求体中的 proof 或用户字段不能提高权限，`none` 证明不能免除未签名单树及每日封顶。
+
+有效安全设置保存在数据库 `settings`；在线修改不回写 `config.json`。`GET /v1/settings` 返回扁平的有效配置，`agora config get` 查询同一结果；通过 `POST /v1/settings/:key`（或 `PUT`）及 `agora config set` 写入。任务相关字段严格按下表校验，不接受未知字段或不完整对象：
+
+| 配置键 | 字段与约束 |
+| --- | --- |
+| `taskLimitDefaults` | `{ maxTokens }`，根任务默认上限，为正的安全整数 |
+| `agentLimitCap` | `{ perTaskFactor, dailyTokens, perMeetingFactor? }`；前两项必填，各项为正的安全整数，会议因子留给会议切片使用 |
+| `tokenAccounting` | `"all"` 或 `"uncached"` |
+| `meetingLimitDefaults` | `maxTokens`、`maxModelCalls`、`maxDurationMinutes`、`maxCycles`、`diagnosticReserveTokens` 五项；前四项为正的安全整数，预留可为 0，但不得超过 `maxTokens`。会议端点尚未开放 |
+
+出厂默认值为根任务 50,000,000 token、`perTaskFactor: 2`、`dailyTokens: 2,500,000,000`、`tokenAccounting: "all"`。调高任何预算默认值或封顶、增加维度或移除限制均不能作为调低处理，须设备签名；完整保留原字段且各项不增加时可直接设置。改变计数口径须签名，同值写入无需签名。关闭保护不能绕过这些强制签名规则。修改配置不重写已有任务的 `max_tokens`，授予和用量计算读取有效设置。
+
+### 磁盘预算配置
+
+`config.json` 可设置 `taskLimitDefaults.maxTokens`、`agentLimitCap.perTaskFactor` 和 `agentLimitCap.dailyTokens`，均为正的安全整数；允许只写需要覆盖的字段。daemon 取得独占锁后，按字段与 `settings.budgetFileSource` 记录的上次文件值比较：首次明确提供或文件值变化时导入；文件未变时保留在线设置；删除曾提供的字段则恢复出厂默认值。无关启动配置变化不会重置预算。文件不热读，重启后生效。
+
+导入的配置、来源快照、离线审计和警告在同一事务提交。只收紧时记录 `via: "offline"` 审计；任一值比当前生效值放宽时产生 `budget-config-changed` 常驻警告，包含前后值及 revision，只有设备签名知悉后才消失。后续收紧或重启不会静默清除这条警告；再次放宽增加 revision，旧确认不能清除新警告。`userConfirmation: "off"` 不能绕过警告签名。
+
+```json
+{
+  "taskLimitDefaults": { "maxTokens": 50000000 },
+  "agentLimitCap": { "perTaskFactor": 2, "dailyTokens": 2500000000 }
+}
+```
 
 ## 审计
 
-所有用户级操作（含被拒绝的尝试）、待确认的创建与处理、主 Agent 在封顶以内提高上限、设备配对和重置、`userConfirmation` 和上限配置的修改、离线命令、启动检查发现的安全状态异常，都写入 `audit_log`：
+待确认的创建与处理、签名拒绝、用户级业务执行、HTTP 任务预算调整、设备配对和重置、安全设置修改、离线命令及安全状态警告写入 `security_audit`。实际字段如下：
 
 | 字段 | 说明 |
 | --- | --- |
-| `principal_id` | 执行身份（确认后为 `user`） |
-| `requested_by` | 发起请求的 principal（如 `host:cli`、`host:pane`、某个 `agent:main`） |
-| `client` | 客户端自报的类型（`cli` / `pane` / `extension`），仅供参考 |
+| `seq` | 自增序号，供分页查询使用 |
 | `action`、`target` | 操作和目标 |
-| `confirmation_id`、`device_id` | 经设备确认时有值 |
-| `confirmed_by` | `device`、`none`（`userConfirmation = off`） |
-| `via` | `online`、`offline`（离线命令） |
-| `result`、`reason` | `allowed` / `denied` 及原因 |
-| `created_at` | 时间 |
+| `requested_by` | 发起请求的 principal，如 `host:cli`、`host:pane` 或主 Agent ID；系统或离线记录使用对应标识 |
+| `confirmed_by` | `device` 或 `none`；`none` 也用于待确认创建和拒绝记录，不只表示保护关闭 |
+| `device_id`、`confirmation_id` | 可空，关联实际签名设备和待确认 |
+| `outcome`、`reason` | 处理结果与受控原因码；结果包括 `requested`、`executing`、`confirmed`、`failed`、`rejected`、`cancelled`、`expired`、`applied`、`alert` |
+| `via` | `online` 或 `offline` |
+| `details` | 可空的规范 JSON，保存警告差异或离线设置等附加信息 |
+| `created_at` | 创建时间 |
 
-提问和决策的详情里显示“由谁、怎样确认”，如“由用户答复（设备：工作电脑 Chrome，2026-11-05 10:21）”或“由用户答复（CLI，未经设备确认）”。
+`GET /v1/audit?target=&limit=&cursor=` 仅供 host 查询，返回 `{ items }`；`cursor` 为序号水位，`limit` 默认 50，最大 200。审计不保存签名、凭证、回调异常原文或完整答复。提问的实际确认来源通过 `answeredVia` 返回，浏览器展示在切片 2 接入。
 
 ## 其他降低冒充成本的措施
 
@@ -350,7 +399,7 @@ daemon 启动时、以及在线检测到状态变化时，检查以下情况，�
 
 `packages/protocol/src/git.ts` 是 Git 的唯一进程入口。`gitRead` 只接受 `status`、`diff`、`log`、`show` 及固定的参数白名单；`gitExec` 供 daemon 内部使用，参数不能来自工具调用方。worktree 管理使用 `rev-parse`、`worktree add --no-checkout`、`reset --hard`、`ls-files --stage -z`、`worktree remove`；配置探测使用 `config --null`。流式索引检查与缓冲执行器共用安全前缀、环境和 filter 探测，逐条只保留 7 字节的 mode，不受查询输出的 1 MiB 限制。
 
-安全层先从任务 cwd 的真实路径向上查找最近的 `.git` 文件或目录，独立确定仓库根，再将加固 `rev-parse --show-toplevel` 的真实路径与其比较（Windows 不区分大小写）。结果不一致时返回 `EAGORA_GIT_WORKTREE_MISMATCH`，不执行配置探测、查询、索引检查或 worktree 操作；无法找到布局时返回 `EAGORA_GIT_WORKTREE_LAYOUT`。gitfile 和 `commondir` 的 linked worktree 可以使用；`core.worktree` 包括 `extensions.worktreeConfig` 下的 `config.worktree` 也必须指向同一仓库根。清理同时核验主仓库与目标 worktree，不将主仓库根强制传播给内部子 Git。
+安全层先从任务 cwd 的真实路径向上查找最近的 `.git` 文件或目录，独立确定仓库根，再将加固 `rev-parse --show-toplevel` 的真实路径与其比较（Windows 不区分大小写）。结果不一致时返回 `EAGORA_GIT_WORKTREE_MISMATCH`，不执行配置探测、查询、索引检查或 worktree 操作；无法找到布局时返回 `EAGORA_GIT_WORKTREE_LAYOUT`。gitfile 和 `commondir` 的 linked worktree 可以使用；`core.worktree` 包括 `extensions.worktreeConfig` 下的 `config.worktree` 也必须指向同一仓库根。核验返回文件系统确定的根，后续配置探测、直接查询、流式索引检查和检出均用命令行 `--work-tree=<已核验根>` 固定执行根，避免核验后修改 `core.worktree` 改变执行范围。清理同时核验主仓库与目标 worktree，并按目标 linked worktree 固定内部 status 的上下文；不在共用前缀或环境中设置父仓库根。并发替换目录、`.git`、gitfile 等文件系统结构仍属 TOCTOU 剩余风险。
 
 每次启动 Git 都移除继承的所有大小写 `GIT_*` 变量，以及 `SSH_ASKPASS`、`EDITOR`、`VISUAL`，禁止系统和用户配置，使用非交互、无 pager、无可选锁的环境。仓库和条件 include 仍会读取；不能依赖环境清理来覆盖仓库配置。固定 `-c` 通过 Git 的命令作用域传播到内部子 Git；Windows 的 `core.unsetenvvars` 固定为空，禁止它删除这些安全变量。
 
@@ -394,7 +443,7 @@ daemon 启动时、以及在线检测到状态变化时，检查以下情况，�
 | 30 | `mailmap.blob`、`mailmap.file`、`.mailmap`、`log.mailmap` | 作者映射可以输出任意 blob/file 中的姓名。清空两个配置，固定 log.mailmap=false，log/show 再固定 --no-mailmap。 | S 的受保护映射 blob/file 正负控。 |
 | 31 | `log.follow`、rename/copy 检测、魔术 pathspec | follow 会越过重命名前的路径。固定 log.follow=false、diff.renames=false、status.renames=false，不接受 --follow/-M/-C；使用 --literal-pathspecs 和 -- 分隔。 | S 的重命名正负控；P 的 glob/cwd 正负控；A 的选项及 pathspec 拒绝。 |
 | 32 | `GIT_EXEC_PATH`、`GIT_CONFIG_*`、`GIT_DIR/WORK_TREE/INDEX_FILE/OBJECT_DIRECTORY/ALTERNATE_OBJECT_DIRECTORIES`、trace 环境及 Windows `core.unsetenvvars` | 继承变量可换 helper、配置、仓库或输出目标，全部 GIT_* 先清理再固定安全值。core.unsetenvvars 固定为空，避免内部子 Git 丢掉空协议白名单或命令配置。 | A 的环境/argv 断言；S 的 Windows 删除限制变量正控和固定配置负控。 |
-| 33 | 仓库 `core.worktree`、`extensions.worktreeConfig` 与 `config.worktree` | 配置可将通过路径权限检查的相对路径重定向到另一工作树。每个配置上下文先由文件系统确定最近仓库根，再核验 Git 的真实工作树根，不一致时拒绝。查询、配置探测、流式索引、创建、检出和清理共用核验，清理也核验目标。 | L 的普通 Git 受保护标记正控、真实 agora_git 拒绝负控、子目录与 linked worktree 正常查询，以及 config.worktree 的检出/清理拒绝和合法非 force 清理。 |
+| 33 | 仓库 `core.worktree`、`extensions.worktreeConfig` 与 `config.worktree` | 配置可将通过路径权限检查的相对路径重定向到另一工作树。每个配置上下文先由文件系统确定最近仓库根，再核验 Git 的真实工作树根，不一致时拒绝。查询、配置探测、流式索引、创建、检出和清理共用核验并固定已核验的执行根；清理核验父与目标，实际使用目标上下文。 | L 的布局正负控、子目录和 linked worktree 查询、config.worktree 的检出/清理拒绝、合法非 force 清理，以及核验后修改普通/worktree 配置的查询、索引、检出故障注入。 |
 
 测试文件与运行约束：
 
@@ -422,8 +471,9 @@ CI 的 `git-minimum` job 在 Ubuntu 22.04 容器中安装发行版 Git 2.34.1 �
 - **停 daemon 改数据**：Agent 可以停掉 daemon，用离线命令或直接修改数据库来删设备记录、关闭保护、删除审计日志。设备记录变化和保护关闭会在下次启动时触发常驻警告；审计日志被删则无从追查。
 - **浏览器密钥可从磁盘挖出**：设备密钥“不可导出”只针对网页脚本。Chrome 等浏览器把 IndexedDB 中的密钥数据保存在用户配置目录里，同一系统用户的程序理论上可以取出并在别处使用。
 - **抢先配对**：从未配对过时的首台设备（TOFU），以及离线重置之后的下一台设备（`reTofuArmed`），如果被 Agent 抢先完成配对，Agent 就能以用户身份操作。后者会触发常驻警告。
-- **磁盘凭证的主 Agent 级权限**：子代理能读到 `host.key`，可以用它以 `host:cli` 身份操作，或注册一个新的主会话 principal，获得主 Agent 级权限（包括在 `agentLimitCap` 以内提高它自己召集的会议的上限）。每日封顶按数据目录统一计账，覆盖所有未经设备签名的会议创建和预算提高，不论用了多少个 principal，预算方面的影响都限制在封顶以内；所有操作都记到发起的 principal。
+- **磁盘凭证的主 Agent 级权限**：子代理能读到 `host.key`，可以用它以 `host:cli` 身份操作，或注册一个新的主会话 principal，获得主 Agent 级权限。任务预算的每日未签名授予按数据目录统一计账，覆盖根任务创建和增额，不因 principal 数量或保护关闭而放宽；设备签名授予单独记录。host 的未签名单树上限为任务默认值，主 Agent 的上限受 `perTaskFactor` 限制；更换身份不能绕过共用日账本。会议预算随会议切片提供。
 - **用户在不知情时确认**：用户确认能区分“用户点了确认”和“Agent 发起了请求”，不能防止用户确认一条 Agent 发起的待确认。待确认的表单写明真实的发起方。
+- **磁盘预算配置**：有 shell 权限的 Agent 可以停止 daemon、修改 `config.json` 后重启并放宽预算；正规导入路径一定写离线审计并留下 `budget-config-changed` 常驻警告，需设备签名知悉。Agent 仍能同时删除数据库、警告和审计，这属于同用户恶意程序的剩余风险。
 - **关闭保护**：`userConfirmation = off` 时无法区分用户与 Agent。
 - **工具层权限**：路径校验和工具白名单不是沙箱，见 [architecture.md](architecture.md#权限档位)。
 

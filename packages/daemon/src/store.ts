@@ -159,6 +159,7 @@ export interface TaskRow {
   parent_task_id: string | null; depth: number; depth_limit: number; child_limit: number | null;
   recovery_attempts: number; pending_message: string | null;
   skills: string; skill_paths: string; quota_resume_at: string | null; quota_notified_at: string | null;
+  max_tokens: number; taken_over_from: string | null;
 }
 export interface SessionRow {
   id: string; task_id: string; principal_id: string; session_file: string;
@@ -189,6 +190,7 @@ export function id(prefix: string): string { return `${prefix}_${randomUUID()}`;
 export function now(): string { return new Date().toISOString(); }
 
 export class Store {
+  private savepointSequence = 0;
   constructor(readonly db: DatabaseSync, readonly home: string) {}
   get<T>(sql: string, ...args: SQLInputValue[]): T | undefined {
     return this.db.prepare(sql).get(...args) as T | undefined;
@@ -198,13 +200,18 @@ export class Store {
   }
   run(sql: string, ...args: SQLInputValue[]) { return this.db.prepare(sql).run(...args); }
   transaction<T>(fn: () => T): T {
-    this.db.exec("BEGIN IMMEDIATE");
+    if (fn.constructor.name === "AsyncFunction") throw new Error("数据库事务不能包含异步操作");
+    const savepoint = this.db.isTransaction ? `agora_sp_${++this.savepointSequence}` : undefined;
+    this.db.exec(savepoint ? `SAVEPOINT ${savepoint}` : "BEGIN IMMEDIATE");
     try {
       const result = fn();
       if (result && typeof (result as { then?: unknown }).then === "function") throw new Error("数据库事务不能包含异步操作");
-      this.db.exec("COMMIT");
+      this.db.exec(savepoint ? `RELEASE SAVEPOINT ${savepoint}` : "COMMIT");
       return result;
-    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+    } catch (error) {
+      this.db.exec(savepoint ? `ROLLBACK TO SAVEPOINT ${savepoint}; RELEASE SAVEPOINT ${savepoint}` : "ROLLBACK");
+      throw error;
+    }
   }
   principal(principalId: string): PrincipalRow | undefined {
     return this.get<PrincipalRow>("SELECT * FROM principals WHERE id=?", principalId);

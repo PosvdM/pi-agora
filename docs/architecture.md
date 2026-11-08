@@ -1,6 +1,6 @@
 # 总体架构
 
-> 本文同时说明已实现的任务核心与后续架构目标。切片 1b 提供多层任务、三个档位、提问和逐级转交，1d 提供存档及会话视图；用户级安全、可选扩展 / MCP 及其他领域功能按 [roadmap.md](roadmap.md) 推进。当前配置、源码和测试见 [development.md](development.md)。
+> 本文同时说明已实现的任务核心与后续架构目标。切片 1c 提供任务核心、任务树软预算、资源访问控制与用户签名安全；1d 提供存档与会话视图。可选扩展 / MCP 及其他领域功能按 [roadmap.md](roadmap.md) 推进。当前配置、源码和测试见 [development.md](development.md)。
 
 pi-agora 是 pi 的协作引擎：一个每用户单实例的后台进程（daemon）负责拉起和监管所有协作会话（子代理、参会者、书记），并持久保存任务、提问、共享桌面（board）、会议和全部对话。主代理通过 pi 扩展调用它，用户通过 CLI 或 pi-pane 插件调用它。
 
@@ -139,10 +139,10 @@ node <pi>/dist/bundle/cli.js --mode rpc
 
 #### 项目信任
 
-1b 所有档位固定使用 `--no-approve`。下列 `implement.projectTrust: "saved"` 和可选扩展 / MCP 白名单是后续设计目标，当前配置不接受这些字段。pi 1.5.0 没有独立的 MCP 配置参数；受信任项目与用户配置的隔离方式尚未确定，不能只靠工具白名单防止服务器启动。1b 用 `-ne --no-mcp` 关闭相关加载；真实测试同时放置用户和受信任项目 MCP 配置，验证无服务器或自动发现扩展启动。
+所有档位固定使用 `--no-approve`，并用 `-ne --no-mcp` 关闭可选扩展和 MCP。`implement.projectTrust: "saved"` 与可选扩展 / MCP 白名单推迟至 [#10](https://github.com/PosvdM/pi-agora/issues/10)，当前配置不接受这些字段。pi 1.5.0 CLI 不能独立指定 auth/models 路径，私有配置目录不能安全复制 OAuth 凭证，链接凭证也不能保证共用刷新锁；不引入自定义 SDK launcher。生产继续使用原 pi CLI RPC，真实测试同时放置用户和受信任项目 MCP 配置，验证无服务器或自动发现扩展启动。
 
 - explore、review、会议席位和书记固定加 `--no-approve`，不加载需要项目信任的本地配置和资源（依据：`docs/cli.md` 的 `--no-approve`、`docs/security.md` 的 Understand project trust）。
-- implement 默认也加 `--no-approve`；配置 `implement.projectTrust: "saved"` 后不加该参数，改按用户已保存的信任决定（`~/.pi/agent/trust.json`）。RPC 模式不能弹出信任提示，没有保存决定时按 `defaultProjectTrust` 处理（依据：`docs/security.md` 的 Project trust without an interactive prompt）。不加 `--approve`。注意：即使目录里没有需要信任的项目资源，如果 `trust.json` 中记为 false，仍按不信任处理。
+- implement 同样加 `--no-approve`，不因 `trust.json` 中保存了信任就加载项目资源。后续若能安全隔离配置，saved 模式也应由适配层按已保存决定受控投影，避免真实项目 MCP 和资源绕过白名单；不统一加 `--approve`。
 - `AGENTS.md`、`CLAUDE.md` 等上下文文件不受项目信任控制，仍会加载（依据同上）。agora 不加 `-nc`，因为项目约定对子代理有用；任务书提醒子代理把仓库里的指令当作不可信输入。
 
 ### 用量与额度事件
@@ -263,7 +263,7 @@ pi 专有的 skill 解析与启动参数位于 `packages/daemon/src/harness/pi/d
 | 对话 | pi JSONL | 由 pi 自己写，daemon 不复制到数据库 |
 | 流片段、退出诊断 | `sessions/<id>/` 下的文件 | 见 [archive.md](archive.md) |
 
-数据库 schema v6 保留多会话继承与每代所属会话、任务树与限制、返工、提问、worktree、skill、额度和逐请求用量。v5 的安全状态表与 v6 的归档证据按顺序叠加；`archive_observed_messages` 按会话和最终消息摘要去重，`agora_sessions` 保存最后可信文件哈希、字节数、校验时间与可见错误。旧库依次迁移到 v6，已有任务的历史关系不重建。迁移前执行一致性备份，保留数据、显式索引和触发器，提交前执行 foreign_key_check；失败回滚。首代分配会话时即记录代数到会话的关联。
+数据库 schema v6 保留多会话继承与每代所属会话、任务树与限制、返工、提问、worktree、skill、额度和逐请求用量。v5 的设备、待确认、安全警告、审计与预算授予表与 v6 的归档证据按顺序叠加；`archive_observed_messages` 按会话和最终消息摘要去重，`agora_sessions` 保存最后可信文件哈希、字节数、校验时间与可见错误。旧库依次迁移到 v6，已有任务的历史关系不重建。迁移前执行一致性备份，保留数据、显式索引和触发器，提交前执行 foreign_key_check；失败回滚。首代分配会话时即记录代数到会话的关联。
 
 不做通用事件溯源：业务状态用普通表，board 条目追加，状态变更和 outbox 在同一事务里完成。代价是不能重放任意历史时刻的业务状态；需要追溯的信息（board、对话、状态变更时间）都单独保存。
 
@@ -286,7 +286,7 @@ pi 专有的 skill 解析与启动参数位于 `packages/daemon/src/harness/pi/d
 | `changes` | seq、epoch、object_type、object_id、tombstone、created_at（供 `/v1/changes`，见 [integration.md](integration.md#变更流)） |
 | `pending_confirmations` | id、action、target、params、params_hash、nonce、requested_by、expires_at、state、result |
 | `devices` | device_id、public_key、alg、label、state（pending / paired / revoked）、paired_at、approved_by |
-| `audit_log` | 见 [security.md](security.md#审计) |
+| `security_audit` | 用户级操作、设备、安全配置、离线修改和拒绝尝试；字段见 [security.md](security.md#审计) |
 | `settings` | key、value（如 `userConfirmation`、`everPaired`、`reTofuArmed`、`meetingLimitDefaults`、`agentLimitCap`、daemon 记下的设备记录指纹） |
 | `security_alerts` | alert_id、kind（devices-reset / protection-off）、revision、details、state（open / acknowledged / resolved）、acknowledged_by、updated_at |
 | `schema_version` | version、migrated_at |
@@ -299,7 +299,7 @@ pi 专有的 skill 解析与启动参数位于 `packages/daemon/src/harness/pi/d
 | --- | --- | --- |
 | `explore` | `read`、`grep`、`find`、`ls` | agora 工具；无 MCP；只加载 agora 扩展；`--no-approve` |
 | `review` | 同 explore | 另加只读 git 查询工具 `agora_git`（见下文“`agora_git` 的加固”）；不能跑测试 |
-| `implement` | `read`、`bash`、`edit`、`write`、`grep`、`find`、`ls`；Windows 上按配置可加 `powershell` | agora 工具；MCP 按配置白名单开启；其他扩展按配置白名单加载 |
+| `implement` | `read`、`bash`、`edit`、`write`、`grep`、`find`、`ls`；Windows 上按配置可加 `powershell` | agora 工具；可选扩展与 MCP 推迟，生产只加载 agora 扩展 |
 
 执行方式：
 

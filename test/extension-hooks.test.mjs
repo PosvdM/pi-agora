@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import agoraExtension from '../packages/extension/dist/index.js';
 import { extensionWire } from './fixtures/extension-wire.mjs';
+import { agoraTaskSchema, spawnTaskSchema, TASK_CONTROL_ACTIONS } from '../packages/protocol/dist/index.js';
 
 async function setup(t, { managed = false, tools = ['read', 'grep', 'find', 'ls'], model = 'model' } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'agora-extension-hooks-'));
@@ -51,7 +52,7 @@ async function until(fn, timeoutMs = 5000) {
   while (!fn()) { if (performance.now() >= deadline) throw new Error('测试等待超时'); await delay(20); }
 }
 
-test('主会话初始化幂等，租约绑定并正确分发四个任务动作', async t => {
+test('主会话初始化幂等，任务 schema 与控制动作共用清单，预算字段和 limits 真正路由', async t => {
   const f = await setup(t);
   const start = f.handlers.get('session_start');
   const first = start({}, f.ctx);
@@ -63,17 +64,23 @@ test('主会话初始化幂等，租约绑定并正确分发四个任务动作',
   assert.equal(f.entries.filter(e => e.customType === 'agora-principal').length, 1);
   const tool = f.registered.find(t => t.name === 'agora_task');
   for (const [action, args, route] of [
-    ['spawn', { profile: 'explore', prompt: '查看公开文件', model: 'fake/model' }, '/v1/tasks'],
+    ['spawn', { profile: 'explore', prompt: '查看公开文件', model: 'fake/model', maxTokens: 12345 }, '/v1/tasks'],
+    ['list', {}, '/v1/tasks?scope=mine'],
     ['status', { taskId: 'task-one' }, '/v1/tasks/task-one'],
     ['result', { taskId: 'task-one', generation: 1 }, '/v1/tasks/task-one/result?generation=1'],
-    ['stop', { taskId: 'task-one' }, '/v1/tasks/task-one/stop'],
+    ...TASK_CONTROL_ACTIONS.map(action => [action, { taskId: 'task-one', ...(action === 'limits' ? { maxTokens: 67890, expectedRevision: 7 } : {}), ...(action === 'steer' ? { message: '核对返工' } : {}), ...(action === 'recover' ? { mode: 'resume' } : {}) }, `/v1/tasks/task-one/${action}`]),
   ]) {
     const result = await tool.execute(`call-${action}`, { action, ...args }, undefined, undefined, f.ctx);
     assert.equal(result.details.taskId, 'task-one');
     const call = f.wire.calls.find(c => c.idempotencyKey === `call-${action}`);
     assert.equal(call.path, route);
-    if (action === 'spawn') assert.equal(call.body.originToolCall.toolCallId, 'call-spawn');
+    if (action === 'spawn') { assert.equal(call.body.originToolCall.toolCallId, 'call-spawn'); assert.equal(call.body.maxTokens, 12345); }
+    if (action === 'limits') assert.deepEqual(call.body, { maxTokens: 67890, expectedRevision: 7 });
   }
+  assert.deepEqual(agoraTaskSchema.properties.action.enum, ['spawn', 'list', 'status', 'result', ...TASK_CONTROL_ACTIONS]);
+  assert.deepEqual(agoraTaskSchema.properties.maxTokens, spawnTaskSchema.properties.maxTokens);
+  assert.equal(tool.parameters.properties.action.enum.includes('limits'), true);
+  assert.equal(tool.parameters.properties.maxTokens.minimum, 1);
   await assert.rejects(tool.execute('bad', { action: 'spawn', profile: 'invalid', model: 'fake/model', prompt: '越权' }, undefined, undefined, f.ctx), /有效权限档位/);
 });
 

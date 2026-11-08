@@ -1,6 +1,6 @@
 # 路线图
 
-> 状态：代码覆盖任务核心及 1d 的存档、会话视图与 CLI；用户级安全及相应在线操作按 1c 接线，pane、board 和会议按后续切片推进。实现与测试入口见 [development.md](development.md)。
+> 状态：代码覆盖切片 1c 的任务核心、安全与任务树软预算，以及 1d 的存档、会话视图与 CLI。浏览器确认界面在切片 2 接入，pane、board 和会议按后续切片推进；可选扩展 / MCP 白名单及 saved 项目信任配置隔离推迟至 [#10](https://github.com/PosvdM/pi-agora/issues/10)。实现与测试入口见 [development.md](development.md)。
 
 ## P0 验证项
 
@@ -47,7 +47,7 @@ pi-agora 和 pi-pane 的 MVP 按同样的三个切片推进，两仓的 roadmap 
 | --- | --- |
 | 1a：最小闭环 | 四包工程和三平台 CI；daemon 单实例、握手、主会话注册与恢复、租约、launch ticket、就绪检查、排空、版本和迁移；RPC driver、会话写锁、并发、诊断、旧进程清理、扩展 UI；explore 的 spawn / status / result / stop；outbox 可靠通知；CLI start / shutdown / status / ls / show |
 | 1b：任务补全 | 全部任务动作与状态机、generation、steer 追踪、worktree、三档与路径、agora_git、提问及逐级转交、pending / answer、空闲回收、看门狗；多层委派、子树限制与停止、等待下级；请求传输重试与 Windows 停止重试；D15 子代理标记、skill 白名单、逐请求用量及任务树汇总、额度暂停和恢复 |
-| 1c：安全 | 子 / 主 Agent 与用户级划分、预算封顶、任务树 token 软预算（与 `agentLimitCap` 一并设计）、完整资源访问控制、待确认、设备登记与验签、everPaired、离线命令、安全状态检查和审计；跟进可选扩展 / MCP 白名单及 saved 项目信任的配置隔离 |
+| 1c：安全 | 子 / 主 Agent 与用户级划分、预算封顶与任务树 token 软预算、已实现资源的统一访问控制、待确认、设备登记与验签、everPaired、离线命令、安全状态检查和审计；Git 布局核验后的执行根固定（#9）。可选扩展 / MCP 白名单及 saved 项目信任配置隔离推迟至 [#10](https://github.com/PosvdM/pi-agora/issues/10)：pi CLI 无独立 auth/models 路径，不能安全复制 OAuth 凭证；继续保留 `-ne --no-mcp --no-approve` 的 fail-closed 启动 |
 | 1d：存档与收尾 | 全量流片段和退出诊断、只读解析器、archive adapter、快照 / 历史 / SSE、log / tail / verify-archive / ls --tree、显式离线 archive delete；创建 archive 与共享 harness-pi 包；CLI 展示会话用量和上下文。用户级在线删除与接管须接入 1c 签名机制，不以主机凭证绕过 |
 | 1d 之后 | 上下文超过阈值时通知上级；返工时可选新会话附摘要或先压缩再返工 |
 
@@ -112,10 +112,10 @@ pi-pane 的估算见其 `docs/roadmap.md`（18–26 人日，P0 后重估）；�
 | 会话尾行不完整、数据库事务中断 | 1a 通知证据与事务原子性，1d 全量解析 | `extension.test.mjs`：未换行片段不能确认；`store.test.mjs`：通知失败事务回滚。1d 的 `archive-parser-1d.test.mjs`、`archive-parser-pi-1d.test.mjs`、`archive-daemon-1d.test.mjs` 覆盖尾部及中间截断、完整行保留和解析前后哈希不变；真实断电尚未实测 |
 | 同 key 的 spawn / steer / answer | 1a spawn，1b steer / answer | `daemon.test.mjs`：并发幂等 spawn；`task-1b.test.mjs`：返工与答复只执行一次 |
 | fork 后并发认领同 principal | 1b | `claim-fork-1b.test.mjs`：fork 新 sessionId 不继承 principal；同原 sessionId 并发仅一个租约 |
-| 读取 host.key 后冒充用户答复 | 1c | 待确认与设备签名；1b CLI 通路尚不能区分用户与 Agent |
-| 挑战重放、过期、参数篡改 | 1c | 用户确认验签测试 |
+| 读取 host.key 后冒充用户答复 | 1c | `security-http-1c.test.mjs`：磁盘凭证只生成待确认，伪造 user 字段和未配对设备签名均不能执行；合法设备签名才答复 |
+| 挑战重放、过期、参数篡改 | 1c | `security-core.test.mjs`、`security-http-1c.test.mjs`：JCS、P-256 / P1363、nonce 重放、期限、参数哈希、公钥、跨确认签名和目标 revision |
 | 跨宿主写锁拒绝、强杀恢复与 gate 放行前强杀 | 1a | `driver.test.mjs`、`driver-faults.test.mjs`、`daemon-restart.test.mjs`；双向共享协议由 hostkit 的跨宿主测试覆盖 |
-| 运行中升级、备份与迁移失败 | 1a v1/v2，1b v3/v4，1d v6 | `store.test.mjs` 的一致性备份和回滚；`task-1b.test.mjs` 的 v2→v4 与 `task-d15.test.mjs` 的 v3→v4 成功、备份及 DDL 失败回滚 |
+| 运行中升级、备份与迁移失败 | 1a v1/v2，1b v3/v4，1c v5，1d v6 | `store.test.mjs` 的一致性备份和回滚；`task-1b.test.mjs`、`task-d15.test.mjs` 的旧版本迁移、备份及 DDL 失败回滚；`security-core.test.mjs` 的 v4 安全迁移一致性备份与失败回滚 |
 | 同项目双主会话的孙代理提问路由 | 1b D15 | `task-d15.test.mjs`：仅直接上级接收提问 |
 | 子代理标记、skill 名单和只读授权 | 1b D15 | `driver-d15.test.mjs`、`task-d15.test.mjs`、`d15-e2e.test.mjs`：空默认值、子集继承、名单外及项目 skill 不自动加载、文件工具只读 |
 | 用量汇总、额度暂停与恢复 | 1b D15 | 上述 D15 测试覆盖请求去重、任务 / 代 / 树汇总、429 暂停、到期通知、可选自动恢复和父任务恢复不隐式恢复下级 |
