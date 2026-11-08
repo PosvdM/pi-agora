@@ -172,6 +172,128 @@ test("tail 正常运行退出或终态快照后的 EOF 不误报连接故障", a
     assert.equal(h.clientClosed, 1);
   }
 });
+test('tail 非终态或退出未确认时的 EOF、HTTP 和解析错误不离线降级', async t => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 1_800_000_000_000 });
+  for (const [status, phase, result] of [
+    ['running', 'streaming', sse('')],
+    ['stopped', 'stopping', sse('')],
+    ['running', 'streaming', new Response('', { status: 401 })],
+    ['running', 'streaming', new Response('', { status: 403 })],
+    ['running', 'streaming', sse('data: invalid-json\n\n')],
+    ['running', 'streaming', sse('event: session\ndata: {"event":{"type":"agora_status","status":"stopped","phase":"stopping"}}\n\n')],
+  ]) {
+    let renewals = 0;
+    const h = harness({ available: async () => true, fetch: async () => result });
+    h.client.expiresAt = new Date(Date.now() + 120_000).toISOString();
+    h.client.refresh = async () => { renewals++; };
+    h.client.request = async () => ({ cursor: { epoch: 'epoch', seq: 1 }, status, inFlight: { phase } });
+    assert.equal(await h.run(['tail', 'as_one']), 1);
+    assert.equal(h.errors.length, 1); assert.equal(h.opened, 0); assert.equal(h.clientClosed, 1);
+    t.mock.timers.tick(600_000);
+    await Promise.resolve();
+    assert.equal(renewals, 0);
+  }
+});
+test('tail 到期前取消旧流、续期并携带最后游标订阅新凭证，EOF 后清除计时器', async t => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 1_800_000_000_000 });
+  let subscriptions = 0, renewals = 0, cancelled = 0, snapshots = 0, firstReady;
+  const first = new Promise(resolve => { firstReady = resolve; });
+  const h = harness({ available: async () => true, fetch: async (url, options) => {
+    subscriptions++;
+    if (subscriptions === 1) {
+      assert.equal(options.headers.Authorization, 'Bearer old');
+      assert.match(url, /afterSeq=1$/);
+      const body = new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('event: session\ndata: {"cursor":{"epoch":"epoch","seq":2},"event":{"type":"message_update"}}\n\n'));
+          options.signal.addEventListener('abort', () => controller.error(new DOMException('续期', 'AbortError')), { once: true });
+        },
+        cancel() { cancelled++; },
+      });
+      firstReady();
+      return new Response(body, { headers: { 'content-type': 'text/event-stream' } });
+    }
+    assert.equal(options.headers.Authorization, 'Bearer new');
+    assert.match(url, /afterSeq=2$/);
+    return sse('event: session\ndata: {"cursor":{"epoch":"epoch","seq":3},"event":{"type":"agora_run","phase":"exited"}}\n\n');
+  } });
+  h.client.token = 'old';
+  h.client.expiresAt = new Date(Date.now() + 120_000).toISOString();
+  h.client.refresh = async () => { renewals++; h.client.token = 'new'; h.client.expiresAt = new Date(Date.now() + 120_000).toISOString(); };
+  h.client.request = async () => { snapshots++; return { cursor: { epoch: 'epoch', seq: 1 }, status: 'running' }; };
+  const running = h.run(['tail', 'as_one']);
+  await first;
+  // 等待第一帧输出后推进虚拟时钟；不等待真实 token 有效期。
+  for (let i = 0; i < 20 && h.output.length < 2; i++) await Promise.resolve();
+  assert.equal(h.output.length, 2);
+  t.mock.timers.tick(60_000);
+  assert.equal(await running, 0);
+  assert.equal(renewals, 1); assert.equal(subscriptions, 2); assert.equal(snapshots, 1);
+  assert.deepEqual(h.output.slice(1).map(value => value.data.cursor.seq), [2, 3]);
+  assert.deepEqual(h.errors, []); assert.equal(h.opened, 0); assert.equal(h.clientClosed, 1);
+  t.mock.timers.tick(600_000);
+  await Promise.resolve();
+  assert.equal(renewals, 1); assert.equal(subscriptions, 2);
+  // 出错的 reader 由 readSse.finally 释放；cancel 对已 error 的流不会重复调用底层。
+  assert.equal(cancelled, 0);
+});
+test('tail 续期后服务端 resync 重新取快照，识别嵌套 resync 帧', async t => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 1_800_000_000_000 });
+  let streams = 0, snapshots = 0, ready;
+  const subscribed = new Promise(resolve => { ready = resolve; });
+  const h = harness({ available: async () => true, fetch: async (url, options) => {
+    streams++;
+    if (streams === 1) return new Response(new ReadableStream({ start(controller) {
+      options.signal.addEventListener('abort', () => controller.error(new DOMException('续期', 'AbortError')), { once: true });
+      ready();
+    } }), { headers: { 'content-type': 'text/event-stream' } });
+    if (streams === 2) return sse('event: session\ndata: {"event":{"type":"resync"}}\n\n');
+    assert.match(url, /epoch=next&afterSeq=10$/);
+    return sse('');
+  } });
+  h.client.expiresAt = new Date(Date.now() + 120_000).toISOString();
+  h.client.refresh = async () => { h.client.expiresAt = new Date(Date.now() + 120_000).toISOString(); };
+  h.client.request = async () => ++snapshots === 1 ? { cursor: { epoch: 'epoch', seq: 1 }, status: 'running' } : { cursor: { epoch: 'next', seq: 10 }, status: 'stopped' };
+  const running = h.run(['tail', 'as_one']);
+  await subscribed;
+  t.mock.timers.tick(60_000);
+  assert.equal(await running, 0); assert.equal(snapshots, 2); assert.equal(streams, 3);
+  assert.deepEqual(h.errors, []);
+});
+test('tail 续期认证错误不离线降级；取消待续期和待刷新请求都及时清理', async t => {
+  for (const mode of ['error', 'cancel-stream', 'cancel-refresh']) await t.test(mode, async t => {
+    t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: 1_800_000_000_000 });
+    const controller = new AbortController();
+    let renewals = 0, ready, refreshing;
+    const subscribed = new Promise(resolve => { ready = resolve; });
+    const renewed = new Promise(resolve => { refreshing = resolve; });
+    const h = harness({ available: async () => true, signal: controller.signal, fetch: async (_url, options) => new Response(new ReadableStream({ start(stream) {
+      options.signal.addEventListener('abort', () => stream.error(new DOMException('取消', 'AbortError')), { once: true });
+      ready();
+    } }), { headers: { 'content-type': 'text/event-stream' } }) });
+    h.client.expiresAt = new Date(Date.now() + 120_000).toISOString();
+    h.client.request = async () => ({ cursor: { epoch: 'epoch', seq: 1 }, status: 'running' });
+    h.client.refresh = async () => {
+      renewals++; refreshing();
+      if (mode === 'error') throw new AgoraHttpError(401, 'token_expired');
+      return new Promise(() => {});
+    };
+    const running = h.run(['tail', 'as_one']);
+    await subscribed;
+    if (mode === 'cancel-stream') controller.abort();
+    else {
+      t.mock.timers.tick(60_000);
+      await renewed;
+      if (mode === 'cancel-refresh') controller.abort();
+    }
+    assert.equal(await running, mode === 'error' ? 1 : 0);
+    assert.equal(h.opened, 0); assert.equal(h.clientClosed, 1);
+    if (mode === 'error') assert.match(h.errors[0], /401/);
+    t.mock.timers.tick(600_000);
+    await Promise.resolve();
+    assert.equal(renewals, mode === 'cancel-stream' ? 0 : 1);
+  });
+});
 test("健康检查只在缺少发现或传输不可达时返回离线", async () => {
   const home = await mkdtemp(path.join(tmpdir(), "agora-cli-health-"));
   let status = 403, protocol = { min: 1, max: 1 };

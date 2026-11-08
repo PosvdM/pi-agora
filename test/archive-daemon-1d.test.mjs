@@ -7,6 +7,9 @@ import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { startDaemon } from '../packages/daemon/dist/index.js';
 import { connectHost } from '../packages/protocol/dist/client.js';
+import { runArchiveCli } from '../packages/cli/dist/archive.js';
+import { SessionViews } from '../packages/daemon/dist/sessions.js';
+import { assertIsolatedTestHome } from './fixtures/test-home.mjs';
 
 async function until(read, timeout = 5000) {
   const end = Date.now() + timeout;
@@ -67,14 +70,28 @@ class ArchiveDriver {
 }
 async function setup(t) {
   const home = await mkdtemp(path.join(tmpdir(), 'agora-archive-http-'));
+  const saved = new Map(['HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA'].map(key => [key, process.env[key]]));
+  process.env.HOME = process.env.USERPROFILE = path.join(home, 'user');
+  process.env.APPDATA = path.join(home, 'user', 'AppData', 'Roaming');
+  process.env.LOCALAPPDATA = path.join(home, 'user', 'AppData', 'Local');
+  let daemon, client;
+  const extra = [];
+  t.after(async () => {
+    try {
+      client?.close();
+      for (const cleanup of extra.reverse()) await cleanup();
+      await daemon?.close({ force: true, timeoutMs: 3000 });
+      await rm(home, { recursive: true, force: true });
+    } finally { for (const [key, value] of saved) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } }
+  });
+  await assertIsolatedTestHome(home);
   const driver = new ArchiveDriver();
-  const daemon = await startDaemon({ home, driver, readyTimeoutMs: 3000, idleReclaimMs: 60_000 });
-  const client = await connectHost({ home, as: 'host:cli', autoStart: false });
-  t.after(async () => { client.close(); await daemon.close({ force: true, timeoutMs: 3000 }); await rm(home, { recursive: true, force: true }); });
+  daemon = await startDaemon({ home, driver, readyTimeoutMs: 3000, idleReclaimMs: 60_000 });
+  client = await connectHost({ home, as: 'host:cli', autoStart: false });
   const task = await client.request('POST', '/v1/tasks', { profile: 'explore', model: 'test/model', thinking: 'high', prompt: '只读测试', cwd: home }, { idempotencyKey: randomUUID() });
   const handle = await until(() => driver.handles[0]?.ready && driver.handles[0]);
   await until(async () => (await client.request('GET', `/v1/tasks/${task.taskId}`)).status === 'running');
-  return { home, daemon, client, task, handle, base: `/v1/sessions/${task.agoraSessionId}` };
+  return { home, daemon, client, task, handle, extra, base: `/v1/sessions/${task.agoraSessionId}` };
 }
 async function writeEntries(f, entries) {
   f.handle.entries = entries;
@@ -111,6 +128,92 @@ test('会话 HTTP 快照、历史分页、诊断、校验与占用，子代理�
   await f.daemon.tasks.flush();
   const diagnostic = await f.client.request('GET', f.base + '/diagnostics');
   assert.ok(Array.isArray(diagnostic) ? diagnostic.length >= 1 : diagnostic.items?.length >= 1);
+});
+
+test('daemon 重启后的历史终态快照能够订阅并完成 SSE，旧水位回放后 EOF', { timeout: 20_000 }, async t => {
+  const f = await setup(t);
+  await writeEntries(f, [entry('persisted', null)]);
+  const original = await f.client.request('GET', f.base + '/snapshot');
+  await f.client.request('POST', `/v1/tasks/${f.task.taskId}/stop`, {}, { idempotencyKey: randomUUID() });
+  await f.daemon.tasks.flush();
+  f.client.close();
+  await f.daemon.close({ force: true, timeoutMs: 3000 });
+  await assertIsolatedTestHome(f.home);
+  const restarted = await startDaemon({ home: f.home, driver: new ArchiveDriver(), readyTimeoutMs: 3000 });
+  let client = await connectHost({ home: f.home, as: 'host:cli', autoStart: false });
+  f.extra.push(async () => { client.close(); await restarted.close({ force: true, timeoutMs: 3000 }); });
+  for (const status of ['completed', 'stopped']) {
+    restarted.store.run('UPDATE agora_sessions SET status=? WHERE id=?', status, f.task.agoraSessionId);
+    const snapshot = await client.request('GET', f.base + '/snapshot');
+    assert.notEqual(snapshot.cursor.epoch, original.cursor.epoch);
+    assert.deepEqual(snapshot.entries.map(value => value.id), ['persisted']);
+    assert.equal(snapshot.inFlight.phase, 'idle');
+    const replay = await fetch(restarted.url + f.base + `/stream?epoch=${encodeURIComponent(snapshot.cursor.epoch)}&afterSeq=0`, {
+      headers: { 'Agora-Protocol': '1', Authorization: `Bearer ${client.token}` }, signal: AbortSignal.timeout(2000),
+    });
+    const text = await replay.text();
+    assert.match(text, /agora_entries/); assert.doesNotMatch(text, /resync/);
+    const output = [];
+    await runArchiveCli({ command: 'tail', operand: f.task.agoraSessionId, rest: [], options: new Map(), home: f.home, io: { out: value => output.push(JSON.parse(value)) } }, {
+      available: async () => true, connect: async () => client,
+      fetch: (url, options) => fetch(url, { ...options, signal: AbortSignal.any([options.signal, AbortSignal.timeout(2000)]) }),
+      open: async () => { assert.fail('历史在线 tail 不能离线降级'); },
+    });
+    assert.equal(output[0].status, status);
+    assert.equal(output[0].entries[0].id, 'persisted');
+    // runArchiveCli 拥有连接并关闭它；下一轮创建新的已认证连接。
+    if (status === 'completed') {
+      client = await connectHost({ home: f.home, as: 'host:cli', autoStart: false });
+    }
+  }
+  // 较新的已退出 run 不能掩盖较旧、仍未确认清理的写者。
+  restarted.store.run(`INSERT INTO process_runs(id,agora_session_id,daemon_instance_id,state,started_at,exited_at,cleanup_error)
+    SELECT 'uncertain',agora_session_id,daemon_instance_id,'exited','2000-01-01','2000-01-02','清理待确认'
+    FROM process_runs WHERE agora_session_id=? LIMIT 1`, f.task.agoraSessionId);
+  const fresh = new SessionViews(restarted.store, 'fresh-check');
+  try {
+    const pending = await fresh.snapshot(f.task.agoraSessionId);
+    assert.equal(pending.cursor.epoch, 'fresh-check:uncertain');
+    assert.equal(pending.inFlight.phase, 'stopping');
+  } finally { await fresh.close(); }
+});
+
+test('tail 以短有效期跨越真实鉴权检查并持续续期，无小时级等待', { timeout: 20_000 }, async t => {
+  const f = await setup(t);
+  const conn = f.daemon.auth.connections.get(f.client.token);
+  const originalRefresh = f.daemon.auth.refresh.bind(f.daemon.auth);
+  let renewals = 0, streams = 0;
+  f.daemon.auth.refresh = connection => {
+    const response = originalRefresh(connection);
+    connection.expiresAt = Date.now() + 3000;
+    renewals++;
+    return { ...response, expiresAt: new Date(connection.expiresAt).toISOString() };
+  };
+  conn.expiresAt = Date.now() + 3000;
+  // 客户端读到短期限；认证和 SSE 的每秒守卫仍由真实 daemon 执行。
+  const client = {
+    ...f.client,
+    get token() { return f.client.token; },
+    get expiresAt() { return new Date(conn.expiresAt).toISOString(); },
+  };
+  const initialDeadline = conn.expiresAt;
+  const output = [];
+  await runArchiveCli({ command: 'tail', operand: f.task.agoraSessionId, rest: [], options: new Map(), home: f.home, io: { out: value => output.push(JSON.parse(value)) } }, {
+    available: async () => true, connect: async () => client,
+    open: async () => { assert.fail('续期不应离线降级'); },
+    fetch: async (url, options) => {
+      streams++;
+      const response = fetch(url, { ...options, signal: AbortSignal.any([options.signal, AbortSignal.timeout(12_000)]) });
+      f.handle.emit({ type: 'thinking_level_changed', level: 'high' });
+      if (streams === 4) await f.client.request('POST', `/v1/tasks/${f.task.taskId}/stop`, {}, { idempotencyKey: randomUUID() });
+      return response;
+    },
+  });
+  assert.ok(Date.now() > initialDeadline);
+  assert.ok(renewals >= 4); assert.equal(streams, 4);
+  const events = output.slice(1).map(value => value.data);
+  assert.ok(events.some(value => value.event.type === 'agora_run' && value.event.phase === 'exited'));
+  assert.deepEqual(events.map(value => value.cursor.seq), [...new Set(events.map(value => value.cursor.seq))].sort((a, b) => a - b));
 });
 
 test('会话尾行截断的全量校验只读，并保留完整行', { timeout: 20_000 }, async t => {

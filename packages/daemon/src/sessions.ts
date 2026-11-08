@@ -364,8 +364,12 @@ export class SessionViews {
     if (this.closed) throw new AgoraError(503, "draining", "会话服务已关闭");
     let state = this.states.get(sessionId);
     if (!state) {
-      const run = this.store.get<{ id: string }>("SELECT id FROM process_runs WHERE agora_session_id=? ORDER BY started_at DESC,id DESC LIMIT 1", sessionId);
+      // 任一未确认清理的 run 都阻止历史 EOF，不能只看会话终态或最新一条 run。
+      const run = this.store.get<{ id: string; state: string; exited_at: string | null; cleanup_error: string | null }>(
+        "SELECT id,state,exited_at,cleanup_error FROM process_runs WHERE agora_session_id=? ORDER BY CASE WHEN exited_at IS NULL OR state<>'exited' OR cleanup_error IS NOT NULL THEN 0 ELSE 1 END,started_at DESC,id DESC LIMIT 1", sessionId);
       state = this.state(sessionId, run?.id ?? "archive");
+      state.ended = !run || (run.state === "exited" && run.exited_at !== null && run.cleanup_error === null);
+      state.cleanupPending = !state.ended;
       this.states.set(sessionId, state);
       const current = state;
       current.ready = this.serial(current, () => this.refresh(current));
@@ -380,7 +384,7 @@ export class SessionViews {
     const state = this.states.get(sessionId);
     const phase = state?.handle && !state.ended ? state.events.activePhase : "idle";
     return { status: session.status, statusDetail: session.control_state ?? task?.status_detail ?? null,
-      phase: state?.handle && !state.ended && (state.closing || state.cleanupPending || session.control_state === "stopping") ? "stopping" : phase,
+      phase: state && !state.ended && (state.closing || state.cleanupPending || session.control_state === "stopping") ? "stopping" : phase,
       revision: (session as unknown as { revision?: number }).revision ?? 0 };
   }
   private historySlice(state: ViewState, before: string | undefined, limit: number) {
