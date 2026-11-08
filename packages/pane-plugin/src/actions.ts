@@ -277,6 +277,7 @@ export function createActions(runtime: PluginRuntime, execute: ExecuteOperation)
     if (key === "global") return {};
     const id = key.slice("agora:session:".length);
     const session = await get(`/sessions/${encoded(id)}`);
+    if (session.isCurrent === false) throw new Invalid("历史会话不能操作任务的当前运行");
     if (session.kind !== undefined && session.kind !== "task") throw new Invalid("此会话不属于任务");
     const taskId = text(session.taskId, "任务标识", 256);
     if (!/^tk_[A-Za-z0-9_-]+$/.test(taskId)) throw new Invalid("会话未关联合法任务");

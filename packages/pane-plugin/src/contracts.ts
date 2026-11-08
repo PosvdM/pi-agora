@@ -32,6 +32,7 @@ export interface SessionItem {
   agoraSessionId: string;
   taskId?: string | null;
   kind?: string;
+  isCurrent?: boolean;
   parentId: string | null;
   parent?: SessionParent;
   title: string;

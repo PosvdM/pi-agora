@@ -63,6 +63,22 @@ function change(stream, seq, objectType = 'session', objectId = 's1', patch = {}
   stream.emit({ type: 'change', data: { cursor: { epoch: 'db', seq }, objectType, objectId, ...patch } });
 }
 
+test('历史任务节点只读且不能通过 send 或 abort 操作当前任务', async t => {
+  const historical = item('old', { status: 'completed', isCurrent: false });
+  const h = setup(t, ({ path, url }) => {
+    if (url.pathname === '/v1/sessions') return { status: 200, body: page([historical]) };
+    if (path === '/v1/sessions/old') return { status: 200, body: historical };
+    if (path === '/v1/sessions/old/snapshot') return { status: 200, body: { cursor: { epoch: 'db', seq: 0 }, leafId: null, entries: [], historyBefore: null, status: 'completed' } };
+  });
+  const snapshot = await h.views.tree.snapshot({ openNodeIds: ['agora:session:old'], recentSince: '2026-01-01T00:00:00Z' });
+  assert.deepEqual(snapshot.nodes.find(node => node.id === 'agora:session:old').capabilities, ['open']);
+  const ref = { source: 'agora', id: 'old' };
+  assert.equal((await h.views.sessions.snapshot(ref)).readonly, true);
+  assert.equal((await h.views.sessions.send(ref, { text: '不能误控' }, { idempotencyKey: 'old', origin: {} })).status, 'rejected');
+  assert.equal((await h.views.sessions.abort(ref, { clearQueue: true, origin: {} })).status, 'nothingToStop');
+  assert.equal(h.requests.filter(request => request.method === 'POST').length, 0);
+});
+
 test('树映射热快照、虚拟根、状态与子节点分页 epoch', async t => {
   const rows = [
     item('created', { status: 'created', parentId: null, parent: { kind: 'user' } }),

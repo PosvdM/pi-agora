@@ -34,16 +34,17 @@ function group(revision: number): TreeNode {
 function node(item: SessionItem, revision = item.revision): TreeNode {
   if (item.agoraSessionId === USER_TASKS) return group(revision);
   const capabilities = ["open"];
-  const steerable = !!item.taskId && STEERABLE.has(item.status);
+  const historical = !!item.taskId && item.isCurrent === false;
+  const steerable = !!item.taskId && !historical && STEERABLE.has(item.status);
   const paused = ["quota_paused", "budget_paused"].includes(item.status);
-  if (!item.taskId || !TERMINAL.has(item.status) && !paused) capabilities.push("subscribe");
+  if (!historical && (!item.taskId || !TERMINAL.has(item.status) && !paused)) capabilities.push("subscribe");
   if (steerable) capabilities.push("send", "action:agora.task.steer");
-  if (item.taskId && !TERMINAL.has(item.status)) {
+  if (item.taskId && !historical && !TERMINAL.has(item.status)) {
     if (!paused) capabilities.push("abort");
     capabilities.push("action:agora.task.stop");
   }
-  if (item.taskId && ["completed", "failed"].includes(item.status)) capabilities.push("action:agora.task.cleanup");
-  if (item.taskId && ["quota_paused", "budget_paused", "interrupted"].includes(item.status)) capabilities.push("action:agora.task.recover");
+  if (item.taskId && !historical && ["completed", "failed"].includes(item.status)) capabilities.push("action:agora.task.cleanup");
+  if (item.taskId && !historical && ["quota_paused", "budget_paused", "interrupted"].includes(item.status)) capabilities.push("action:agora.task.recover");
   return {
     id: nodeId(item.agoraSessionId), source: "agora", kind: "session",
     parentId: parentNodeId(item), title: item.title,
@@ -271,7 +272,7 @@ export function createViews(runtime: PluginRuntime): {
       const data = await get<any>(`/v1/sessions/${id}/snapshot`);
       const item = await get<SessionItem>(`/v1/sessions/${id}`);
       remember([item]);
-      const readonly = !item.taskId || !STEERABLE.has(item.status);
+      const readonly = !item.taskId || item.isCurrent === false || !STEERABLE.has(item.status);
       return { ref, cursor: data.cursor, leafId: data.leafId, entries: data.entries,
         historyBefore: data.historyBefore, inFlight: data.inFlight, unfinishedPartials: data.unfinishedPartials,
         status: status(data.status), readonly, ...(readonly ? { readonlyReason: "noPermission" as const } : {}) } satisfies SessionSnapshot;
@@ -313,7 +314,7 @@ export function createViews(runtime: PluginRuntime): {
       if (input.delivery === "followUp") return { status: "rejected", message: "agora 任务通过返工发送，不支持 followUp" };
       if (req.expectedRevision !== undefined) return { status: "rejected", message: "agora 未提供会话控制修订号，请刷新后重试" };
       const item = await get<SessionItem>(`/v1/sessions/${sessionId(ref)}`);
-      if (!item.taskId || !STEERABLE.has(item.status)) return { status: "rejected", message: "此会话当前不能返工" };
+      if (!item.taskId || item.isCurrent === false || !STEERABLE.has(item.status)) return { status: "rejected", message: "此会话当前不能返工" };
       const reply = await runtime.api.request("POST", `/v1/tasks/${encoded(item.taskId)}/steer`,
         { message: input.text, interrupt: false }, { idempotencyKey: req.idempotencyKey, signal: lifetime.signal });
       if (reply.status < 200 || reply.status >= 300) return {
@@ -324,7 +325,7 @@ export function createViews(runtime: PluginRuntime): {
     async abort(ref, req) {
       if (req.expectedRevision !== undefined) throw new Error("agora 未提供会话控制修订号，请刷新后重试");
       const item = await get<SessionItem>(`/v1/sessions/${sessionId(ref)}`);
-      if (!item.taskId) return { status: "nothingToStop" };
+      if (!item.taskId || item.isCurrent === false) return { status: "nothingToStop" };
       const reply = await runtime.api.request("POST", `/v1/tasks/${encoded(item.taskId)}/stop`, {},
         { signal: lifetime.signal });
       if (reply.status < 200 || reply.status >= 300) throw new Error(message(reply));
@@ -347,6 +348,7 @@ export function createViews(runtime: PluginRuntime): {
         add("席位", item.title); add("角色", item.kind); add("模型", item.model); add("状态", item.status);
       } else {
         const task = await get(`/v1/tasks/${encoded(item.taskId)}`);
+        add("当前会话", item.isCurrent === false ? "否（历史会话）" : "是");
         add("任务", item.taskId); add("状态", task.status); add("模型", task.model ?? item.model);
         add("档位", task.profile ?? item.profile); add("思考", task.thinking ?? item.thinking);
         add("代数", task.generation); add("worktree", task.worktree); add("工作目录", task.cwd);

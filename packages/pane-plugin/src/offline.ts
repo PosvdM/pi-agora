@@ -314,7 +314,7 @@ export function createOfflineViews(reader: ArchiveReader, epoch = `offline:${ran
           { key: "会话", value: item.agoraSessionId }, { key: "任务", value: item.taskId ?? "—" },
           { key: "模型", value: item.model }, { key: "档位", value: item.profile }, { key: "状态", value: item.status },
           { key: "当前会话", value: item.isCurrent === undefined ? "未知" : item.isCurrent ? "是" : "否（历史会话）" },
-          { key: "任务用量", value: item.usage === undefined ? "—" : JSON.stringify(item.usage) },
+          { key: "会话用量", value: item.usage === undefined ? "—" : JSON.stringify(item.usage) },
           { key: "上下文 token", value: String(item.usage?.contextTokens ?? "—") },
         ];
         return { type: "keyValue", rows };

@@ -47,7 +47,7 @@ test("离线任务面板显示中立用量与当前会话标记", async () => {
   assert.equal(content.type, "keyValue");
   assert.ok(content.rows.some(row => row.key === "上下文 token" && row.value === "12"));
   assert.ok(content.rows.some(row => row.key === "当前会话" && row.value === "否（历史会话）"));
-  assert.ok(content.rows.some(row => row.key === "任务用量" && row.value.includes('"inputTokens":10')));
+  assert.ok(content.rows.some(row => row.key === "会话用量" && row.value.includes('"inputTokens":10')));
   views.dispose();
 });
 

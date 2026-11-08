@@ -267,6 +267,15 @@ test("composer 预检失败的身份跨重启保留，恢复后按当前条件�
   }
 });
 
+test("历史会话不能通过任务动作误控当前会话", async () => {
+  const s = setup("completed");
+  s.setSession({ agoraSessionId: "as_original", taskId: "tk_actual", kind: "task", isCurrent: false });
+  assert.equal(await s.actions.resolveForm(id("steer"), target), null);
+  const result = await s.actions.invoke({ actionId: id("steer"), target, idempotencyKey: "history", input: { answers: [], fields: { message: "不能发送到当前会话" } } }, origin);
+  assert.equal(result.status, "failed");
+  assert.equal(s.calls.length, 0);
+});
+
 test("静态目录仅开放五个任务动作，返回副本且文案为中文", () => {
   const s = setup();
   const list = s.actions.list();
