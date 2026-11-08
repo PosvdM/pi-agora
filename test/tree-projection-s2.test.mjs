@@ -18,16 +18,22 @@ const nodeId = id => `agora:session:${id}`;
 async function fixture(t) {
   const home = await mkdtemp(join(tmpdir(), 'agora-tree-projection-'));
   const store = await openStore(home);
+  store.run("INSERT INTO principals(id,type,pi_session_id,cwd,created_at) VALUES('main','agent:main','pi-main',?,?)", home, OLD);
+  const main = { type: 'agent:main', principalId: 'main' };
   const auth = { requireAgent(conn) { return store.principal(conn.principalId); } };
   const driver = { async start() { throw new Error('此 fixture 不启动进程'); } };
   const tasks = new TaskManager(store, auth, driver, { home, instanceId: 'tree-test', url: 'http://unused', maxTaskDepth: 3 });
   t.after(async () => { await tasks.shutdown(true, 1000); store.close(); await rm(home, { recursive: true, force: true }); });
   async function spawn(parent) {
-    const conn = parent ? { type: 'agent:child', principalId: store.session(parent.agoraSessionId).principal_id } : host;
+    const conn = parent ? { type: 'agent:child', principalId: store.session(parent.agoraSessionId).principal_id } : main;
     return tasks.spawn(conn, { model: 'test/model', profile: 'explore', prompt: '树投影测试', cwd: home, notify: 'silent' });
   }
   function state(task, status) { return store.transition(store.task(task.taskId), status); }
-  return { store, tasks, spawn, state };
+  function actor(task) {
+    const principalId = store.task(task.taskId).convener_id;
+    return { type: store.principal(principalId).type, principalId };
+  }
+  return { store, tasks, spawn, state, actor };
 }
 
 function viewsFixture(t, store) {
@@ -91,7 +97,7 @@ for (const mode of ['reopen', 'replace']) test(`父任务 ${mode} 使全部历�
   const outer = await f.spawn(); f.state(outer, 'running');
   const parent = await f.spawn(outer); f.state(parent, 'running');
   const child = await f.spawn(parent); f.state(child, 'interrupted');
-  const child2 = await f.tasks.recover(host, child.taskId, { mode: 'reopen' });
+  const child2 = await f.tasks.recover(f.actor(child), child.taskId, { mode: 'reopen' });
   f.state(child2, 'completed');
   f.state(parent, 'interrupted');
   const ids = [outer.agoraSessionId, parent.agoraSessionId, child.agoraSessionId, child2.agoraSessionId];
@@ -105,7 +111,7 @@ for (const mode of ['reopen', 'replace']) test(`父任务 ${mode} 使全部历�
   const cursor = changesCursor(f.store);
   plugin.subscribe(cursor);
   plugin.requests.length = 0;
-  const reopened = await f.tasks.recover(host, parent.taskId, { mode });
+  const reopened = await f.tasks.recover(f.actor(parent), parent.taskId, { mode });
   ids.push(reopened.agoraSessionId);
   const rows = await plugin.replay(cursor);
   const markers = rows.filter(row => row.object_type === 'tree' && row.object_id === 'all');
@@ -142,13 +148,13 @@ test('已完成子任务中断重开推进外父计数及 revision；普通状�
   const child = await f.spawn(parent); f.state(child, 'completed');
   const markerCount = () => f.store.get("SELECT COUNT(*) AS n FROM changes WHERE object_type='tree'").n;
   assert.equal(markerCount(), 0);
-  await f.tasks.steer(host, child.taskId, { message: '同一会话返工' });
+  await f.tasks.steer(f.actor(child), child.taskId, { message: '同一会话返工' });
   assert.equal(markerCount(), 0);
   f.state(child, 'interrupted');
   const before = sessionDetail(f.store, parent.agoraSessionId);
   const cursor = changesCursor(f.store);
   const plugin = viewsFixture(t, f.store); plugin.subscribe(cursor);
-  const reopened = await f.tasks.recover(host, child.taskId, { mode: 'reopen' });
+  const reopened = await f.tasks.recover(f.actor(child), child.taskId, { mode: 'reopen' });
   await plugin.replay(cursor);
   assert.deepEqual(plugin.events, [{ type: 'reset', epoch: cursor.epoch }]);
   const items = await snapshotMatchesSql(plugin.views, f.store, [parent.agoraSessionId, child.agoraSessionId, reopened.agoraSessionId]);
@@ -176,13 +182,13 @@ test('结构 marker 与迁移一同回滚；prune 及重启保留结构 revision
   const changeTreeStructure = f.store.changeTreeStructure.bind(f.store);
   f.store.changeTreeStructure = () => { changeTreeStructure(); throw new Error('migration rollback'); };
   try {
-    await assert.rejects(f.tasks.recover(host, parent.taskId, { mode: 'reopen' }), /migration rollback/);
+    await assert.rejects(f.tasks.recover(f.actor(parent), parent.taskId, { mode: 'reopen' }), /migration rollback/);
     assert.deepEqual(changesCursor(f.store), migrationCursor);
     assert.equal(f.store.task(parent.taskId).agora_session_id, parent.agoraSessionId);
     assert.equal(f.store.get('SELECT COUNT(*) AS n FROM agora_sessions WHERE task_id=?', parent.taskId).n, 1);
     assert.equal(sessionDetail(f.store, child.agoraSessionId).parentId, nodeId(parent.agoraSessionId));
   } finally { f.store.changeTreeStructure = changeTreeStructure; }
-  const reopened = await f.tasks.recover(host, parent.taskId, { mode: 'reopen' });
+  const reopened = await f.tasks.recover(f.actor(parent), parent.taskId, { mode: 'reopen' });
   const ids = [parent.agoraSessionId, child.agoraSessionId, reopened.agoraSessionId];
   f.store.run('UPDATE changes SET created_at=?', OLD);
   const before = ids.map(id => sessionDetail(f.store, id));

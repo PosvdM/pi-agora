@@ -1,5 +1,5 @@
 // 仅供驱动层测试加载；生产 explore 白名单不提供 shell 或此扩展。
-import { appendFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, writeFileSync, renameSync } from "node:fs";
 import path from "node:path";
 import { createBashToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
@@ -43,7 +43,10 @@ export default function (pi) {
       // pi 1.5.0 在 session_start 完成后才读取 RPC 输入，对话框必须等输入监听器绑定。
       setTimeout(async () => {
         const value = await ctx.ui.confirm("就绪前确认", "此项应取消");
-        writeFileSync(path.join(root, "pre-ready-ui.json"), JSON.stringify({ value }));
+        // 存在性是父进程的完成屏障，不能让它观察到已创建但尚未写完的 JSON。
+        const temporary = path.join(root, "pre-ready-ui.tmp");
+        writeFileSync(temporary, JSON.stringify({ value }));
+        renameSync(temporary, path.join(root, "pre-ready-ui.json"));
       }, 0);
     }
   });

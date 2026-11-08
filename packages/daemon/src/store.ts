@@ -4,7 +4,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { AgoraError } from "./errors.js";
 
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 export const schemaMigrations: readonly string[] = [String.raw`
 CREATE TABLE principals (
   id TEXT PRIMARY KEY, type TEXT NOT NULL, label TEXT NOT NULL DEFAULT '',
@@ -112,6 +112,35 @@ CREATE TABLE usage_records (
   created_at TEXT NOT NULL, UNIQUE(run_id,request_id)
 );
 CREATE INDEX usage_task ON usage_records(task_id,generation,seq);
+`, String.raw`
+ALTER TABLE tasks ADD COLUMN max_tokens INTEGER NOT NULL DEFAULT 50000000;
+ALTER TABLE tasks ADD COLUMN taken_over_from TEXT;
+ALTER TABLE requests ADD COLUMN answer_proof TEXT;
+CREATE TABLE budget_grants (
+  id TEXT PRIMARY KEY, resource_id TEXT NOT NULL, principal_id TEXT NOT NULL,
+  day TEXT NOT NULL, tokens INTEGER NOT NULL, confirmed_by TEXT NOT NULL, created_at TEXT NOT NULL
+);
+CREATE TABLE devices (
+  id TEXT PRIMARY KEY, public_key TEXT NOT NULL UNIQUE, label TEXT NOT NULL,
+  state TEXT NOT NULL CHECK(state IN ('pending','paired')), created_at TEXT NOT NULL
+);
+CREATE TABLE pending_confirmations (
+  id TEXT PRIMARY KEY, action TEXT NOT NULL, target TEXT NOT NULL, params TEXT NOT NULL,
+  challenge TEXT NOT NULL, nonce TEXT NOT NULL UNIQUE, expires_at TEXT NOT NULL,
+  requested_by TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending'
+    CHECK(state IN ('pending','executing','confirmed','failed','cancelled','expired')),
+  consumed_at TEXT, confirmed_by TEXT, result TEXT, failure_reason TEXT, created_at TEXT NOT NULL
+);
+CREATE TABLE security_alerts (
+  id TEXT PRIMARY KEY, kind TEXT NOT NULL UNIQUE, revision INTEGER NOT NULL,
+  details TEXT NOT NULL, acknowledged_at TEXT, acknowledged_by TEXT, created_at TEXT NOT NULL
+);
+CREATE TABLE security_audit (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT, action TEXT NOT NULL, target TEXT NOT NULL,
+  requested_by TEXT NOT NULL, confirmed_by TEXT NOT NULL, device_id TEXT,
+  confirmation_id TEXT, outcome TEXT NOT NULL, reason TEXT, via TEXT NOT NULL,
+  details TEXT, created_at TEXT NOT NULL
+);
 `];
 
 export interface PrincipalRow {
@@ -128,6 +157,7 @@ export interface TaskRow {
   parent_task_id: string | null; depth: number; depth_limit: number; child_limit: number | null;
   recovery_attempts: number; pending_message: string | null;
   skills: string; skill_paths: string; quota_resume_at: string | null; quota_notified_at: string | null;
+  max_tokens: number; taken_over_from: string | null;
 }
 export interface SessionRow {
   id: string; task_id: string; principal_id: string; session_file: string;
@@ -155,6 +185,7 @@ export function id(prefix: string): string { return `${prefix}_${randomUUID()}`;
 export function now(): string { return new Date().toISOString(); }
 
 export class Store {
+  private savepointSequence = 0;
   constructor(readonly db: DatabaseSync, readonly home: string) {}
   get<T>(sql: string, ...args: SQLInputValue[]): T | undefined {
     return this.db.prepare(sql).get(...args) as T | undefined;
@@ -164,13 +195,18 @@ export class Store {
   }
   run(sql: string, ...args: SQLInputValue[]) { return this.db.prepare(sql).run(...args); }
   transaction<T>(fn: () => T): T {
-    this.db.exec("BEGIN IMMEDIATE");
+    if (fn.constructor.name === "AsyncFunction") throw new Error("数据库事务不能包含异步操作");
+    const savepoint = this.db.isTransaction ? `agora_sp_${++this.savepointSequence}` : undefined;
+    this.db.exec(savepoint ? `SAVEPOINT ${savepoint}` : "BEGIN IMMEDIATE");
     try {
       const result = fn();
       if (result && typeof (result as { then?: unknown }).then === "function") throw new Error("数据库事务不能包含异步操作");
-      this.db.exec("COMMIT");
+      this.db.exec(savepoint ? `RELEASE SAVEPOINT ${savepoint}` : "COMMIT");
       return result;
-    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+    } catch (error) {
+      this.db.exec(savepoint ? `ROLLBACK TO SAVEPOINT ${savepoint}; RELEASE SAVEPOINT ${savepoint}` : "ROLLBACK");
+      throw error;
+    }
   }
   readTransaction<T>(fn: () => T): T {
     this.db.exec("BEGIN");

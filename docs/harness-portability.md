@@ -41,12 +41,21 @@
 | `harness/pi/events.ts`：`normalizePiEvent/quotaEvent/resetTime`；`harness/pi/driver.ts`：`receive` | 助手 `message_end.message.usage` 的 input/cacheRead/cacheWrite/output/reasoning；429 与明确额度码、重置时间字段；助手消息 ID / 内容摘要去重。 | 替换解析器，输出 `harness/types.ts` 的 `usage_record/quota_exhausted`；保留逐请求去重、先于原事件派发及未知重置时间为 null。 | 低 |
 | `tasks.ts`：`recordUsage/pauseQuota/armQuotaTimer/resumeQuota`；`store.ts` 的用量账本；`packages/protocol/src/index.ts`：`UsageSummary/TaskStatus` | 用量和额度状态本身是中立合同；结果中还保存原始 `get_session_stats`，任务 settled 仍受 pi 事件控制。 | 复用账本、树汇总和恢复规则；替换原始统计与完成时机。若重新定义统计合同，还需兼容持久化与客户端。 | 高，仅记录 |
 
+## 安全与任务树预算
+
+| 位置 | pi 依赖 | 更换 Harness 时的工作 | 代价 |
+| --- | --- | --- | --- |
+| `packages/daemon/src/budgets.ts`、`acl.ts`、`security.ts`、`offline.ts` | 预算、资源关系、设备签名、JCS、SQLite 和实例锁不依赖 pi。预算暂停只调用既有 `DriverHandle.stop()`；取消队列、停止推理和清理进程由适配器完成。 | 复用安全与预算规则；新驱动必须保留停止和停止后尾量记账的合同。 | 低 |
+| `test/task-security-1c.test.mjs`、`security-http-1c.test.mjs`、`security-core.test.mjs` | 安全服务与 HTTP 用测试签名器验收；任务模拟器仍构造 pi RPC 事件和停止队列。 | 替换任务夹具的 Harness 事件，安全签名与迁移测试可复用。 | 安全低；任务夹具中 |
+
+`test/budget-wake-e2e.test.mjs` 与 `test/fixtures/budget-provider.ts` 用 pi Provider 注册、真实 agora 工具和 `agora:notice` 落盘格式验证单名额预算循环，覆盖父进程复用与回收重拉。迁移时须替换 Provider 和消息注入适配，保留同代两次暂停、逐次确认及显式恢复语义；代价高。预算事件本身仅复用已有调度，不新增 pi RPC 命令。
+
 ## 设置与项目信任
 
 | 位置 | pi 依赖 | 更换 Harness 时的工作 | 代价 |
 | --- | --- | --- | --- |
 | `harness/pi/driver.ts`：`resolveSkills`；`harness/pi/launch.ts` | 用户 agent 目录为 `PI_CODING_AGENT_DIR` 或 `~/.pi/agent`；读取 `settings.json.skills`；生产固定 `--no-approve`。 | 替换用户设置来源并重新验证默认信任和资源隔离。 | 中 |
-| `packages/daemon/src/index.ts`：`configured`；`docs/security.md`、`architecture.md` 的项目信任设计 | 当前配置仅接受现有字段；`implement.projectTrust: "saved"` 与扩展 / MCP 白名单属于后续目标，未开放。 | 使用新 Harness 的实际信任接口设计隔离方案；不得将文档中的后续设计当作现有能力。 | 中 |
+| `packages/daemon/src/index.ts`：`configured`；`docs/security.md`、`architecture.md` 的项目信任设计 | 当前配置仅接受现有字段；`implement.projectTrust: "saved"` 与扩展 / MCP 白名单推迟至 [#10](https://github.com/PosvdM/pi-agora/issues/10)：pi CLI 缺少独立 auth/models 路径；不复制 OAuth 凭证，也不引入 SDK launcher。 | 使用新 Harness 的实际信任接口设计隔离方案；不得将文档中的后续设计当作现有能力。 | 中 |
 
 ## skill 与 MCP
 
