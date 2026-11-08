@@ -1,4 +1,5 @@
-import { appendFile, lstat, mkdir, open, realpath, rename, unlink } from "node:fs/promises";
+import { appendFile, copyFile, lstat, mkdir, open, realpath, rename, unlink } from "node:fs/promises";
+import { constants } from "node:fs";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
@@ -41,7 +42,7 @@ interface ViewState {
   initialMessageCount?: number;
   baseline?: { hash: string; bytes: number };
   verification?: Verification;
-  failure?: unknown;
+  diagnosticsDirty: boolean;
 }
 
 const MAX_EVENTS = 2000;
@@ -78,7 +79,7 @@ export class SessionViews {
       sessionId, runId, epoch: `${this.instanceId}:${runId}`, seq: 0, handle,
       entries: [], leafId: null, diskEntries: [], rpcEntries: [], events: new PiArchiveEvents(runId),
       archivedPartials: [], pending: [], work: Promise.resolve(), ready: Promise.resolve(), lastWrite: 0,
-      off: [], clients: new Set(), ring: [], issues: [], closing: false, ended: false, cleanupPending: false,
+      off: [], clients: new Set(), ring: [], issues: [], closing: false, ended: false, cleanupPending: false, diagnosticsDirty: false,
     };
   }
   private issue(state: ViewState, kind: string, error: unknown): void {
@@ -89,7 +90,7 @@ export class SessionViews {
   private serial<T>(state: ViewState, operation: () => Promise<T>): Promise<T> {
     const result = state.work.then(operation);
     state.work = result.then(() => {}, error => {
-      state.failure = error;
+      state.diagnosticsDirty = true;
       this.issue(state, "archive_io", error);
     });
     return result;
@@ -259,8 +260,8 @@ export class SessionViews {
     }
   }
   private async flushRetired(state: ViewState): Promise<void> {
-    if (!state.pending.length) return;
-    // 旧运行退出时的写入失败可重试；换 run 或关闭服务前不能丢弃仍在内存中的片段。
+    if (!state.pending.length && !state.diagnosticsDirty) return;
+    // 片段与诊断分别记录待保存职责，旧错误不阻止重试当前屏障。
     await this.serial(state, async () => {
       await this.writePending(state);
       await this.verifyState(state);
@@ -282,22 +283,48 @@ export class SessionViews {
       this.scheduleWrite(state);
       return;
     }
-    if (!state.pending.length) {
-      if (state.failure) throw state.failure;
-      return;
-    }
+    if (!state.pending.length) return;
     const rows = state.pending.splice(0);
     try {
       const file = await this.sidecar(state, "partials", ".jsonl");
-      await appendFile(file, rows.map(row => JSON.stringify(row)).join("\n") + "\n", { mode: 0o600 });
+      await this.commitPartials(file, rows.map(row => JSON.stringify(row)).join("\n") + "\n");
       state.lastWrite = Date.now();
-      state.failure = undefined;
     } catch (error) {
       // 保留失败批次；后续刷新与 flush 不能把未落盘片段当成成功。
       state.pending.unshift(...rows);
       throw error;
     }
     this.scheduleWrite(state);
+  }
+  private async commitPartials(target: string, batch: string): Promise<void> {
+    const temporary = `${target}.${randomUUID()}.tmp`;
+    let created = false;
+    try {
+      // 单写者按 state 串行提交；读者只会看到旧文件或含完整批次的新文件。
+      // 中断或部分写入只留下不可见的 .tmp，不会污染 JSONL 的完整行边界。
+      try { await copyFile(target, temporary, constants.COPYFILE_EXCL); created = true; }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        const descriptor = await open(temporary, "wx", 0o600);
+        created = true;
+        await descriptor.close();
+      }
+      const descriptor = await open(temporary, "a");
+      try {
+        // 写入固定在已核验的句柄上，不能跟随复制后被替换的临时链接。
+        const info = await lstat(temporary), opened = await descriptor.stat();
+        if (!info.isFile() || info.isSymbolicLink() || info.nlink > 1 || opened.nlink > 1 || info.ino !== opened.ino || info.dev !== opened.dev) {
+          throw new AgoraError(403, "archive_path", "归档临时文件已被替换");
+        }
+        await appendFile(descriptor, batch);
+        await descriptor.sync();
+      } finally { await descriptor.close(); }
+      await rename(temporary, target);
+      created = false;
+    } finally {
+      // rename 是提交点；提交后的清理不得把已提交批次重新放回 pending。
+      if (created) await unlink(temporary).catch(error => { if (error.code !== "ENOENT") throw error; });
+    }
   }
   private async verifyState(state: ViewState): Promise<Verification> {
     const file = await this.sessionFile(state.sessionId);
@@ -312,6 +339,7 @@ export class SessionViews {
     return result;
   }
   private async saveDiagnostics(state: ViewState): Promise<void> {
+    state.diagnosticsDirty = true;
     const target = await this.sidecar(state, "runs", ".json");
     const temporary = `${target}.${randomUUID()}.tmp`;
     // 临时文件以独占创建方式防止链接替换，所有本运行写入均由 work 串行。
@@ -321,6 +349,7 @@ export class SessionViews {
       await descriptor.writeFile(JSON.stringify(this.runDiagnostics(state), null, 2));
       await descriptor.close(); descriptor = undefined;
       await rename(temporary, target);
+      state.diagnosticsDirty = false;
     } finally {
       if (descriptor) await descriptor.close();
       await unlink(temporary).catch(error => { if (error.code !== "ENOENT") throw error; });
@@ -354,7 +383,6 @@ export class SessionViews {
         await state.work;
         if (!state.ended || state.cleanupPending) throw new AgoraError(409, "archive_busy", "会话归档尚未收尾");
         await this.flushRetired(state);
-        if (state.failure) throw new AgoraError(409, "archive_io", "会话归档收尾失败，请检查诊断");
         if (state.timer) { clearTimeout(state.timer); state.timer = undefined; }
         for (const off of state.off.splice(0)) off();
         for (const client of [...state.clients]) client.close();
@@ -385,13 +413,11 @@ export class SessionViews {
     for (const off of state.off.splice(0)) off();
     try {
       await this.serial(state, async () => {
-        if (!state.ended) {
-          try {
-            await this.refresh(state);
-            await this.writePending(state);
-            await this.verifyState(state);
-          } finally { state.ended = true; }
-        }
+        try {
+          await this.refresh(state);
+          await this.writePending(state);
+          await this.verifyState(state);
+        } finally { state.ended = true; }
         await this.saveDiagnostics(state);
       });
     } finally {
@@ -408,12 +434,9 @@ export class SessionViews {
     if (this.closed) throw new AgoraError(503, "draining", "会话服务已关闭");
     let state = this.states.get(sessionId);
     if (!state) {
-      // 任一未确认清理的 run 都阻止历史 EOF，不能只看会话终态或最新一条 run。
-      const run = this.store.get<{ id: string; state: string; exited_at: string | null; cleanup_error: string | null }>(
-        "SELECT id,state,exited_at,cleanup_error FROM process_runs WHERE agora_session_id=? ORDER BY CASE WHEN exited_at IS NULL OR state<>'exited' OR cleanup_error IS NOT NULL THEN 0 ELSE 1 END,started_at DESC,id DESC LIMIT 1", sessionId);
+      const run = this.historyRun(sessionId);
       state = this.state(sessionId, run?.id ?? "archive");
-      state.ended = !run || (run.state === "exited" && run.exited_at !== null && run.cleanup_error === null);
-      state.cleanupPending = !state.ended;
+      this.historyStatus(state);
       this.states.set(sessionId, state);
       const current = state;
       current.ready = this.serial(current, () => this.refresh(current));
@@ -421,7 +444,19 @@ export class SessionViews {
     await state.ready;
     if (this.deleting.has(sessionId)) throw new AgoraError(409, "archive_busy", "会话存档正在删除");
     if (this.states.get(sessionId) !== state) return this.ensure(sessionId);
+    if (!state.handle) this.historyStatus(state);
     return state;
+  }
+  private historyRun(sessionId: string) {
+    // 任一未确认清理的 run 都阻止历史 EOF，不能只看会话终态或最新一条 run。
+    return this.store.get<{ id: string; state: string; exited_at: string | null; cleanup_error: string | null }>(
+      "SELECT id,state,exited_at,cleanup_error FROM process_runs WHERE agora_session_id=? ORDER BY CASE WHEN exited_at IS NULL OR state<>'exited' OR cleanup_error IS NOT NULL THEN 0 ELSE 1 END,started_at DESC,id DESC LIMIT 1", sessionId);
+  }
+  private historyStatus(state: ViewState): void {
+    const run = this.historyRun(state.sessionId);
+    const session = this.store.session(state.sessionId);
+    state.cleanupPending = !!run && (run.state !== "exited" || run.exited_at === null || run.cleanup_error !== null);
+    state.ended = !state.cleanupPending && ["completed", "failed", "stopped", "interrupted"].includes(session.status) && !session.control_state;
   }
   private taskStatus(sessionId: string): { status: string; statusDetail: string | null; phase: InFlightState["phase"]; revision: number } {
     const session = this.store.session(sessionId);
@@ -480,7 +515,11 @@ export class SessionViews {
   }
   status(sessionId: string): void {
     const state = this.states.get(sessionId);
-    if (state) this.publish(state, "agora_status", this.taskStatus(sessionId));
+    if (state) {
+      if (!state.handle) this.historyStatus(state);
+      this.publish(state, "agora_status", this.taskStatus(sessionId));
+      if (!state.handle && state.ended) for (const client of [...state.clients]) client.finish();
+    }
   }
   private publish(state: ViewState, type: string, data: Record<string, unknown>): void {
     const event: ViewEvent = clone({ cursor: { epoch: state.epoch, seq: ++state.seq }, sessionId: state.sessionId, event: { ...data, type } });
