@@ -10,6 +10,8 @@ const TERMINAL = new Set(["completed", "done", "failed", "stopped", "interrupted
 const STEERABLE = new Set(["running", "waiting_decision", "waiting_children", "completed", "failed"]);
 const MAX_PAGES = 10_000;
 const RESULT_LIMIT = 20;
+const MAX_PENDING_CHANGES = 256;
+const MAX_PENDING_CHANGE_BYTES = 8 * 1024 * 1024;
 
 function status(value: string): NodeStatus {
   const mapped: Record<string, NodeStatus> = {
@@ -83,7 +85,8 @@ export function createViews(runtime: PluginRuntime): {
   const subscriptions = new Set<() => void>();
   const taskSessions = new Map<string, string>();
   const holds = new Map<string, { count: number; release(): void }>();
-  let holdQueue = Promise.resolve();
+  let holdRefresh: Promise<void> | undefined;
+  let holdDirty = false;
   const warn = (error: unknown) => runtime.context.log.warn("agora views", error);
   async function get<T = any>(path: string, signal = lifetime.signal): Promise<T> {
     if (disposed) throw new Error("agora 视图已关闭");
@@ -127,6 +130,7 @@ export function createViews(runtime: PluginRuntime): {
       if (disposed) return;
       if (++pages > MAX_PAGES) throw new Error("任务树分页超过保活扫描上限");
       const page = await get<SessionsPage>(query("/v1/sessions", { limit: 200, cursor }));
+      if (disposed) return;
       if (epoch !== undefined && page.changesCursor.epoch !== epoch) throw new Error("任务树来源已重置，请重新扫描");
       epoch = page.changesCursor.epoch;
       remember(page.items);
@@ -164,11 +168,23 @@ export function createViews(runtime: PluginRuntime): {
     }
   }
   function refreshHolds(): Promise<void> {
-    const next = holdQueue.then(scanHolds);
-    holdQueue = next.catch(() => {});
-    return next;
+    if (disposed) return Promise.resolve();
+    holdDirty = true;
+    if (!holdRefresh) {
+      holdRefresh = Promise.resolve().then(async () => {
+        try {
+          do {
+            holdDirty = false;
+            await scanHolds();
+          } while (holdDirty && !disposed);
+        } finally { holdRefresh = undefined; }
+      });
+      // 每个运行任务只观察一次错误，避免为每条变更保留一个回调。
+      void holdRefresh.catch(warn);
+    }
+    return holdRefresh;
   }
-  const offMains = runtime.context.mainSessions.onChange(() => { void refreshHolds().catch(warn); });
+  const offMains = runtime.context.mainSessions.onChange(() => { void refreshHolds(); });
   const tree: NonNullable<PanePlugin["tree"]> = {
     async snapshot(req) {
       const params = new URLSearchParams({ snapshot: "1", recentSince: req.recentSince });
@@ -207,6 +223,8 @@ export function createViews(runtime: PluginRuntime): {
     subscribe(from, emit) {
       let seq = from.revision;
       let queue = Promise.resolve();
+      let pendingChanges = 0;
+      let pendingBytes = 0;
       let stopped = false;
       let stream: ReturnType<typeof listen> | undefined;
       function reset(epoch = from.epoch) {
@@ -220,6 +238,14 @@ export function createViews(runtime: PluginRuntime): {
         if (event.type === "reset") { reset(event.data.epoch); return; }
         if (event.type !== "change" || stopped) return;
         const change = event.data;
+        // 计入正在映射的事件；transport 的单帧限制之外再限制整个积压。
+        const bytes = Buffer.byteLength(JSON.stringify(change), "utf8");
+        if (pendingChanges >= MAX_PENDING_CHANGES || bytes > MAX_PENDING_CHANGE_BYTES - pendingBytes) {
+          reset();
+          return;
+        }
+        pendingChanges++;
+        pendingBytes += bytes;
         queue = queue.then(async () => {
           if (stopped || !stream!.active()) return;
           if (change.cursor.epoch !== from.epoch) { reset(change.cursor.epoch); return; }
@@ -251,12 +277,13 @@ export function createViews(runtime: PluginRuntime): {
               emit({ type: "upsert", revision, node: node(item, revision) });
             }
             runtime.context.panelChanged({ panelId: TASK_PANEL, revision, nodeId: nodeId(id) });
-            void refreshHolds().catch(warn);
+            void refreshHolds();
           } else {
             // 非树对象也推进来源水位，避免分页等待一个永远不会推送的修订号。
             emit({ type: "upsert", revision, node: group(revision) });
             if (change.objectType === "request" && !change.tombstone) {
               const request = await get(`/v1/requests/${encoded(change.objectId)}`, stream!.signal);
+              if (stopped || !stream!.active()) return;
               if (request.taskId) {
                 const task = await get(`/v1/tasks/${encoded(request.taskId)}`, stream!.signal);
                 if (stream!.active() && task.agoraSessionId) runtime.context.panelChanged({ panelId: TASK_PANEL, revision, nodeId: nodeId(task.agoraSessionId) });
@@ -264,7 +291,8 @@ export function createViews(runtime: PluginRuntime): {
             }
           }
           seq = revision;
-        }).catch(error => { if (!stopped && stream!.active()) { warn(error); reset(); } });
+        }).catch(error => { if (!stopped && stream!.active()) { warn(error); reset(); } })
+          .finally(() => { pendingChanges--; pendingBytes -= bytes; });
       }, error => { warn(error); reset(); });
       if (stopped) stream.stop();
       return () => { stopped = true; stream!.stop(); };
@@ -337,7 +365,7 @@ export function createViews(runtime: PluginRuntime): {
         { expectedGeneration: task.generation, expectedRevision: task.revision },
         { signal: lifetime.signal });
       if (reply.status < 200 || reply.status >= 300) throw new Error(message(reply));
-      void refreshHolds().catch(warn);
+      void refreshHolds();
       // stop 总会清队列；clearQueue 只决定是否把原文交还输入框。
       const clearedText = (reply.body.droppedSteers ?? []).map((item: { message: string }) =>
         item.message.replace(/^【agora 返工 [^\n]*】\r?\n/, ""));
