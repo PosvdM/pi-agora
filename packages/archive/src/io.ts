@@ -1,5 +1,5 @@
 import { createReadStream } from "node:fs";
-import { realpath, stat } from "node:fs/promises";
+import { realpath, stat, lstat, readlink } from "node:fs/promises";
 import path from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { setImmediate } from "node:timers/promises";
@@ -12,43 +12,51 @@ function contained(root: string, file: string): boolean {
   return relative === "" || (!path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(".." + path.sep));
 }
 
-/** 缺失路径也检查现存祖先，避免目录链接绕过数据目录边界。 */
-export async function archivePath(root: string, file: string): Promise<{ file: string; missing: boolean }> {
-  const absolute = path.resolve(root, file);
-  if (!contained(root, absolute)) throw new ArchiveError("unsafe_path", "存档路径位于 AGORA_HOME 之外");
-  let current = absolute;
+/** 先解析真实祖先与悬空链接，再判断边界；允许 /var 等系统别名指向同一数据目录。 */
+async function canonicalArchivePath(root: string, file: string): Promise<{ file: string; missing: boolean }> {
+  const canonicalRoot = await realpath(root);
+  let current = path.resolve(root, file);
+  let remaining: string[] = [];
+  let links = 0;
   for (;;) {
     try {
-      const resolved = await realpath(current);
-      if (!contained(root, resolved)) throw new ArchiveError("unsafe_path", "存档符号链接指向 AGORA_HOME 之外");
-      if (current === absolute) {
-        if (!(await stat(resolved)).isFile()) throw new ArchiveError("invalid_file", "存档路径不是普通文件");
-        return { file: resolved, missing: false };
-      }
-      return { file: absolute, missing: true };
+      const ancestor = await realpath(current);
+      const target = path.join(ancestor, ...remaining.reverse());
+      if (!contained(canonicalRoot, target)) throw new ArchiveError("unsafe_path", "存档真实路径位于 AGORA_HOME 之外");
+      if (remaining.length && !(await stat(ancestor)).isDirectory()) throw new ArchiveError("invalid_file", "存档路径的祖先不是目录");
+      return { file: target, missing: remaining.length > 0 };
     } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOTDIR") throw new ArchiveError("invalid_file", "存档路径的祖先不是目录");
       if (!isMissing(error)) throw error;
+      const info = await lstat(current).catch((failure: NodeJS.ErrnoException) => {
+        if (failure.code === "ENOENT") return undefined;
+        throw failure;
+      });
+      if (info?.isSymbolicLink()) {
+        if (++links > 40) throw new ArchiveError("unsafe_path", "存档链接层数过多");
+        current = path.resolve(path.dirname(current), await readlink(current), ...remaining.reverse());
+        remaining = [];
+        continue;
+      }
       const parent = path.dirname(current);
       if (parent === current) throw error;
+      remaining.push(path.basename(current));
       current = parent;
     }
   }
 }
 
+export async function archivePath(root: string, file: string): Promise<{ file: string; missing: boolean }> {
+  const checked = await canonicalArchivePath(root, file);
+  if (!checked.missing && !(await stat(checked.file)).isFile()) throw new ArchiveError("invalid_file", "存档路径不是普通文件");
+  return checked;
+}
+
 export async function archiveDirectory(root: string, directory: string): Promise<string | undefined> {
-  const absolute = path.resolve(directory);
-  if (!contained(root, absolute)) throw new ArchiveError("unsafe_path", "存档目录位于 AGORA_HOME 之外");
-  try {
-    const resolved = await realpath(absolute);
-    if (!contained(root, resolved)) throw new ArchiveError("unsafe_path", "存档目录链接指向 AGORA_HOME 之外");
-    if (!(await stat(resolved)).isDirectory()) throw new ArchiveError("invalid_file", "存档目录不是目录");
-    return resolved;
-  } catch (error) {
-    if (!isMissing(error)) throw error;
-    // 即使末级目录缺失，也必须检查其父目录的真实路径。
-    await archivePath(root, path.join(absolute, ".archive-missing-check"));
-    return undefined;
-  }
+  const checked = await canonicalArchivePath(root, directory);
+  if (checked.missing) return undefined;
+  if (!(await stat(checked.file)).isDirectory()) throw new ArchiveError("invalid_file", "存档目录不是目录");
+  return checked.file;
 }
 
 export async function* jsonLines(file: string): AsyncGenerator<unknown> {

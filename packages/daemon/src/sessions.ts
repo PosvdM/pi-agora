@@ -2,7 +2,7 @@ import { appendFile, lstat, mkdir, open, realpath, rename, unlink } from "node:f
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { openArchive, projectPartials, projectUserView, verifySessionFile } from "@pi-agora/archive";
+import { openArchive, projectPartials, projectUserView, verifySessionFile, resolveArchivePath } from "@pi-agora/archive";
 import type { InFlightState, SessionStreamEvent } from "@pi-agora/protocol";
 import { parseSessionFile, sessionMessages } from "@pi-agora/harness-pi";
 import type { SessionEntry } from "@pi-agora/protocol";
@@ -85,21 +85,10 @@ export class SessionViews {
     return result;
   }
   private async sessionFile(sessionId: string): Promise<string> {
-    const file = path.resolve(this.store.session(sessionId).session_file);
-    const home = await realpath(this.store.home);
-    if (!within(home, file)) throw new AgoraError(403, "archive_path", "会话路径超出 AGORA_HOME");
-    // 文件不存在时仍核对最近的真实父目录，不能通过目录链接绕出归档根目录。
-    let target = file;
-    while (true) {
-      try {
-        if (!within(home, await realpath(target))) throw new AgoraError(403, "archive_path", "会话链接超出 AGORA_HOME");
-        return file;
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-        const parent = path.dirname(target);
-        if (parent === target) throw error;
-        target = parent;
-      }
+    try { return (await resolveArchivePath(this.store.home, this.store.session(sessionId).session_file)).file; }
+    catch (error) {
+      if ((error as { code?: string } | undefined)?.code === "unsafe_path") throw new AgoraError(403, "archive_path", "会话真实路径超出 AGORA_HOME");
+      throw error;
     }
   }
   private async sidecar(state: ViewState, kind: "partials" | "runs", suffix: string): Promise<string> {

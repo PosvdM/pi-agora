@@ -4,3 +4,4 @@ export { projectUserView, projectUserViewAsync } from "./projection.js";
 export { projectPartials, projectPartialsAsync } from "./partials.js";
 export { verifySessionFile } from "./verify.js";
 export { openArchive } from "./reader.js";
+export { archivePath as resolveArchivePath } from "./io.js";

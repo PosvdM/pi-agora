@@ -1,6 +1,6 @@
-import { readdir, lstat, realpath } from "node:fs/promises";
+import { readdir, lstat } from "node:fs/promises";
 import path from "node:path";
-import { openArchive } from "@pi-agora/archive";
+import { openArchive, resolveArchivePath } from "@pi-agora/archive";
 import { Store, now } from "./store.js";
 import { AgoraError } from "./errors.js";
 import type { MessageObservation } from "./harness/types.js";
@@ -34,21 +34,11 @@ export class ArchiveVerifier {
   private async perform(sessionId: string) {
     const session = this.store.get<VerifiedSession>("SELECT id,convener_id,archive_state,archive_hash,archive_bytes,session_file FROM agora_sessions WHERE id=?", sessionId);
     if (!session) throw new AgoraError(404, "not_found", "会话不存在");
-    // 元数据指向的文件同样必须处在数据目录内；缺失路径仍检查最近存在的祖先。
-    const home = await realpath(this.store.home);
-    let ancestor = path.resolve(session.session_file);
-    const unresolved: string[] = [];
-    while (true) {
-      try { ancestor = path.join(await realpath(ancestor), ...unresolved.reverse()); break; }
-      catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-        const parent = path.dirname(ancestor);
-        if (parent === ancestor) throw error;
-        unresolved.push(path.basename(ancestor)); ancestor = parent;
-      }
+    try { await resolveArchivePath(this.store.home, session.session_file); }
+    catch (error) {
+      if ((error as { code?: string } | undefined)?.code === "unsafe_path") throw new AgoraError(403, "archive_path_outside_home", "存档真实路径不在数据目录内");
+      throw error;
     }
-    const relative = path.relative(home, ancestor);
-    if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw new AgoraError(403, "archive_path_outside_home", "存档路径不在数据目录内");
     const reader = await openArchive({ home: this.store.home, apiVersion: 1 });
     let result: Awaited<ReturnType<typeof reader.verifySession>>;
     try { result = await reader.verifySession(sessionId); }

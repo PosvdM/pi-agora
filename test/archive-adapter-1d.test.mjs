@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile, appendFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, realpath, rm, symlink, writeFile, appendFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { openArchive, projectUserView, verifySessionFile } from "../packages/archive/dist/index.js";
@@ -88,7 +88,7 @@ for (const version of [4, 5, 6]) {
     assert.equal(page.items[0].messageCount, undefined);
     const detail = await reader.getSession("as-1");
     assert.equal(detail.availability, "available");
-    assert.equal(detail.sessionFile, await import("node:fs/promises").then(fs => fs.realpath(file)));
+    assert.equal(detail.sessionFile, await realpath(file));
     assert.equal(await reader.getSession("不存在"), undefined);
     assert.throws(() => reader.db.exec("DELETE FROM agora_sessions"), /readonly|read.only/i);
     reader.close();
@@ -263,7 +263,7 @@ test("数据库会话及诊断路径越界拒绝读取", async t => {
   await assert.rejects(reader.getSession("outside"), { code: "unsafe_path" });
   f.db.prepare("INSERT INTO process_runs VALUES(?,?,?)").run("run-1", "inside", outside);
   await assert.rejects(reader.readDiagnostics("inside"), { code: "unsafe_path" });
-  assert.equal((await reader.getSession("inside")).sessionFile, file);
+  assert.equal((await reader.getSession("inside")).sessionFile, path.resolve(await realpath(f.home), path.relative(f.home, file)));
 });
 
 test("session、partials 和诊断目录的符号链接越界拒绝读取", async t => {

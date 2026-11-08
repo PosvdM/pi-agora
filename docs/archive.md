@@ -125,7 +125,7 @@ daemon 从 RPC 事件流里收到 `message_update` 增量（依据：`docs/json.
 
 - daemon 从不自动删除会话目录或会话文件。
 - 用户删除存档必须显式执行 `agora archive delete <sessionId> --offline`。在线删除属于用户级操作，在签名确认通路接入前拒绝执行，不能凭主机凭证绕过。离线维护同时持有 daemon 实例锁与会话写锁，要求终态、全部 run 明确退出、旧写者已释放，以及真实目录和普通文件检查全部通过；不会停止未知写者，也不使用 `assumeNoWriter`。
-- 删除后 `archive_state = missing`，SQLite 元数据保留，树节点仍然列出，`availability` 为 `missing`，发布 `upsert`，不是 tombstone。文件缺失、锁证明不足、状态不明或路径包含链接时保守拒绝删除。用户级目标见 [security.md](security.md#用户确认)，树映射见 [integration.md](integration.md#同步与按需加载)。
+- 删除后 `archive_state = missing`，SQLite 元数据保留，树节点仍然列出，`availability` 为 `missing`，发布 `upsert`，不是 tombstone。文件缺失、锁证明不足或状态不明时保守拒绝删除。会话文件本身、实际会话目录及受保护的锁和数据库路径必须为普通路径，目录内部不能含链接或特殊文件；数据根目录的系统别名在检查前规范化。用户级目标见 [security.md](security.md#用户确认)，树映射见 [integration.md](integration.md#同步与按需加载)。
 - 存档占用的磁盘空间在 `agora status` 里显示。
 
 ## 读取权限
@@ -145,6 +145,7 @@ MVP 中 Agent 读存档只通过 `agora_task result` 和会议纪要，不提供
 
 ```ts
 export function openArchive(opts: { home?: string; apiVersion: 1 }): Promise<ArchiveReaderV1>;
+export function resolveArchivePath(home: string, file: string): Promise<{ file: string; missing: boolean }>;
 
 export interface ArchiveReaderV1 {
   readonly apiVersion: 1;
@@ -196,7 +197,7 @@ export interface Page<T> { items: T[]; nextCursor?: string }
 - **会话文件只读解析**：`packages/harness-pi` 按 pi 的 JSONL 格式（`docs/session-format.md`）自行解析，旧版本格式在内存里迁移，绝不写回。不用 pi 导出的 `SessionManager.open()`：它在文件为空或需要从旧格式迁移时会调用 `_rewriteFile()` 重写文件（依据：`dist/core/session-manager.js:666–727`）。末尾未写完的截断行或中间补换行留下的不完整行直接跳过并记录，不当成损坏。解析结果的条目保持 pi `SessionEntry` 的原始形状。
 - **条目键与叶子节点**：v1 条目 ID 在读取时临时生成，不具备跨读取器的稳定性。同一 reader 仅在文件指纹不变时复用快照以支持分页；文件内容变化后旧水位无效，需要重新取快照。v2/v3 保留文件 ID，文件叶子取最后一个非 session 条目。
 - **关系与分页**：`parent` 只包含领域标识，子任务的 `sessionId` 指向父任务当前会话，不使用任何查看器节点格式；主会话标识缺失时省略并附诊断。会话列表按创建时间和 ID 倒序，游标绑定筛选条件；每页默认 50、上限 200。`getSession` 额外返回经真实路径检查的 `sessionFile`，列表不返回路径。
-- 只接受 `AGORA_HOME` 下的路径：从数据库读出的 `session_file` 先做真实路径解析，不在数据目录内的拒绝读取。
+- 只接受 `AGORA_HOME` 下的真实路径：从数据库读出的 `session_file` 先解析真实路径，系统父目录别名指向同一数据目录时可以读取。缺失文件解析最近存在的祖先，悬空链接仍核对其目标；真实路径越界或祖先不是目录时拒绝。daemon 与 adapter 共用 `resolveArchivePath`，返回规范绝对路径与明确的缺失标志。
 - adapter 不暴露 SQLite 表结构。数据库迁移时同步更新 adapter；`apiVersion` 只在返回结构不兼容时递增，旧版本保留至少一个大版本。
 - 不读取、不返回密封草稿。
 - `listBoardEntries`、`getMeeting` 保留为明确失败的占位接口，当前调用返回 `unsupported`，不伪造空结果。

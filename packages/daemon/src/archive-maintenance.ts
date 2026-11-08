@@ -11,6 +11,14 @@ async function exactPath(file: string, directory: boolean): Promise<void> {
     refuse(`路径不是普通${directory ? "目录" : "文件"}：${file}`);
   }
 }
+async function checkedSessionFile(directory: string, stored: string): Promise<string> {
+  if (!path.isAbsolute(stored)) refuse("会话文件路径不是绝对路径");
+  const file = await realpath(stored);
+  if (path.relative(directory, path.dirname(file)) !== "") refuse("会话文件不在指定会话目录内");
+  if ((await lstat(stored)).isSymbolicLink()) refuse("会话文件不能是链接");
+  await exactPath(file, false);
+  return file;
+}
 async function noLinks(directory: string): Promise<void> {
   const pending = [directory];
   let count = 0;
@@ -56,11 +64,10 @@ export async function deleteArchiveOffline(options: { home: string; sessionId: s
     if (!["completed", "failed", "stopped", "interrupted"].includes(session.status) || session.control_state) refuse("会话仍可运行或处于控制操作中");
     const activeRun = () => db!.prepare("SELECT id FROM process_runs WHERE agora_session_id=? AND (exited_at IS NULL OR state<>'exited' OR cleanup_error IS NOT NULL) LIMIT 1").get(sessionId);
     if (activeRun()) refuse("存在尚未明确清理完成的 run，请由 daemon 核对退出状态");
-    if (!path.isAbsolute(session.session_file) || path.relative(directory, path.dirname(session.session_file)) !== "") refuse("会话文件不在指定会话目录内");
-    await exactPath(session.session_file, false);
-    const probe = await probeSessionWriterLock(session.session_file);
+    const sessionFile = await checkedSessionFile(directory, session.session_file);
+    const probe = await probeSessionWriterLock(sessionFile);
     if (probe.held || !probe.record || probe.record.state !== "released") refuse("无法证明旧写者已释放会话写锁；不采用进程或文件存在性推断");
-    const acquired = await acquireSessionWriterLock(session.session_file, { app: "pi-agora", identity: currentProcessIdentity(`archive-delete-${sessionId}`) });
+    const acquired = await acquireSessionWriterLock(sessionFile, { app: "pi-agora", identity: currentProcessIdentity(`archive-delete-${sessionId}`) });
     if (!isSessionWriterLock(acquired)) refuse("会话写锁被占用");
     writer = acquired;
     if (!writer.previous || writer.previous.state !== "released") refuse("取得写锁后，旧写者释放证明发生变化");
@@ -70,7 +77,7 @@ export async function deleteArchiveOffline(options: { home: string; sessionId: s
     await exactPath(run, true);
     await exactPath(sessions, true);
     await exactPath(directory, true);
-    await exactPath(session.session_file, false);
+    if (await checkedSessionFile(directory, session.session_file) !== sessionFile) refuse("删除前会话真实路径发生变化");
     if (activeRun()) refuse("删除前发现未清理 run");
     db.exec("BEGIN IMMEDIATE");
     try {

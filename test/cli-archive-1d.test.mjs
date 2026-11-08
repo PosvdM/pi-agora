@@ -227,6 +227,18 @@ test("离线删除持有两类锁、保留元数据并发布 upsert", async () =
     assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM agora_sessions").get().n, 1);
   } finally { await f.cleanup(); }
 });
+test("离线删除规范化数据库中的父目录别名，不误拒绝同一会话文件", async t => {
+  const f = await maintenanceFixture();
+  try {
+    const alias = path.join(f.home, "session-alias");
+    try { await symlink(path.join(f.home, "sessions"), alias, "junction"); }
+    catch (error) { if (["EPERM", "EACCES"].includes(error.code)) { t.skip("本机不允许创建链接"); return; } throw error; }
+    f.db.prepare("UPDATE agora_sessions SET session_file=?").run(path.join(alias, f.id, "session.jsonl"));
+    await releasedWriter(f.file);
+    assert.equal((await deleteArchiveOffline({ home: f.home, sessionId: f.id })).deleted, true);
+    await assert.rejects(access(f.directory));
+  } finally { await f.cleanup(); }
+});
 test("离线删除拒绝 daemon 锁、未确认 run、缺失写者证明", async () => {
   const f = await maintenanceFixture();
   try {

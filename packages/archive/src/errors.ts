@@ -7,5 +7,5 @@ export class ArchiveError extends Error {
 
 export function isMissing(error: unknown): boolean {
   return typeof error === "object" && error !== null &&
-    ("code" in error && (error.code === "ENOENT" || error.code === "ENOTDIR"));
+    ("code" in error && error.code === "ENOENT");
 }

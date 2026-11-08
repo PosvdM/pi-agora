@@ -38,6 +38,7 @@ await writeFile(archiveFile, `
 import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { parseSessionFile } from './parser.mjs';
+export { archivePath as resolveArchivePath } from ${JSON.stringify(new URL('../packages/archive/dist/io.js', import.meta.url).href)};
 const fixtures = globalThis[${JSON.stringify(fixtureKey)}];
 export function projectUserView(entries, leafId) {
   const byId = new Map(entries.map(entry => [entry.id, entry])), seen = new Set(), result = [];
