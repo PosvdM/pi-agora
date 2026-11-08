@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
+import { isFetchForbiddenPort } from './ports.js';
 
 export const PROTOCOL_VERSION = 1;
 export const PROTOCOL_RANGE = { min: 1, max: 1 } as const;
@@ -31,10 +32,15 @@ export interface AgoraClient {
   close(): void;
 }
 export class AgoraConnectionError extends Error {
-  constructor(options?: ErrorOptions) {
+  readonly fetchForbidden: boolean;
+  constructor(options?: ErrorOptions & { port?: number }) {
     const codes = connectionErrorCodes(options?.cause);
-    super(`无法连接 agora，请检查后台进程${codes.length ? `（${codes.join('，')}）` : ''}`, options);
+    const fetchForbidden = options?.port !== undefined && isFetchForbiddenPort(options.port) || isBadPortError(options?.cause);
+    super(fetchForbidden
+      ? `无法连接 agora，端口${options?.port === undefined ? '' : ` ${options.port}`} 被 Fetch 禁止，请重启后台进程`
+      : `无法连接 agora，请检查后台进程${codes.length ? `（${codes.join('，')}）` : ''}`, options);
     this.name = 'AgoraConnectionError';
+    this.fetchForbidden = fetchForbidden;
   }
 }
 export class AgoraHttpError extends Error {
@@ -83,6 +89,19 @@ function connectionErrorCodes(error: unknown): string[] {
   }
   return [...codes];
 }
+function isBadPortError(error: unknown): boolean {
+  const pending = [error];
+  const seen = new Set<object>();
+  for (let index = 0; index < pending.length; index++) {
+    const value = pending[index];
+    if (!record(value) || seen.has(value)) continue;
+    seen.add(value);
+    if (value.message === 'bad port') return true;
+    pending.push(value.cause);
+    if (value instanceof AggregateError) pending.push(...value.errors);
+  }
+  return false;
+}
 function isTransportError(error: unknown): boolean {
   const codes = ['ECONNRESET', 'ECONNREFUSED', 'EPIPE', 'ETIMEDOUT', 'ENETUNREACH', 'EHOSTUNREACH', 'EAI_AGAIN',
     'UND_ERR_SOCKET', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT'];
@@ -123,6 +142,9 @@ async function jsonRequest<T>(url: string, method: string, path: string, body: u
       text = await response.text();
     } catch (error) {
       assertActive(requestSignal);
+      if (isFetchForbiddenPort(Number(target.port)) || isBadPortError(error)) {
+        throw new AgoraConnectionError({ cause: error, port: Number(target.port) });
+      }
       const transportError = isTransportError(error);
       // 至多发送三次；收到 HTTP 拒绝后，即使正文中断也不重试。
       if (retryable && attempt < 2 && !signal.aborted && transportError && (!response || response.ok)) {
@@ -224,7 +246,7 @@ export async function connectHost(options: ConnectHostOptions): Promise<AgoraCli
   const existing = await discover(home, options.signal);
   if (existing) {
     try { return await authenticateHost(home, existing, options); }
-    catch (error) { if (!(error instanceof AgoraConnectionError) || options.autoStart === false) throw error; }
+    catch (error) { if (!(error instanceof AgoraConnectionError) || error.fetchForbidden || options.autoStart === false) throw error; }
   } else if (options.autoStart === false) throw new Error('agora 后台进程尚未启动');
   const entry = options.daemonEntry ?? fileURLToPath(new URL('../../daemon/dist/main.js', import.meta.url));
   await startDaemon(home, entry, options.signal);
@@ -233,7 +255,7 @@ export async function connectHost(options: ConnectHostOptions): Promise<AgoraCli
     const discovery = await discover(home, options.signal);
     if (discovery) {
       try { return await authenticateHost(home, discovery, options, deadline); }
-      catch (error) { if (!(error instanceof AgoraConnectionError)) throw error; }
+      catch (error) { if (!(error instanceof AgoraConnectionError) || error.fetchForbidden) throw error; }
     }
     await delay(100, undefined, { signal: options.signal });
   }

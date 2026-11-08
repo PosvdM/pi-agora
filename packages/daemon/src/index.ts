@@ -11,6 +11,7 @@ import { openStore, id, type Store } from "./store.js";
 import { TaskManager, type TaskOptions } from "./tasks.js";
 import { createHttpServer, VERSION, PROTOCOL_RANGE } from "./server.js";
 import { RpcSubprocessDriver, type SessionDriver } from "./driver.js";
+import { listenOnFetchPort } from "./ports.js";
 
 export interface DaemonOptions extends Omit<TaskOptions, "home" | "url" | "instanceId"> {
   skillDirectories?: string[];
@@ -86,6 +87,7 @@ export async function startDaemon(options: DaemonOptions): Promise<RunningDaemon
   if (!lock) return existingDaemon(home);
   let store: Store | undefined;
   let server: ReturnType<typeof createHttpServer> | undefined;
+  let requests: Requests | undefined;
   const closing = new AbortController();
   const instanceId = id("in");
   const discoveryFile = path.join(runDirectory, "daemon.json");
@@ -121,22 +123,21 @@ export async function startDaemon(options: DaemonOptions): Promise<RunningDaemon
       })().catch(error => { closePromise = undefined; throw error; });
       return closePromise;
     };
-    server = createHttpServer({ store, auth, tasks, security, requests: new Requests(store, auth, tasks), instanceId, close, closing: closing.signal });
-    await new Promise<void>((resolve, reject) => {
-      server!.once("error", reject);
-      server!.listen(0, "127.0.0.1", () => { server!.off("error", reject); resolve(); });
+    const { port } = await listenOnFetchPort(() => {
+      requests = new Requests(store!, auth, tasks);
+      server = createHttpServer({ store: store!, auth, tasks, security, requests, instanceId, close, closing: closing.signal });
+      return server;
     });
-    const address = server.address();
-    if (!address || typeof address === "string") throw new Error("daemon 监听地址无效");
-    const url = `http://127.0.0.1:${address.port}`;
+    const url = `http://127.0.0.1:${port}`;
     taskOptions.url = url;
-    await writeFile(temporaryFile, JSON.stringify({ port: address.port, pid: process.pid, instanceId, daemonVersion: VERSION, protocol: PROTOCOL_RANGE }), { flag: "wx", mode: 0o600 });
+    await writeFile(temporaryFile, JSON.stringify({ port, pid: process.pid, instanceId, daemonVersion: VERSION, protocol: PROTOCOL_RANGE }), { flag: "wx", mode: 0o600 });
     await rename(temporaryFile, discoveryFile);
     tasks.startQueue();
     return { url, instanceId, store, auth, tasks, security, close };
   } catch (error) {
     closing.abort();
     if (server?.listening) await new Promise<void>(resolve => { server!.close(() => resolve()); server!.closeAllConnections(); });
+    requests?.close();
     await unlink(temporaryFile).catch(() => {});
     store?.close();
     await lock.release();
