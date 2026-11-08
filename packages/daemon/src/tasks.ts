@@ -98,6 +98,17 @@ export class TaskManager {
     this.maxConcurrentRuns = options.maxConcurrentRuns ?? 4;
     if (!Number.isInteger(this.maxConcurrentRuns) || this.maxConcurrentRuns < 1 || this.maxConcurrentRuns > 64) throw new Error("并发运行数必须为 1 到 64 的整数");
   }
+  /** 与恢复、返工及退出收尾共用目标任务的控制队列。 */
+  archiveControl<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
+    const taskId = this.store.session(sessionId).task_id;
+    if (!taskId || !this.store.get("SELECT id FROM tasks WHERE id=?", taskId)) throw new AgoraError(409, "archive_offline_required", "无任务关联的存档请使用离线维护");
+    return this.control(taskId, async () => {
+      // checkArchive 的旁车收尾可在控制回调返回后继续运行，须在删除前排空。
+      while (this.archiveChecks.size) await Promise.allSettled([...this.archiveChecks]);
+      if (this.store.session(sessionId).task_id !== taskId) throw new AgoraError(409, "conflict", "会话所属任务已变化");
+      return fn();
+    });
+  }
   private control<T>(taskId: string, fn: () => Promise<T>): Promise<T> {
     const promise = (this.controls.get(taskId) ?? Promise.resolve()).catch(() => {}).then(async () => {
       this.activeControls.add(taskId);

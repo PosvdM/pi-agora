@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile, writeFile, rm, access, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { createServer } from "node:http";
 import { DatabaseSync } from "node:sqlite";
 import { acquireInstanceLock, acquireSessionWriterLock, currentProcessIdentity, isSessionWriterLock } from "pi-hostkit";
@@ -14,20 +13,19 @@ import { daemonAvailable, readSse, sessionTree } from "../packages/cli/dist/arch
 import { AgoraConnectionError, AgoraHttpError } from "../packages/protocol/dist/client.js";
 import { deleteArchiveOffline } from "../packages/daemon/dist/archive-maintenance.js";
 
-const root = fileURLToPath(new URL("../", import.meta.url));
-const compiled = path.join(root, "packages/cli/dist");
-const unitRoot = await mkdtemp(path.join(tmpdir(), "agora-cli-unit-home-"));
+const compiled = await mkdtemp(path.join(tmpdir(), "agora-cli-1d-fixture-"));
 const environmentKeys = ["HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "AGORA_HOME"];
 const savedEnvironment = new Map(environmentKeys.map(key => [key, process.env[key]]));
-process.env.HOME = process.env.USERPROFILE = path.join(unitRoot, "user");
-process.env.APPDATA = path.join(unitRoot, "user", "AppData", "Roaming");
-process.env.LOCALAPPDATA = path.join(unitRoot, "user", "AppData", "Local");
-process.env.AGORA_HOME = path.join(unitRoot, "agora");
+process.env.HOME = process.env.USERPROFILE = path.join(compiled, "user");
+process.env.APPDATA = path.join(compiled, "user", "AppData", "Roaming");
+process.env.LOCALAPPDATA = path.join(compiled, "user", "AppData", "Local");
+process.env.AGORA_HOME = path.join(compiled, "agora");
+await assertIsolatedTestHome(compiled);
+await writeFile(path.join(compiled, "index.js"), "// 路径安全测试夹具\n");
 after(async () => {
-  try { await rm(unitRoot, { recursive: true, force: true }); }
+  try { await rm(compiled, { recursive: true, force: true }); }
   finally { for (const [key, value] of savedEnvironment) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } }
 });
-await assertIsolatedTestHome(unitRoot);
 
 function harness(overrides = {}) {
   const output = [], errors = [], calls = [];
@@ -85,10 +83,13 @@ test("在线 show/log 与 verify 路由、身份及幂等键", async () => {
     assert.equal(h.clientClosed, 1);
   }
 });
-test("在线删除在签名接线前拒绝；离线删除只调用维护入口", async () => {
+test("在线删除通过认证连接发起；离线删除只调用维护入口", async () => {
   const h = harness();
-  assert.equal(await h.run(["archive", "delete", "as_one"]), 1);
-  assert.match(h.errors[0], /在线删除尚未开放/);
+  h.client.request = async (...args) => { h.calls.push(args); return args[0] === "POST" ? { confirmation: { confirmationId: "cf_delete" } } : { alerts: [] }; };
+  assert.equal(await h.run(["archive", "delete", "as_one"]), 0);
+  assert.match(h.errors[0], /已配对/);
+  assert.equal(h.calls[1][1], "/v1/sessions/as_one/archive/delete");
+  assert.ok(h.calls[1][3].idempotencyKey);
   let called;
   h.deps.deleteOffline = async (...args) => { called = args; return { archiveState: "missing" }; };
   assert.equal(await h.run(["archive", "delete", "as_one", "--offline", "--home", compiled]), 0);
@@ -327,8 +328,8 @@ async function maintenanceFixture() {
     throw error;
   }
   const db = new DatabaseSync(path.join(home, "agora.db"));
-  db.exec("CREATE TABLE schema_version(version INTEGER,migrated_at TEXT); INSERT INTO schema_version VALUES(6,'测试'); CREATE TABLE agora_sessions(id TEXT PRIMARY KEY,session_file TEXT,status TEXT,control_state TEXT,archive_state TEXT,revision INTEGER); CREATE TABLE process_runs(id TEXT,agora_session_id TEXT,state TEXT,exited_at TEXT,cleanup_error TEXT); CREATE TABLE settings(key TEXT,value TEXT); INSERT INTO settings VALUES('epoch','test'); CREATE TABLE changes(seq INTEGER PRIMARY KEY,epoch TEXT,object_type TEXT,object_id TEXT,tombstone INTEGER,created_at TEXT);");
-  db.prepare("INSERT INTO agora_sessions VALUES(?,?,'completed',NULL,'ok',1)").run(id, file);
+  db.exec("CREATE TABLE schema_version(version INTEGER,migrated_at TEXT); INSERT INTO schema_version VALUES(6,'测试'); CREATE TABLE agora_sessions(id TEXT PRIMARY KEY,session_file TEXT,status TEXT,control_state TEXT,archive_state TEXT,revision INTEGER,archive_error TEXT); CREATE TABLE process_runs(id TEXT,agora_session_id TEXT,state TEXT,exited_at TEXT,cleanup_error TEXT); CREATE TABLE settings(key TEXT,value TEXT); INSERT INTO settings VALUES('epoch','test'); CREATE TABLE changes(seq INTEGER PRIMARY KEY,epoch TEXT,object_type TEXT,object_id TEXT,tombstone INTEGER,created_at TEXT);");
+  db.prepare("INSERT INTO agora_sessions VALUES(?,?,'completed',NULL,'ok',1,NULL)").run(id, file);
   return { home, id, directory, file, db, cleanup: async () => {
     try { db.close(); await rm(home, { recursive: true, force: true }); }
     finally { for (const [key, value] of savedEnvironment) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } }

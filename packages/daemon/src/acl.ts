@@ -1,6 +1,6 @@
 import type { Auth, Connection } from './auth.js';
 import { AgoraError } from './errors.js';
-import type { Store, TaskRow } from './store.js';
+import type { Store, TaskRow, SessionRow } from './store.js';
 
 import type { UserExecutionProof } from './budgets.js';
 export function confirmationRequired(action: string, target: string, params: Record<string, unknown>): never {
@@ -36,6 +36,31 @@ export class AccessControl {
       if (!current.parent_task_id) return;
       current = this.store.task(current.parent_task_id);
     }
+  }
+  session(conn: Connection, session: SessionRow): void {
+    this.auth.requireMain(conn);
+    if (isHost(conn)) return;
+    if (session.task_id) this.taskBoundary(conn, this.store.task(session.task_id));
+    if (session.principal_id === conn.principalId) return;
+    if (session.task_id) { this.task(conn, this.store.task(session.task_id), 'status'); return; }
+    throw new AgoraError(403, 'forbidden', '只能读取自己的任务树会话');
+  }
+  /** 授权集合在数据库内过滤，返回值始终受分页上限约束。 */
+  sessions(conn: Connection, cursor: number, limit: number): (SessionRow & { cursor: number })[] {
+    this.auth.requireMain(conn);
+    if (isHost(conn)) return this.store.all('SELECT rowid AS cursor,* FROM agora_sessions WHERE rowid>? ORDER BY rowid LIMIT ?', cursor, limit);
+    const principal = conn.principalId!;
+    return this.store.all(`WITH RECURSIVE ancestry(target,id,parent_task_id,convener_id,taken_over_from,inside) AS (
+      SELECT t.id,t.id,t.parent_task_id,t.convener_id,t.taken_over_from,s.principal_id=?
+      FROM tasks t JOIN agora_sessions s ON s.id=t.agora_session_id
+      UNION ALL
+      SELECT a.target,t.id,t.parent_task_id,t.convener_id,t.taken_over_from,a.inside OR s.principal_id=?
+      FROM ancestry a JOIN tasks t ON t.id=a.parent_task_id JOIN agora_sessions s ON s.id=t.agora_session_id
+    ) SELECT s.rowid AS cursor,s.* FROM agora_sessions s WHERE s.rowid>? AND (
+      s.principal_id=? OR (
+        EXISTS(SELECT 1 FROM ancestry a WHERE a.target=s.task_id AND a.convener_id=?)
+        AND NOT EXISTS(SELECT 1 FROM ancestry a WHERE a.target=s.task_id AND a.taken_over_from IS NOT NULL AND NOT a.inside)
+      )) ORDER BY s.rowid LIMIT ?`, principal, principal, cursor, principal, principal, limit);
   }
   reachable(principalId: string): boolean {
     const principal = this.store.principal(principalId);

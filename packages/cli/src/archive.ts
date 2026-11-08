@@ -1,6 +1,7 @@
 import path from "node:path";
 import { lstat, readFile, realpath } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 import { projectPartials, type PartialFragment } from "@pi-agora/archive";
 import { AgoraConnectionError, AgoraHttpError, connectHost, loopbackUrl, negotiateProtocol, PROTOCOL_VERSION,
   type AgoraClient, type ConnectHostOptions } from "@pi-agora/protocol";
@@ -252,18 +253,43 @@ async function tail(client: AgoraClient, id: string, options: Map<string, string
 }
 export async function runArchiveCli(input: {
   command: string; operand?: string; rest: string[]; options: Map<string, string | true>; home: string;
-  io: { out(text: string): void };
+  io: { out(text: string): void; error?(text: string): void };
 }, overrides: Partial<ArchiveCliDependencies> = {}): Promise<boolean> {
   const { command, operand, rest, options, home, io } = input;
-  if (!["ls", "show", "log", "tail", "verify-archive", "archive", "takeover"].includes(command)) return false;
+  if (!["ls", "show", "log", "tail", "verify-archive", "archive"].includes(command)) return false;
   const deps = { ...defaults, ...overrides };
-  if (command === "takeover") throw new Error("takeover 尚未开放：需要用户设备签名确认，CLI 不能绕过控制租约");
   if (command === "archive") {
-    if (operand !== "delete" || !rest[0] || rest.length !== 1) throw new Error("用法：agora archive delete <会话 ID> --offline");
-    if (!options.has("--offline")) throw new Error("在线删除尚未开放；离线删除必须显式指定 --offline");
+    if (operand !== "delete" || !rest[0] || rest.length !== 1) throw new Error("用法：agora archive delete <会话 ID> [--wait] [--offline]");
     if (!/^[A-Za-z0-9_-]{1,128}$/.test(rest[0])) throw new Error("会话 ID 格式无效");
-    io.out(JSON.stringify(await deps.deleteOffline(home, rest[0]), null, 2));
-    return true;
+    if (options.has("--offline")) {
+      io.out(JSON.stringify(await deps.deleteOffline(home, rest[0]), null, 2));
+      return true;
+    }
+    const timeout = Number(options.get("--timeout") ?? 600);
+    if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 2_147_000) throw new Error("--timeout 超出范围");
+    // 在线删除只连接已运行的 daemon；认证和业务错误不能降级到离线删除。
+    const client = await deps.connect({ home, as: "host:cli", autoStart: false });
+    try {
+      let result = row(await client.request("POST", `/v1/sessions/${encodeURIComponent(rest[0])}/archive/delete`, {}, { idempotencyKey: randomUUID() }));
+      const pending = result.confirmation as { confirmationId?: string } | undefined;
+      if (pending?.confirmationId) {
+        io.error?.(`已提交，请在已配对的浏览器中确认（${pending.confirmationId}）`);
+        if (options.has("--wait")) {
+          const deadline = Date.now() + timeout * 1000;
+          while (Date.now() < deadline) {
+            result = row(await client.request("GET", `/v1/confirmations/${encodeURIComponent(pending.confirmationId)}`));
+            if (typeof result.state === "string" && !["pending", "executing"].includes(result.state)) break;
+            await delay(Math.min(500, Math.max(1, deadline - Date.now())), undefined, { signal: deps.signal });
+          }
+          if (!result.state || ["pending", "executing"].includes(String(result.state))) throw new Error("等待确认超时；操作可能仍待处理，请用 agora confirmations 查询，不要重新发起");
+          if (result.state !== "confirmed") { io.out(JSON.stringify(result, null, 2)); throw new Error("存档删除确认未执行，请用 agora confirmations 查询"); }
+        }
+      }
+      const state = await client.request<{ alerts?: unknown[] }>("GET", "/v1/security/state");
+      if (state.alerts?.length) io.error?.(`安全警告：${JSON.stringify(state.alerts)}`);
+      io.out(JSON.stringify(result, null, 2));
+      return true;
+    } finally { client.close(); }
   }
   if (["show", "log", "tail"].includes(command) && !operand) throw new Error("请指定任务或会话 ID");
   if (rest.length || command === "ls" && operand) throw new Error("参数过多，请运行 agora --help");
@@ -276,7 +302,21 @@ export async function runArchiveCli(input: {
     let result: unknown;
     if (client) {
       if (command === "verify-archive") {
-        result = await client.request("POST", "/v1/archive/verify", operand ? { sessionId: await onlineId(client, operand) } : {}, { idempotencyKey: randomUUID() });
+        if (operand) result = await client.request("POST", "/v1/archive/verify", { sessionId: await onlineId(client, operand) }, { idempotencyKey: randomUUID() });
+        else {
+          const items: unknown[] = [], seen = new Set<string>();
+          let cursor: string | undefined;
+          do {
+            const q = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
+            const page = row(await client.request("POST", `/v1/archive/verify${q}`, {}, { idempotencyKey: randomUUID() }));
+            if (!Array.isArray(page.items)) throw new Error("归档校验响应格式无效");
+            items.push(...page.items);
+            cursor = typeof page.nextCursor === "string" ? page.nextCursor : undefined;
+            if (cursor && seen.has(cursor)) throw new Error("归档分页游标重复");
+            if (cursor) seen.add(cursor);
+          } while (cursor);
+          result = { items };
+        }
       } else if (command === "ls") {
         const page = row(await client.request("GET", `/v1/sessions?${q}`));
         result = options.has("--tree") ? { ...page, items: sessionTree(page.items as Row[]) } : page;
