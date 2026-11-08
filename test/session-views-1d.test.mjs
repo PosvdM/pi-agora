@@ -576,6 +576,30 @@ test('会话视图：心跳背压等待 drain，不堆积心跳且取消后移�
   assert.equal(paused.response.chunks.length, sent);
 });
 
+for (const finish of ['resume', 'close']) test(`会话视图：退出写入失败后的片段在 ${finish} 前重试落盘，不丢弃旧运行`, async t => {
+  const f = await setup(t);
+  await f.views.begin('s1', 'r1', f.driver);
+  const blocked = path.join(f.directory, 'partials');
+  await writeFile(blocked, '阻挡片段目录');
+  emitText(f.driver, '旧运行必须保存的内容', 2, false);
+  await assert.rejects(f.views.ended('s1', 'r1', '测试退出'));
+  const previous = f.views.states.get('s1');
+  assert.equal(previous.ended, true);
+  assert.ok(previous.pending.length > 0);
+  const next = handle();
+  if (finish === 'resume') {
+    await assert.rejects(f.views.begin('s1', 'r2', next));
+    assert.equal(f.views.states.get('s1'), previous);
+    assert.equal(next.events.size, 0);
+    assert.ok(previous.pending.length > 0);
+  }
+  await rm(blocked);
+  if (finish === 'resume') await f.views.begin('s1', 'r2', next);
+  else await f.views.close();
+  assert.equal(previous.pending.length, 0);
+  assert.ok((await f.partialRows()).some(row => row.delta === '旧运行必须保存的内容'));
+  assert.equal(JSON.parse(await readFile(path.join(f.directory, 'runs', 'r1.json'), 'utf8')).runId, 'r1');
+});
 test('会话视图：片段写入失败可见且不伪装为 flush 成功', async t => {
   const f = await setup(t);
   await f.views.begin('s1', 'r1', f.driver);

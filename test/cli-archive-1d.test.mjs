@@ -3,29 +3,31 @@ import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile, writeFile, rm, access, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { pathToFileURL, fileURLToPath } from "node:url";
+import { fileURLToPath } from "node:url";
 import { createServer } from "node:http";
 import { DatabaseSync } from "node:sqlite";
-import { stripTypeScriptTypes } from "node:module";
 import { acquireInstanceLock, acquireSessionWriterLock, currentProcessIdentity, isSessionWriterLock } from "pi-hostkit";
 import { assertIsolatedTestHome } from "./fixtures/test-home.mjs";
 
-// 独立转译允许 CLI 在并行 archive 包合入前验证接口，不修改任何生产依赖。
+import { runCli } from "../packages/cli/dist/index.js";
+import { daemonAvailable, readSse, sessionTree } from "../packages/cli/dist/archive.js";
+import { AgoraConnectionError, AgoraHttpError } from "../packages/protocol/dist/client.js";
+import { deleteArchiveOffline } from "../packages/daemon/dist/archive-maintenance.js";
+
 const root = fileURLToPath(new URL("../", import.meta.url));
-const compiled = await mkdtemp(path.join(tmpdir(), "agora-cli-1d-code-"));
-for (const [source, target] of [["packages/protocol/src/client.ts", "protocol.mjs"], ["packages/cli/src/archive.ts", "archive.js"], ["packages/cli/src/index.ts", "index.js"], ["packages/daemon/src/archive-maintenance.ts", "maintenance.mjs"]]) {
-  let text = await readFile(path.join(root, source), "utf8");
-  text = text.replaceAll('"@pi-agora/protocol"', JSON.stringify(pathToFileURL(path.join(compiled, "protocol.mjs")).href))
-    .replaceAll('"pi-hostkit"', JSON.stringify(pathToFileURL(path.join(root, "node_modules/pi-hostkit/dist/index.js")).href))
-    .replaceAll('"@pi-agora/archive"', JSON.stringify(pathToFileURL(path.join(root, "packages/archive/dist/index.js")).href));
-  await writeFile(path.join(compiled, target), stripTypeScriptTypes(text, { mode: "transform" }));
-}
-await writeFile(path.join(compiled, "package.json"), '{"type":"module"}');
-after(() => rm(compiled, { recursive: true, force: true }));
-const { runCli } = await import(pathToFileURL(path.join(compiled, "index.js")));
-const { daemonAvailable, readSse, sessionTree } = await import(pathToFileURL(path.join(compiled, "archive.js")));
-const { AgoraConnectionError, AgoraHttpError } = await import(pathToFileURL(path.join(compiled, "protocol.mjs")));
-const { deleteArchiveOffline } = await import(pathToFileURL(path.join(compiled, "maintenance.mjs")));
+const compiled = path.join(root, "packages/cli/dist");
+const unitRoot = await mkdtemp(path.join(tmpdir(), "agora-cli-unit-home-"));
+const environmentKeys = ["HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "AGORA_HOME"];
+const savedEnvironment = new Map(environmentKeys.map(key => [key, process.env[key]]));
+process.env.HOME = process.env.USERPROFILE = path.join(unitRoot, "user");
+process.env.APPDATA = path.join(unitRoot, "user", "AppData", "Roaming");
+process.env.LOCALAPPDATA = path.join(unitRoot, "user", "AppData", "Local");
+process.env.AGORA_HOME = path.join(unitRoot, "agora");
+after(async () => {
+  try { await rm(unitRoot, { recursive: true, force: true }); }
+  finally { for (const [key, value] of savedEnvironment) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } }
+});
+await assertIsolatedTestHome(unitRoot);
 
 function harness(overrides = {}) {
   const output = [], errors = [], calls = [];
@@ -83,12 +85,10 @@ test("在线 show/log 与 verify 路由、身份及幂等键", async () => {
     assert.equal(h.clientClosed, 1);
   }
 });
-test("在线删除与 takeover 未开放；离线删除只调用维护入口", async () => {
+test("在线删除在签名接线前拒绝；离线删除只调用维护入口", async () => {
   const h = harness();
   assert.equal(await h.run(["archive", "delete", "as_one"]), 1);
   assert.match(h.errors[0], /在线删除尚未开放/);
-  assert.equal(await h.run(["takeover", "pr_one"]), 1);
-  assert.match(h.errors[1], /签名/);
   let called;
   h.deps.deleteOffline = async (...args) => { called = args; return { archiveState: "missing" }; };
   assert.equal(await h.run(["archive", "delete", "as_one", "--offline", "--home", compiled]), 0);

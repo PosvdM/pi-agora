@@ -161,6 +161,7 @@ export class SessionViews {
     const old = this.states.get(sessionId);
     if (old?.runId === runId && old.handle === handle) { await old.ready; return; }
     if (old) {
+      if (old.ended) await this.flushRetired(old);
       this.publish(old, "agora_run", { runId, phase: "started" });
       this.resync(old);
       if (old.handle && !old.ended) await this.ended(sessionId, old.runId);
@@ -254,6 +255,15 @@ export class SessionViews {
       state.events.close(item.messageSeq);
       this.scheduleWrite(state);
     }
+  }
+  private async flushRetired(state: ViewState): Promise<void> {
+    if (!state.pending.length) return;
+    // 旧运行退出时的写入失败可重试；换 run 或关闭服务前不能丢弃仍在内存中的片段。
+    await this.serial(state, async () => {
+      await this.writePending(state);
+      await this.verifyState(state);
+      await this.saveDiagnostics(state);
+    });
   }
   private scheduleWrite(state: ViewState): void {
     if (state.timer || state.closing || !state.pending.length) return;
@@ -557,7 +567,10 @@ export class SessionViews {
   async close(): Promise<void> {
     this.closed = true;
     const results = await Promise.allSettled([...this.states.values()].map(async state => {
-      try { if (state.handle) await this.ended(state.sessionId, state.runId, state.endReason ?? "daemon_shutdown"); }
+      try {
+        if (state.handle) await this.ended(state.sessionId, state.runId, state.endReason ?? "daemon_shutdown");
+        await this.flushRetired(state);
+      }
       finally {
         if (state.timer) clearTimeout(state.timer);
         for (const off of state.off.splice(0)) off();
