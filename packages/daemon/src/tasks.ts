@@ -8,6 +8,7 @@ import type { DriverHandle, DriverExit, SessionDriver } from "./driver.js";
 import { Worktrees } from "./worktrees.js";
 import { optionalBoolean } from "./errors.js";
 import { AccessControl, confirmationRequired } from "./acl.js";
+import type { RequestRow } from "./requests.js";
 import { Budgets, budgetConfig, type BudgetOptions, type UserExecutionProof } from "./budgets.js";
 export type { UserExecutionProof } from "./budgets.js";
 
@@ -880,6 +881,21 @@ export class TaskManager {
       this.store.run("UPDATE tasks SET taken_over_from=convener_id,convener_id='user',revision=revision+1,updated_at=? WHERE id=?", now(), taskId);
       this.store.run("UPDATE agora_sessions SET convener_id='user',revision=revision+1 WHERE id=?", task.agora_session_id);
       this.store.run("UPDATE worktrees SET owner_id='user' WHERE task_id=?", taskId);
+      const requests = this.store.all<RequestRow>(`WITH RECURSIVE subtree(id) AS (
+        SELECT ? UNION ALL SELECT t.id FROM tasks t JOIN subtree s ON t.parent_task_id=s.id
+      ) SELECT q.* FROM requests q WHERE q.state IN ('open','escalated') AND q.target_id!='user'
+        AND COALESCE(q.task_id,(SELECT task_id FROM agora_sessions WHERE principal_id=q.asker_id)) IN (SELECT id FROM subtree)
+        AND NOT EXISTS(SELECT 1 FROM agora_sessions s WHERE s.principal_id=q.target_id AND s.task_id IN (SELECT id FROM subtree))`, taskId);
+      for (const request of requests) {
+        this.store.run("UPDATE requests SET target_id='user',state='escalated',revision=revision+1,updated_at=? WHERE id=?", now(), request.id);
+        // 只结束提问通知的业务待办，保留投递记录及任务接管通知。
+        this.store.run("UPDATE outbox SET processed_at=COALESCE(processed_at,?) WHERE kind IN ('request:opened','request:escalated') AND json_extract(payload,'$.requestId')=? AND recipient_id!='user'", now(), request.id);
+        this.store.notice('user', `request:${request.id}:taken_over:${id('op')}`, 'request:escalated', {
+          requestId: request.id, taskId: request.task_id, state: 'escalated', questions: JSON.parse(request.questions), context: request.context,
+          summary: `提问 ${request.id} 所属任务已被用户接管，请用户答复。`,
+        });
+        this.store.change('request', request.id);
+      }
       const key = `task:${taskId}:taken_over:${id('op')}`;
       this.store.notice(task.convener_id, key, 'task:taken_over', {
         taskId, generation: task.generation, title: task.title, summary: '任务已被用户接管', notify: 'wake', triggerTurn: true,
@@ -990,7 +1006,7 @@ export class TaskManager {
     }
     let cursor = "";
     while (true) {
-      const rows = this.store.all<{ id: string }>("SELECT p.id FROM principals p WHERE p.type='agent:child' AND p.id>? AND EXISTS(SELECT 1 FROM outbox o WHERE o.recipient_id=p.id AND o.acked_at IS NULL AND (json_extract(o.payload,'$.triggerTurn')=1 OR (COALESCE(json_extract(o.payload,'$.notify'),'wake')<>'silent' AND COALESCE(json_extract(o.payload,'$.silent'),0)<>1))) ORDER BY p.id LIMIT 200", cursor);
+      const rows = this.store.all<{ id: string }>("SELECT p.id FROM principals p WHERE p.type='agent:child' AND p.id>? AND EXISTS(SELECT 1 FROM outbox o WHERE o.recipient_id=p.id AND o.acked_at IS NULL AND o.processed_at IS NULL AND (json_extract(o.payload,'$.triggerTurn')=1 OR (COALESCE(json_extract(o.payload,'$.notify'),'wake')<>'silent' AND COALESCE(json_extract(o.payload,'$.silent'),0)<>1))) ORDER BY p.id LIMIT 200", cursor);
       if (!rows.length) break;
       for (const row of rows) { cursor = row.id; this.wake(row.id); }
     }
