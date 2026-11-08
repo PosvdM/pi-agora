@@ -322,9 +322,17 @@ test('D15 auto 续跑父任务不隐式恢复无重置时间的下级；停止�
   await pause(f, c, null); await pause(f, p);
   await until(() => f.driver.handles.length === 3);
   assert.equal(f.daemon.store.task(child.taskId).status, 'quota_paused');
-  const stopTask = await f.spawn(main), s = await f.handle(stopTask); await pause(f, s, new Date(Date.now() + 100).toISOString());
-  await main.request('POST', `/v1/tasks/${stopTask.taskId}/stop`, {});
-  await delay(150); assert.equal(f.daemon.store.task(stopTask.taskId).status, 'stopped'); assert.equal(f.driver.handles.filter(h => h.spec.agoraSessionId === stopTask.agoraSessionId).length, 1);
+  const stopTask = await f.spawn(main), s = await f.handle(stopTask);
+  // 同时控制业务时钟和 daemon 的 setTimeout，避免归档与 HTTP stop 争抢恢复期限。
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: Date.now() });
+  try {
+    await pause(f, s, new Date(Date.now() + 60_000).toISOString());
+    assert.equal(f.daemon.store.task(stopTask.taskId).status, 'quota_paused');
+    await main.request('POST', `/v1/tasks/${stopTask.taskId}/stop`, {});
+    t.mock.timers.tick(60_001); await f.daemon.tasks.flush();
+    assert.equal(f.daemon.store.task(stopTask.taskId).status, 'stopped');
+    assert.equal(f.driver.handles.filter(h => h.spec.agoraSessionId === stopTask.agoraSessionId).length, 1);
+  } finally { t.mock.timers.reset(); }
 });
 
 test('N3 静默终态和强制唤醒同事务提交，调度前退出后重启仍唤醒等待父任务', async () => {
