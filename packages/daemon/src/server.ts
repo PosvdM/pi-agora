@@ -6,7 +6,7 @@ import { AgoraError, invalid, object, optionalBoolean, stableJson, text } from "
 import { Store, id, type SessionRow } from "./store.js";
 import { TaskManager } from "./tasks.js";
 import { Requests } from "./requests.js";
-import { Security } from "./security.js";
+import { Security, type SignatureBody } from "./security.js";
 import type { UserExecutionProof } from "./budgets.js";
 
 export const VERSION = "0.1.0";
@@ -61,11 +61,36 @@ function hostClient(auth: Auth, conn: Connection): void {
   auth.requireMain(conn);
   if (!conn.type.startsWith("host:")) throw new AgoraError(403, "forbidden", "设备和安全设置仅供用户界面发起");
 }
+function userOperation(pathname: string, method: string, conn: Connection): { action: string; target: string } | undefined {
+  if (!["POST", "PUT"].includes(method)) return;
+  const paths: [RegExp, string][] = [
+    [/^\/v1\/settings\/([^/]+)$/, "agora.settings.set"],
+    [/^\/v1\/devices\/(pair|reset)$/, "agora.device"],
+    [/^\/v1\/devices\/([^/]+)\/(approve|revoke)$/, "agora.device"],
+    [/^\/v1\/security\/alerts\/([^/]+)\/acknowledge$/, "agora.security.acknowledge"],
+    [/^\/v1\/principals\/([^/]+)\/takeover$/, "agora.principal.takeover"],
+    [/^\/v1\/tasks\/([^/]+)\/takeover$/, "agora.task.takeover"],
+    [/^\/v1\/confirmations\/([^/]+)\/cancel$/, "confirmation.cancel"],
+  ];
+  if (conn.type.startsWith("host:")) paths.push([/^\/v1\/requests\/([^/]+)\/(answer|cancel)$/, "agora.request"], [/^\/v1\/tasks\/([^/]+)\/(recover|limits)$/, "agora.task"]);
+  for (const [pattern, action] of paths) {
+    const match = pathname.match(pattern);
+    if (match) return { action: action === "agora.device" || action === "agora.request" || action === "agora.task" ? `${action}.${match[2] ?? match[1]}` : action, target: match[1]! };
+  }
+}
 function forceSignature(action: string): boolean {
   return action.startsWith("agora.device.") || action === "agora.settings.set" || action === "agora.security.acknowledge";
 }
 function confirmationReply(value: unknown): Reply {
   return { status: 202, body: { code: "confirmation_required", confirmation: value } };
+}
+function visibleConfirmation(context: ServerContext, conn: Connection, confirmationId: string) {
+  const value = context.security.confirmation(confirmationId);
+  if (!conn.type.startsWith("host:") && value.requestedBy !== conn.principalId) {
+    context.security.recordExecution("confirmation.read", confirmationId, conn.principalId!, "none", "rejected", "forbidden");
+    throw new AgoraError(403, "forbidden", "主会话只能访问自己发起的待确认");
+  }
+  return value;
 }
 function currentOperation(context: ServerContext, old: Operation): Reply {
   const body = JSON.parse(old.result!) as { confirmation?: { confirmationId?: string } };
@@ -144,7 +169,11 @@ export function createHttpServer(context: ServerContext) {
       const perform = async (): Promise<Reply> => {
         try { return await route(context, method, url, conn, body, request, response); }
         catch (error) {
-          if (!(error instanceof AgoraError) || error.code !== "confirmation_required" || !conn) throw error;
+          if (!(error instanceof AgoraError) || error.code !== "confirmation_required" || !conn) {
+            const operation = conn ? userOperation(url.pathname, method, conn) : undefined;
+            if (operation) context.security.recordExecution(operation.action, operation.target, conn!.principalId ?? conn!.type, "none", "rejected", error instanceof AgoraError ? error.code : "execution_failed");
+            throw error;
+          }
           const pending = object(error.details);
           const action = String(pending.action), target = String(pending.target), params = object(pending.params);
           if (context.security.state().userConfirmation === "off" && conn.type === "host:cli" && !forceSignature(action)) {
@@ -201,17 +230,18 @@ async function route(context: ServerContext, method: string, url: URL, conn: Con
   if (!conn) throw new AgoraError(404, "not_found", "接口不存在");
   if (pathname === "/v1/security/state" && method === "GET") { auth.requireMain(conn); return ok(security.state()); }
   if (pathname === "/v1/security/alerts" && method === "GET") { auth.requireMain(conn); return ok({ items: security.state().alerts }); }
-  if (pathname === "/v1/confirmations" && method === "GET") { auth.requireMain(conn); return ok({ items: security.listConfirmations(positive(url.searchParams.get("limit"), 50, 200), positive(url.searchParams.get("cursor"), 0, Number.MAX_SAFE_INTEGER, true)) }); }
+  if (pathname === "/v1/confirmations" && method === "GET") { auth.requireMain(conn); return ok({ items: security.listConfirmations(positive(url.searchParams.get("limit"), 50, 200), positive(url.searchParams.get("cursor"), 0, Number.MAX_SAFE_INTEGER, true), conn.type.startsWith("host:") ? undefined : conn.principalId) }); }
   const confirmation = pathname.match(/^\/v1\/confirmations\/([^/]+)(?:\/(sign|cancel))?$/);
   if (confirmation) {
     auth.requireMain(conn);
-    if (method === "GET" && !confirmation[2]) return ok(security.confirmation(confirmation[1]!));
+    if (method === "GET" && !confirmation[2]) return ok(visibleConfirmation(context, conn, confirmation[1]!));
     if (method === "POST" && confirmation[2] === "cancel") return ok(security.cancel(conn, confirmation[1]!));
     if (method === "POST" && confirmation[2] === "sign") {
-      const saved = security.confirmation(confirmation[1]!);
+      const saved = visibleConfirmation(context, conn, confirmation[1]!);
       const execute = (action: string, target: string, params: Record<string, unknown>, proof: UserExecutionProof) => executeUser(context, conn!, action, target, params, proof);
-      const asynchronous = ["agora.task.spawn", "agora.task.recover", "agora.task.takeover"].includes(saved.challenge.action);
-      const signature = { deviceId: text(body.deviceId, "deviceId", 128), publicKey: text(body.publicKey, "publicKey", 1024), alg: text(body.alg, "alg", 64), signature: text(body.signature, "signature", 128) };
+      const asynchronous = ["agora.task.spawn", "agora.task.recover"].includes(saved.challenge.action);
+      // 安全服务统一校验签名字段，并记录包括缺失字段在内的拒绝尝试。
+      const signature = body as unknown as SignatureBody;
       return ok(asynchronous ? await security.signAsync(conn, confirmation[1]!, signature, execute) : security.sign(conn, confirmation[1]!, signature, execute));
     }
   }

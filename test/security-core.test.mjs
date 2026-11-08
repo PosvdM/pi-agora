@@ -224,14 +224,16 @@ test('host/main 发起、TTL、取消所有权和 child 身份限制', async t =
   assert.ok(Math.abs(Date.parse(cli.expiresAt) - before - 86_400_000) < 2000);
   assert.ok(Math.abs(Date.parse(pane.expiresAt) - before - 300_000) < 2000);
   assert.throws(() => f.security.cancel(child, pane.confirmationId), denied('forbidden'));
-  assert.throws(() => f.security.cancel(host('host:cli'), pane.confirmationId), denied('forbidden'));
-  assert.equal(f.security.cancel(f.conn, pane.confirmationId).cancelled, true);
+  assert.equal(f.security.cancel(host('host:cli'), pane.confirmationId).cancelled, true);
+  assert.throws(() => f.security.cancel(f.conn, pane.confirmationId), denied('already_handled'));
   assert.equal(f.security.confirmation(pane.confirmationId).state, 'cancelled');
   const main = { ...host(), type: 'agent:main', principalId: 'main', connectionId: 'main-connection' };
   assert.throws(() => f.security.request(main, external, 'rq_1', {}), denied('lease_required'));
   f.store.run("INSERT INTO principals(id,type,lease_connection_id,lease_expires_at,created_at) VALUES('main','agent:main','main-connection',?,?)", Date.now() + 60000, new Date().toISOString());
   const confirmation = f.security.request(main, external, 'rq_1', {});
   assert.equal(confirmation.requestedBy, 'main'); assert.ok(f.security.listConfirmations().length >= 3);
+  assert.equal(f.security.listConfirmations(50, 0, 'main').length, 1);
+  assert.throws(() => f.security.cancel(main, cli.confirmationId), denied('forbidden'));
   assert.throws(() => f.security.request(f.conn, 'agora.settings.set', 'userConfirmation', { value: 'off', confirmedBy: 'user' }), denied('invalid_params'));
 });
 

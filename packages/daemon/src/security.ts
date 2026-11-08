@@ -133,18 +133,6 @@ function record(value: unknown): Record<string, unknown> {
 function exact(params: Record<string, unknown>, keys: string[]): void {
   if (Object.keys(params).some(key => !keys.includes(key)) || keys.some(key => !Object.hasOwn(params, key))) invalid("动作参数不匹配");
 }
-function limits(value: unknown): LimitSettings {
-  if (typeof value === "number") {
-    if (!Number.isSafeInteger(value) || value <= 0) invalid("限制配置必须是正整数");
-    return value;
-  }
-  const data = record(value);
-  if (!Object.keys(data).length) invalid("限制配置不能为空");
-  for (const [key, number] of Object.entries(data)) {
-    if (!/^[A-Za-z][A-Za-z0-9]*$/.test(key) || ["constructor", "prototype"].includes(key) || typeof number !== "number" || !Number.isSafeInteger(number) || number <= 0) invalid("限制配置字段必须是正整数");
-  }
-  return data as Record<string, number>;
-}
 
 export class Security {
   private activeProof?: DeviceProof;
@@ -156,6 +144,7 @@ export class Security {
       }
       for (const row of this.store.all<ConfirmationRow>("SELECT * FROM pending_confirmations WHERE state='executing'")) {
         this.store.run("UPDATE pending_confirmations SET state='failed',failure_reason='operation_interrupted' WHERE id=?", row.id);
+        this.settleOperations(row.id, "failed", undefined, "operation_interrupted");
         this.log(row.action, row.target, row.requested_by, "device", "failed", { reason: "operation_interrupted", proof: row.confirmed_by ? { deviceId: row.confirmed_by, confirmationId: row.id, requestedBy: row.requested_by, confirmedBy: "device" } : undefined, confirmationId: row.id });
         this.store.change("confirmation", row.id);
       }
@@ -261,11 +250,18 @@ export class Security {
     }));
   }
   audit(limit = 50, cursor = 0, target?: string) { return this.store.all("SELECT * FROM security_audit WHERE seq>? AND (? IS NULL OR target=?) ORDER BY seq LIMIT ?", cursor, target ?? null, target ?? null, limit); }
+  private settleOperations(confirmationId: string, state: string, result?: unknown, reason?: string): void {
+    const succeeded = state === "confirmed";
+    const status = succeeded ? 200 : state === "expired" ? 410 : reason === "execution_failed" ? 500 : 409;
+    const body = succeeded ? result : { error: { code: reason ?? `confirmation_${state}`, message: "待确认未执行，请重新核对操作" } };
+    this.store.run("UPDATE operations SET state=?,status=?,result=? WHERE state='awaiting_confirmation' AND json_extract(result,'$.confirmation.confirmationId')=?", succeeded ? "succeeded" : "failed", status, JSON.stringify(body) ?? "null", confirmationId);
+  }
   private expire(): void {
     this.store.transaction(() => {
       for (const row of this.store.all<ConfirmationRow>("SELECT * FROM pending_confirmations WHERE state='pending' AND expires_at<=? LIMIT 200", now())) {
         this.store.run("UPDATE pending_confirmations SET state='expired' WHERE id=?", row.id);
         this.log(row.action, row.target, row.requested_by, "none", "expired", { confirmationId: row.id, reason: "confirmation_expired" });
+        this.settleOperations(row.id, "expired", undefined, "confirmation_expired");
         this.store.change("confirmation", row.id);
       }
     });
@@ -278,7 +274,7 @@ export class Security {
       expiresAt: row.expires_at, createdAt: row.created_at, confirmedBy: row.confirmed_by,
       result: row.result === null ? null : JSON.parse(row.result), failureReason: row.failure_reason };
   }
-  listConfirmations(limit = 50, cursor = 0) { this.expire(); return this.store.all<ConfirmationRow>("SELECT rowid AS cursor,* FROM pending_confirmations WHERE rowid>? ORDER BY rowid LIMIT ?", cursor, limit).map(row => this.view(row)); }
+  listConfirmations(limit = 50, cursor = 0, requestedBy?: string) { this.expire(); return this.store.all<ConfirmationRow>("SELECT rowid AS cursor,* FROM pending_confirmations WHERE rowid>? AND (? IS NULL OR requested_by=?) ORDER BY rowid LIMIT ?", cursor, requestedBy ?? null, requestedBy ?? null, limit).map(row => this.view(row)); }
   confirmation(confirmationId: string) {
     this.expire(); const row = this.store.get<ConfirmationRow>("SELECT * FROM pending_confirmations WHERE id=?", confirmationId);
     if (!row) fail("not_found", "待确认不存在", 404);
@@ -366,7 +362,10 @@ export class Security {
     const reason = auditReason(error);
     this.store.transaction(() => {
       this.log(row?.action ?? "confirmation.sign", row?.target ?? confirmationId, conn.principalId ?? conn.type, "none", "rejected", { reason, confirmationId });
-      if (reason === "confirmation_expired") this.store.run("UPDATE pending_confirmations SET state='expired' WHERE id=? AND state='pending'", confirmationId);
+      if (reason === "confirmation_expired") {
+        this.store.run("UPDATE pending_confirmations SET state='expired' WHERE id=? AND state='pending'", confirmationId);
+        this.settleOperations(confirmationId, "expired", undefined, reason);
+      }
     });
   }
   sign(conn: Connection, confirmationId: string, body: SignatureBody, execute: Execute): unknown {
@@ -389,6 +388,7 @@ export class Security {
         } finally { this.activeProof = previousProof; this.activeOperation = previousOperation; }
         this.store.run("UPDATE pending_confirmations SET state='confirmed',confirmed_by=?,result=? WHERE id=?", proof.deviceId, JSON.stringify(result) ?? "null", confirmationId);
         this.log(row.action, row.target, row.requested_by, "device", "confirmed", { proof });
+        this.settleOperations(confirmationId, "confirmed", result);
         this.store.change("confirmation", confirmationId);
         return result;
       });
@@ -425,6 +425,7 @@ export class Security {
         const changed = this.store.run("UPDATE pending_confirmations SET state='confirmed',result=? WHERE id=? AND state='executing'", encoded, confirmationId);
         if (!changed.changes) fail("already_handled", "操作已结束或被标记中断", 409);
         this.log(operation.action, operation.target, operation.requested_by, "device", "confirmed", { proof: verified.proof });
+        this.settleOperations(confirmationId, "confirmed", result);
         this.store.change("confirmation", confirmationId);
       });
       return result;
@@ -434,6 +435,7 @@ export class Security {
         const changed = this.store.run("UPDATE pending_confirmations SET state='failed',failure_reason=? WHERE id=? AND state='executing'", reason, confirmationId);
         if (changed.changes) {
           this.log(operation.action, operation.target, operation.requested_by, "device", "failed", { proof: verified.proof, reason });
+          this.settleOperations(confirmationId, "failed", undefined, reason);
           this.store.change("confirmation", confirmationId);
         }
       });
@@ -445,10 +447,11 @@ export class Security {
     return this.store.transaction(() => {
       const row = this.store.get<ConfirmationRow>("SELECT * FROM pending_confirmations WHERE id=?", confirmationId);
       if (!row) fail("not_found", "待确认不存在", 404);
-      if (row.requested_by !== actor) fail("forbidden", "只能取消自己发起的待确认");
+      if (row.requested_by !== actor && !conn.type.startsWith("host:")) fail("forbidden", "只能取消自己发起的待确认");
       if (row.state !== "pending" || row.expires_at <= now()) fail("already_handled", "待确认已处理或过期", 409);
       this.store.run("UPDATE pending_confirmations SET state='cancelled' WHERE id=?", confirmationId);
       this.log(row.action, row.target, actor, "none", "cancelled", { confirmationId });
+      this.settleOperations(confirmationId, "cancelled");
       this.store.change("confirmation", confirmationId);
       return { cancelled: true };
     });

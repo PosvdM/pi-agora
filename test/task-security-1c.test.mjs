@@ -44,6 +44,9 @@ class Driver {
       async stop() {
         if (this.failStop) throw new Error('模拟退出未确认');
         if (this.stopped) return this.report;
+        // 模拟 pi 适配器 stop 的取消与停止顺序，领域层只调用中立 stop。
+        await this.send({ type: 'clear_queue' });
+        await this.send({ type: 'abort' });
         this.onStop?.(); this.stopped = true;
         this.report = { coverage: 'snapshot_visible', steps: [{ step: 'verify', ok: true }], leftovers: [] };
         const exit = { identity: this.identity, code: 0, signal: null, cleanupConfirmed: true, stopReport: this.report };

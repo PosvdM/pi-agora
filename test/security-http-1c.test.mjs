@@ -113,6 +113,26 @@ test('参数篡改、过期、跨确认签名和公钥替换均失败；确认�
   assert.equal((await f.cli.request('GET', `/v1/requests/${question.id}`)).state, 'open');
 });
 
+test('待确认按发起主会话隔离，host 可拒绝 CLI 的待确认且不执行原动作', async t => {
+  const f = await setup(t);
+  const other = await connectHost({ home: f.home, as: 'agent:main', autoStart: false });
+  t.after(() => other.close());
+  await other.request('POST', '/v1/principals/register', { sessionId: randomUUID(), ephemeral: true, cwd: f.home });
+  const own = await f.main.request('POST', '/v1/tasks', { model: 'test/model', profile: 'explore', prompt: '仅对发起方可见的任务书', cwd: f.home, maxTokens: Number.MAX_SAFE_INTEGER });
+  const cf = own.confirmation;
+  assert.ok((await f.main.request('GET', '/v1/confirmations')).items.some(item => item.confirmationId === cf.confirmationId));
+  assert.equal((await other.request('GET', '/v1/confirmations')).items.length, 0);
+  assert.equal((await f.http(other, 'GET', `/v1/confirmations/${cf.confirmationId}`)).status, 403);
+  assert.equal((await f.http(other, 'POST', `/v1/confirmations/${cf.confirmationId}/cancel`, {})).status, 403);
+  const question = await f.main.request('POST', '/v1/requests', { questions });
+  const pending = await f.cli.request('POST', `/v1/requests/${question.id}/answer`, { answers });
+  assert.equal((await f.http(f.pane, 'POST', `/v1/confirmations/${pending.confirmation.confirmationId}/cancel`, {})).status, 200);
+  assert.equal((await f.cli.request('GET', `/v1/requests/${question.id}`)).state, 'open');
+  const audit = await f.cli.request('GET', '/v1/audit');
+  assert.ok(audit.items.some(row => row.outcome === 'requested'));
+  assert.ok(audit.items.some(row => row.outcome === 'cancelled'));
+});
+
 test('主会话租约接管必须先确认，旧签名不能覆盖已变化的租约', async t => {
   const f = await setup(t), device = signer();
   await f.pair(device);

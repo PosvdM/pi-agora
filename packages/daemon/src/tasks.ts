@@ -453,10 +453,7 @@ export class TaskManager {
     let stopReport: StopReport | undefined;
     let cleanupConfirmed = false;
     try {
-      try { this.trackSteer(taskId, { type: 'driver_queue_cleared', data: data(await handle.send({ type: 'clear_queue' }, { timeoutMs: 2000 })) }); }
-      catch (error) { diagnostics.push(failureDiagnostic(error)); }
-      try { await handle.send({ type: 'abort' }, { timeoutMs: 2000 }); }
-      catch (error) { diagnostics.push(failureDiagnostic(error)); }
+      // 驱动负责取消队列、停止推理与进程清理；预算层不发送 Harness 专有命令。
       stopReport = await handle.stop();
       const exit = await handle.exited;
       cleanupConfirmed = exit.cleanupConfirmed === true;
