@@ -13,6 +13,8 @@ npm install
 npm run build
 ```
 
+从旧切片升级时，先用旧 CLI 执行 `shutdown`，再更新依赖、构建并重新启动 daemon。后台进程不会随构建热替换；设备签名与预算保护需要运行本切片的 daemon 才生效。
+
 在仓库根目录启动装有 agora 扩展的 pi：
 
 ```sh

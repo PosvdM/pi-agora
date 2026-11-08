@@ -100,7 +100,7 @@ agora 对任务只提供“取消（含队列）”这一种停止。协作会�
 
 预算计数使用逐请求去重后的 `treeUsage`。`tokenAccounting: "all"` 计入 `inputTokens + cacheReadTokens + cacheWriteTokens + outputTokens`；`"uncached"` 排除 `cacheReadTokens`。`reasoningTokens` 单独展示，不额外叠加到预算计数中；默认口径为 `"all"`，包含 cacheRead，不按缓存价格折扣。`spawn`、`status`、`result` 和调整上限的响应包含 `budget`：`maxTokens`、`usedTokens`、`remainingTokens`、`tokenAccounting` 与 `ancestors`；`ancestors` 列出每个祖先的上限、用量和暂停标志，剩余值最低为 0，用量不截断。
 
-任一任务或祖先累计用量达到上限时，daemon 将耗尽预算的任务及其子树内所有非终态任务置为 `budget_paused`，持久化 `task:budget_paused` 通知，然后按任务控制队列执行 `clear_queue`、`abort` 和进程停止，释放名额并保存停止报告与诊断。已结束任务保留终态；停止期间的合法尾量仍按原任务、原代、原会话去重入账，可能超过上限。这是请求结束后执行的软预算，不能保证恰好在指定 token 数停止。
+任一任务或祖先累计用量达到上限时，daemon 将耗尽预算的任务及其子树内所有非终态任务置为 `budget_paused`，持久化 `task:budget_paused` 通知，并通过现有调度唤醒召集人；即使下级指定 `notify: "silent"`，预算暂停仍须处理。通知身份包含本次暂停后的 revision，同代增额恢复后再次耗尽会产生新事件；同一次暂停中的重复 usage 和停止尾量不重复通知。然后按任务控制队列执行 `clear_queue`、`abort` 和进程停止，释放名额并保存停止报告与诊断。已结束任务保留终态；停止期间的合法尾量仍按原任务、原代、原会话去重入账，可能超过上限。这是请求结束后执行的软预算，不能保证恰好在指定 token 数停止。
 
 调度、spawn 下级、steer、通知唤醒、额度自动恢复和 recover 都检查当前任务及祖先预算。预算不足返回 `409 budget_exhausted`，下级上限超过祖先返回 `403 budget_limit_exceeded`。增额不会改变暂停状态；调用方须先补足相关预算，再显式 `recover`、`mode: "resume"`，且旧运行必须已确认退出。恢复父任务不会恢复任何下级；下级仍须由其直接召集人逐一决定。未曾启动的任务恢复时保留原任务书。
 

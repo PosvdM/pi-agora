@@ -48,6 +48,8 @@
 | `packages/daemon/src/budgets.ts`、`acl.ts`、`security.ts`、`offline.ts` | 预算、资源关系、设备签名、JCS、SQLite 和实例锁不依赖 pi。预算暂停只调用既有 `DriverHandle.stop()`；取消队列、停止推理和清理进程由适配器完成。 | 复用安全与预算规则；新驱动必须保留停止和停止后尾量记账的合同。 | 低 |
 | `test/task-security-1c.test.mjs`、`security-http-1c.test.mjs`、`security-core.test.mjs` | 安全服务与 HTTP 用测试签名器验收；任务模拟器仍构造 pi RPC 事件和停止队列。 | 替换任务夹具的 Harness 事件，安全签名与迁移测试可复用。 | 安全低；任务夹具中 |
 
+`test/budget-wake-e2e.test.mjs` 与 `test/fixtures/budget-provider.ts` 用 pi Provider 注册、真实 agora 工具和 `agora:notice` 落盘格式验证单名额预算循环，覆盖父进程复用与回收重拉。迁移时须替换 Provider 和消息注入适配，保留同代两次暂停、逐次确认及显式恢复语义；代价高。预算事件本身仅复用已有调度，不新增 pi RPC 命令。
+
 ## 设置与项目信任
 
 | 位置 | pi 依赖 | 更换 Harness 时的工作 | 代价 |
