@@ -3,7 +3,6 @@ import { homedir } from "node:os";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { setTimeout as delay } from "node:timers/promises";
 import {
   acquireSessionWriterLock, comparisonKey, currentProcessIdentity, isSameProcess,
   isSessionWriterLock, locatePi, realPathOrPending, stopByIdentity,
@@ -281,28 +280,18 @@ async function verifyStopped(identity: ProcessIdentity, report: StopReport, trac
     throw Object.assign(failure(code, `${problem}，保留会话写锁`), { identity, stopReport: report, verificationPhase: "report", status: null, attempts: 0, timeoutMs: 0 });
   }
   trace?.("report_validation_passed");
-  const timeoutMs = process.platform === "win32" ? 2_000 : 0;
-  const deadline = performance.now() + timeoutMs;
+  const attempts = 1, timeoutMs = 0;
   let status: Awaited<ReturnType<typeof isSameProcess>> | "unknown" = "unknown";
   let cause: unknown;
-  let attempts = 0;
-  // Windows 的退出可见性可能滞后；这里只查询，不重复发送停止信号。
-  for (;;) {
-    attempts++;
-    cause = undefined;
-    try {
-      trace?.("identity_query_start", { attempts });
-      status = await isSameProcess(identity);
-      trace?.("identity_query_result", { attempts, status });
-      if (status === "gone") return;
-    } catch (error) { status = "unknown"; cause = error; trace?.("identity_query_error", { attempts, error: String(error) }); }
-    const remaining = deadline - performance.now();
-    if (remaining <= 0) break;
-    await delay(Math.min(50, remaining));
-    if (performance.now() >= deadline) break;
-  }
+  // hostkit 返回前负责退出可见性；单次独立核对仍未知时保留写锁。
+  try {
+    trace?.("identity_query_start", { attempts });
+    status = await isSameProcess(identity);
+    trace?.("identity_query_result", { attempts, status });
+    if (status === "gone") return;
+  } catch (error) { status = "unknown"; cause = error; trace?.("identity_query_error", { attempts, error: String(error) }); }
   const detail = cause ? `无法核对写者身份：${String(cause)}` : `写者身份状态：${status}`;
-  throw Object.assign(failure("EAGORA_STOP_INCOMPLETE", `${detail}，${timeoutMs ? `${timeoutMs}ms 查询期限内` : ""}尚未确认退出，保留会话写锁`),
+  throw Object.assign(failure("EAGORA_STOP_INCOMPLETE", `${detail}，尚未确认退出，保留会话写锁`),
     { cause, identity, stopReport: report, status, attempts, timeoutMs, verificationPhase: "identity" });
 }
 

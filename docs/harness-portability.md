@@ -8,7 +8,7 @@
 
 | 位置 | pi 依赖 | 更换 Harness 时的工作 | 代价 |
 | --- | --- | --- | --- |
-| `packages/daemon/src/harness/pi/driver.ts`：`RpcSubprocessDriver.start` | `locatePi`、pi 版本检查、hostkit 的 `spawnWriter` 与 pi RPC 启动门闩。 | 替换定位、版本约束和启动门闩；保持写锁先于会话写者、身份记录先于放行的保证。hostkit 的写者 API 也校验 pi 参数，不能直接当作通用进程启动器。 | 中 |
+| `packages/daemon/src/harness/pi/driver.ts`：`RpcSubprocessDriver.start` | `locatePi`、pi 版本检查、hostkit 的 `spawnWriter` 与 pi RPC 启动门闩。 | 替换定位、版本约束和启动门闩；保持写锁先于会话写者、身份记录先于放行的保证。停止依赖 hostkit 的退出可见性，适配器在有效报告后只核对一次身份；alive / unknown 保锁，显式重试不重放底层停止。hostkit 的写者 API 也校验 pi 参数，不能直接当作通用进程启动器。 | 中 |
 | `packages/daemon/src/harness/pi/launch.ts`：`buildPiArgv` | `--mode rpc`、`--session-dir`、`--session`、`--model`、`--thinking`、`--tools`、资源开关和显式扩展 / skill 参数。 | 在新适配器中生成原生参数并验证资源隔离；当前参数顺序、默认工具及路径传递保持原样。 | 低 |
 | `packages/daemon/src/index.ts`：`DaemonOptions/startDaemon/childEnvironment`；`main.ts` | `piPath`、`extensionPath`、默认 pi 扩展产物位置、`--pi-path` / `--extension-path`，清理环境中的 `PI_PANE_HOME`。 | 在了解目标接口后确定 Harness 选择和配置兼容；保留现有启动参数。 | 中 |
 
