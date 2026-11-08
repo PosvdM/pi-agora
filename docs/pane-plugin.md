@@ -38,7 +38,7 @@ node scripts/vendor-pane-api.mjs generate <pi-pane仓库路径>
 | `plugin.ts` | 启用、停用、健康检查、在线/离线切换、领域对齐、通知、对外插件接口 |
 | `views.ts` | 在线树、会话快照与事件映射、停止、任务面板、自定义消息声明及主会话保活 |
 | `actions.ts`、`action-store.ts` | 动态任务表单、目标与输入校验、固定请求快照、跨重启幂等查询 |
-| `forms.ts` | 用户提问、中断任务决策、待确认和待批准设备的持久表单及结果映射 |
+| `forms.ts`、`form-cache.ts` | 用户提问、中断任务决策、待确认和待批准设备的持久表单、离线缓存及结果映射 |
 | `security.ts` | 用户在场确认、设备自签配对、三类安全横幅及带 revision 的确认知悉 |
 | `identity.ts` | 完整插件调用身份与最终结果的持久化，防止不同调用映射成相同后台参数后复用 key |
 | `offline.ts` | 经 archive adapter 读取的只读树、快照和历史；不解析 pi 文件或 SQLite |
@@ -53,9 +53,9 @@ node scripts/vendor-pane-api.mjs generate <pi-pane仓库路径>
 
 ## 幂等与资源上限
 
-完整 `ActionInvocation`、`FormSubmission` 和 `sessions.send` 的调用身份至少保留 24 小时；同 key 不同内容返回 `idempotencyConflict`。插件不缓存 `pending`。任务动作在发送副作用请求之前将方法、路径和请求体原子写入 `actions.json`；重启后同 key 使用原请求快照，避免随当前状态改变条件字段。最终插件结果保存在 `operation-identities.json`。
+完整 `ActionInvocation`、`FormSubmission` 和 `sessions.send` 的调用身份至少保留 24 小时；同 key 不同内容返回 `idempotencyConflict`。插件不缓存 `pending`。任务动作在发送副作用请求之前将方法、路径和请求体原子写入 `actions.json`；重启后同 key 使用原请求快照，避免随当前状态改变条件字段。最终插件结果保存在 `operation-identities.json`，从完成时间起至少保留 24 小时。待处理表单的展示快照保存在 `forms-cache.json`，插件重启后离线仍能列出；缓存不授权操作，也不因显示的过期时间到达而自行移除。
 
-这些文件位于宿主提供的插件专用 `dataDir`，不包含连接 token。每个目录只允许一个插件实例使用，不提供跨进程写锁。`actions.json` 上限为 16 MiB，每个索引最多 4096 项；未过期记录不能为了容纳新请求而被驱逐，容量耗尽或文件损坏时拒绝写操作。
+这些文件位于宿主提供的插件专用 `dataDir`，不包含连接 token。每个目录只允许一个插件实例使用，不提供跨进程写锁。`actions.json` 上限为 16 MiB，每个索引最多 4096 项；未过期记录不能为了容纳新请求而被驱逐，容量耗尽或文件损坏时拒绝写操作。`forms-cache.json` 最多 8 MiB、4096 个事项，在线权威对齐并写盘完成后才更新宿主的待处理区；无效缓存和写盘失败不能伪造空列表。
 
 HTTP JSON 响应最多 8 MiB，单个 SSE 事件最多 4 MiB。任务面板只读取最近 20 代结果，并标明显示范围；答复记录按任务过滤，最多读取 4096 条，展示答复者及设备确认来源，超限要求通过 API 分页查看。主会话保活只阻止空闲回收，不拉起未托管会话；任务全部结束或插件停用时释放。
 
@@ -73,8 +73,8 @@ HTTP JSON 响应最多 8 MiB，单个 SSE 事件最多 4 MiB。任务面板只�
 | `pane-api-vendor.test.mjs` | 固定协议副本的来源与哈希 |
 | `pane-transport-s2.test.mjs` | 相对端点、协议与幂等头、受控重试、分片 SSE 与取消 |
 | `pane-views-s2.test.mjs` | 树水位、串行映射、会话流、composer/abort、任务用量和保活 |
-| `pane-actions-s2.test.mjs`、`pane-action-store-s2.test.mjs` | 五个任务动作、动态表单、分步换人、pending 查询、跨重启固定请求、损坏和容量拒绝 |
-| `pane-forms-s2.test.mjs` | 表单排序、并发提交、取消、旧 revision、结果未知和离线保留 |
+| `pane-actions-s2.test.mjs`、`pane-action-store-s2.test.mjs`、`pane-action-daemon-s2.test.mjs` | 五个任务动作、动态表单、分步换人、pending 查询、跨重启固定请求、损坏和容量拒绝；真实 daemon 路径、创建目录及重复查询只执行一次 |
+| `pane-forms-s2.test.mjs`、`pane-form-cache-s2.test.mjs` | 表单排序、并发提交、取消、旧 revision、结果未知、跨插件重启的离线保留、容量、写入故障和停用竞态 |
 | `pane-security-s2.test.mjs` | 用户拒绝/超时/缺少设备、去重确认、设备自签、旧警告 revision 和持久横幅 |
 | `pane-identities-s2.test.mjs` | 跨重启完整调用身份、最终结果与并发登记 |
 | `pane-offline-s2.test.mjs` | 离线热树与中立父关系、分页、只读内容、缺失文件、扫描上限与取消 |
