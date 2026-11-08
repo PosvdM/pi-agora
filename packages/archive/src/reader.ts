@@ -1,4 +1,5 @@
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
+import { randomUUID } from "node:crypto";
 import { opendir, realpath } from "node:fs/promises";
 import path from "node:path";
 import { setImmediate } from "node:timers/promises";
@@ -22,6 +23,7 @@ interface SessionRow {
   meeting_id: string | null; status: string; archive_state: ArchiveState | "live"; inherits_from: string | null;
   created_at: string; ended_at: string | null; session_file: string; pi_session_id: string | null;
   thinking: string; cwd: string; inherit_reason: string | null; task_current_session_id: string | null;
+  taken_over_from?: string | null;
 }
 
 const SELECT_SESSION = `SELECT s.id,s.kind,COALESCE(t.title,'') AS title,s.model,s.profile,
@@ -52,12 +54,13 @@ function record(value: unknown): value is Record<string, unknown> {
 }
 function parentOf(row: SessionRow): Pick<ArchivedSessionSummary, "parent" | "parentDiagnostics"> {
   const diagnostic = (kind: string, message: string) => ({ parentDiagnostics: [{ kind, message }] });
+  if (row.convener_id === "user" || row.convener_type === "user") return { parent: { kind: "user" } };
   if (row.parent_task_id) {
     return row.parent_task_session_id ? {
       parent: { kind: "task", taskId: row.parent_task_id, sessionId: row.parent_task_session_id },
     } : diagnostic("parent_task_missing", "父任务缺少当前会话，无法确定会话父关系");
   }
-  if (row.convener_id === "user" || row.convener_type && ["user", "host:cli", "host:pane"].includes(row.convener_type)) {
+  if (row.convener_type === "host:cli" || row.convener_type === "host:pane") {
     return { parent: { kind: "user" } };
   }
   if (row.convener_type === "agent:main") {
@@ -80,6 +83,7 @@ function summary(row: SessionRow, missing: boolean): ArchivedSessionSummary {
     ...(row.inherits_from ? { inheritsFrom: row.inherits_from } : {}),
     ...(row.inherit_reason ? { inheritReason: row.inherit_reason } : {}),
     ...(row.task_id ? { isCurrent: row.task_current_session_id === row.id } : {}),
+    ...(row.task_id && row.taken_over_from !== undefined ? { takenOver: row.taken_over_from !== null } : {}),
     ...(row.ended_at ? { endedAt: row.ended_at } : {}),
   };
 }
@@ -89,14 +93,21 @@ class ArchiveReader implements ArchiveReaderV1 {
   private closed = false;
   // 内容指纹不变时复用快照，使 v1 的非持久派生键支持读取器内分页。
   private snapshots = new Map<string, ParsedSession>();
-  constructor(private db: DatabaseSync, private home: string, readonly schemaVersion: number) {}
+  private readonly readerId = randomUUID();
+  private generation = 0;
+  private generations = new WeakMap<ParsedSession, number>();
+  private readonly selectSession: string;
+  constructor(private db: DatabaseSync, private home: string, readonly schemaVersion: number) {
+    const hasTakeover = (db.prepare("PRAGMA table_info(tasks)").all() as { name: string }[]).some(column => column.name === "taken_over_from");
+    this.selectSession = hasTakeover ? SELECT_SESSION.replace("SELECT s.id", "SELECT t.taken_over_from,s.id") : SELECT_SESSION;
+  }
 
   private active(): void {
     if (this.closed) throw new ArchiveError("closed", "存档读取器已关闭");
   }
   private row(id: string): SessionRow | undefined {
     this.active();
-    return this.db.prepare(`${SELECT_SESSION} WHERE s.id=? LIMIT 1`).get(id) as unknown as SessionRow | undefined;
+    return this.db.prepare(`${this.selectSession} WHERE s.id=? LIMIT 1`).get(id) as unknown as SessionRow | undefined;
   }
   private usage(id: string): import("@pi-agora/protocol").UsageSummary | undefined {
     const totals = this.db.prepare(`SELECT COUNT(*) AS requests,
@@ -123,6 +134,7 @@ class ArchiveReader implements ArchiveReaderV1 {
       const previous = this.snapshots.get(session.agoraSessionId);
       if (previous && previous.hash === parsed.hash && previous.bytes === parsed.bytes) return previous;
       this.snapshots.set(session.agoraSessionId, parsed);
+      this.generations.set(parsed, ++this.generation);
       return parsed;
     }
     catch (error) {
@@ -149,7 +161,7 @@ class ArchiveReader implements ArchiveReaderV1 {
       where.push("(s.created_at<? OR (s.created_at=? AND s.id<?))");
       args.push(cursor.at, cursor.at, cursor.id);
     }
-    const rows = this.db.prepare(`${SELECT_SESSION}${where.length ? ` WHERE ${where.join(" AND ")}` : ""}
+    const rows = this.db.prepare(`${this.selectSession}${where.length ? ` WHERE ${where.join(" AND ")}` : ""}
       ORDER BY s.created_at DESC,s.id DESC LIMIT ?`).all(...args, limit + 1) as unknown as SessionRow[];
     const items: ArchivedSessionSummary[] = [];
     for (const row of rows.slice(0, limit)) {
@@ -192,19 +204,28 @@ class ArchiveReader implements ArchiveReaderV1 {
   async readRawEntries(id: string, q: { cursor?: string; limit?: number } = {}): Promise<Page<SessionEntry>> {
     const limit = limitOf(q.limit);
     let start = 0;
+    let cursor: Record<string, unknown> | undefined;
     if (q.cursor !== undefined) {
-      const cursor = decode(q.cursor);
-      if (!record(cursor) || cursor.kind !== "raw" || cursor.v !== 1 || cursor.id !== id ||
+      const decoded = decode(q.cursor);
+      if (!record(decoded)) throw new ArchiveError("invalid_cursor", "原始条目分页游标无效");
+      cursor = decoded;
+      if (cursor.kind !== "raw" || cursor.v !== 1 || cursor.id !== id ||
           !Number.isSafeInteger(cursor.offset) || (cursor.offset as number) < 0) {
         throw new ArchiveError("invalid_cursor", "原始条目分页游标无效");
       }
       start = cursor.offset as number;
     }
     const parsed = await this.parsed(await this.required(id));
+    // v1 的条目标识仅在读取器的解析代际内有效；稳定标识版本允许跨快照分页。
+    if (cursor && (parsed.version === 1 || cursor.reader !== undefined || cursor.generation !== undefined) &&
+        (parsed.version !== 1 || cursor.reader !== this.readerId || cursor.generation !== this.generations.get(parsed))) {
+      throw new ArchiveError("invalid_cursor", "原始条目分页游标的读取器或解析快照已失效");
+    }
     if (start > parsed.entries.length) throw new ArchiveError("invalid_cursor", "原始条目分页游标超出文件范围");
     const end = Math.min(parsed.entries.length, start + limit);
     return { items: parsed.entries.slice(start, end), ...(end < parsed.entries.length ? {
-      nextCursor: encode({ v: 1, kind: "raw", id, offset: end }),
+      nextCursor: encode({ v: 1, kind: "raw", id, offset: end,
+        ...(parsed.version === 1 ? { reader: this.readerId, generation: this.generations.get(parsed) } : {}) }),
     } : {}) };
   }
 

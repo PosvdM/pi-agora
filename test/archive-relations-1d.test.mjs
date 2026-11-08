@@ -24,18 +24,26 @@ test('在线与离线关系投影保持中立，并跟随父任务当前会话',
   await seed('tk_root', 'as_root', 'main');
   await seed('tk_nested', 'as_nested', 'child_as_root', 'tk_root');
   await seed('tk_user', 'as_user', 'user');
+  await seed('tk_taken', 'as_taken', 'user', 'tk_root');
+  store.run("UPDATE tasks SET taken_over_from='child_as_root' WHERE id='tk_taken'");
   reader = await openArchive({ home, apiVersion: 1 });
   const expected = {
     as_root: { kind: 'main', piSessionId: 'pi_main' },
     as_nested: { kind: 'task', taskId: 'tk_root', sessionId: 'as_root' },
     as_user: { kind: 'user' },
+    as_taken: { kind: 'user' },
   };
   const list = await reader.listSessions();
   for (const [sessionId, parent] of Object.entries(expected)) {
     assert.deepEqual(store.sessionParent(sessionId), parent);
     assert.deepEqual((await reader.getSession(sessionId)).parent, parent);
     assert.deepEqual(list.items.find(item => item.agoraSessionId === sessionId).parent, parent);
+    for (const metadata of [store.sessionMetadata(sessionId), await reader.getSession(sessionId), list.items.find(item => item.agoraSessionId === sessionId)]) {
+      assert.equal(metadata.takenOver, sessionId === 'as_taken');
+      assert.equal(metadata.isCurrent, true);
+    }
   }
+  assert.equal(store.task('tk_taken').parent_task_id, 'tk_root');
   const file = path.join(home, 'sessions', 'as_reopened', 'session.jsonl');
   await mkdir(path.dirname(file), { recursive: true });
   await writeFile(file, JSON.stringify({ type: 'session', version: 3, id: 'pi_reopened', timestamp: at }) + '\n');
@@ -58,4 +66,16 @@ test('在线与离线关系投影保持中立，并跟随父任务当前会话',
   assert.equal((await reader.getSession('as_root')).usage.contextTokens, 40);
   assert.equal((await reader.getSession('as_reopened')).usage.contextTokens, 80);
   assert.equal((await reader.getSession('as_root')).usage.requests, 1);
+  store.run("INSERT INTO process_runs(id,agora_session_id,daemon_instance_id,state,started_at,exited_at) VALUES('pr_taken','as_taken','in_test','exited',?,?)", at, at);
+  store.run("INSERT INTO usage_records(task_id,generation,agora_session_id,run_id,request_id,input_tokens,cache_read_tokens,cache_write_tokens,output_tokens,reasoning_tokens,context_tokens,created_at) VALUES('tk_taken',1,'as_taken','pr_taken','req_taken',5,0,0,1,0,5,?)", at);
+  assert.equal(store.usage('tk_root').requests, 2);
+  assert.equal(store.usage('tk_root', true).requests, 3);
+  for (const item of (await reader.listSessions()).items) {
+    const detail = await reader.getSession(item.agoraSessionId);
+    const online = JSON.parse(JSON.stringify(store.sessionMetadata(item.agoraSessionId)));
+    for (const key of ['parent', 'parentDiagnostics', 'parentPiSessionId', 'inheritsFrom', 'inheritReason', 'isCurrent', 'takenOver', 'usage']) {
+      assert.deepEqual(online[key], detail[key], `${item.agoraSessionId}.${key}`);
+      assert.deepEqual(item[key], detail[key], `${item.agoraSessionId}.${key}`);
+    }
+  }
 });
