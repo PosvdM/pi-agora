@@ -62,6 +62,20 @@ pi-agora 是 pi 的协作引擎：一个每用户单实例的后台进程（daem
 - 扩展不保存协作状态，进程重启后从 daemon 取。
 - pane 插件只调用 daemon 的 HTTP API 和 archive adapter，不读 SQLite 表结构。
 
+## Harness 适配层
+
+当前只提供 pi 1.5.x 实现，不预先设计其他 Harness 的完整适配器。目录与边界如下：
+
+- `packages/daemon/src/harness/types.ts` 定义与 Harness 无关的启动规格、技能解析结果及逐请求用量、额度事件，不依赖 pi 或 hostkit 类型。
+- `packages/daemon/src/harness/pi/driver.ts` 实现 pi 定位、skill 解析、RPC 驱动、会话写锁、心跳、UI 与进程清理；`launch.ts` 拼装 pi 参数，`events.ts` 将 pi usage 与额度错误转为中立派生事件。
+- `packages/daemon/src/driver.ts` 保留全部既有导出，避免为目录迁移改动任务调度及现有调用方。`SessionDriver` 和 `DriverHandle` 仍暴露 pi RPC 类型，未构成完整的中立 Harness 接口。
+- `packages/extension` 整个包属于 pi 侧适配；它的扩展 API、工具钩子、通知注入与会话落盘确认不另拆。
+- 任务状态机、数据库、HTTP API 和 CLI 不随目录迁移改变。任务层直接使用 pi RPC、会话身份和队列语义等高成本项见 [Harness 耦合清单](harness-portability.md)，清单同时覆盖代码、测试、配置、CLI 输出与文档。
+
+**新的 pi 依赖只能放在适配层**：daemon 放在 `harness/pi/`，扩展放在 `packages/extension`；`harness/types.ts` 不放 pi 字段、事件或导入。领域层已有的 pi 耦合按清单保留，不以修改原始事件解析的方式扩大。测试可直接验证 pi 适配器，但领域新增行为应使用中立结果，不引入新的 pi 假设。默认装配位置和既有配置暂不改名。
+
+更换 Harness 时，先核对其进程启动、工具授权、就绪、事件、停止及会话持久化接口，再实现对应适配器和宿主扩展。随后整体改造任务层的 RPC 调用与事件合同，并设计旧会话身份、数据库和公开字段的兼容方案；不能只替换启动命令。新适配器必须重新证明资源隔离、单写者、最终授权、通知落盘后确认、逐请求计量、队列清理和崩溃恢复，并通过 Windows、macOS、Linux 的真实运行测试。
+
 ## 进程模型
 
 ### 会话驱动
@@ -131,7 +145,7 @@ node <pi>/dist/bundle/cli.js --mode rpc
 
 ### 用量与额度事件
 
-pi 专有的 skill 参数、用量字段和错误解析集中在 `packages/daemon/src/driver.ts`；任务状态机和数据库只处理 Harness 中立的 `usage_record` 和 `quota_exhausted` 字段。驱动在助手 `message_end` 时读取 `usage.input`、`cacheRead`、`cacheWrite`、`output` 及可用的推理 token 字段，生成逐请求用量。任务层按 runId + requestId 去重写入 `usage_records`，不把累计 `get_session_stats` 反复相加。
+pi 专有的 skill 解析与启动参数位于 `packages/daemon/src/harness/pi/driver.ts` 和 `launch.ts`，用量字段和错误解析位于同目录的 `events.ts`；逐请求记账与额度暂停使用 `harness/types.ts` 定义的中立 `usage_record` 和 `quota_exhausted` 字段。任务状态机的其他控制与会话事件仍依赖 pi RPC，详见 [Harness 耦合清单](harness-portability.md)。驱动在助手 `message_end` 时读取 `usage.input`、`cacheRead`、`cacheWrite`、`output` 及可用的推理 token 字段，生成逐请求用量。任务层按 runId + requestId 去重写入 `usage_records`，不把累计 `get_session_stats` 反复相加。
 
 额度识别只匹配助手错误中的明确限额代码（`usage_limit_reached`、`quota_exceeded`、`insufficient_quota`）和 HTTP 429 信息；普通 `rate_limit_exceeded` 不按额度用完处理。驱动从错误返回的重置时间或重试等待时间生成 `resumeAt`；未识别的时间保留 null，不推测恢复时刻。无法识别的错误仍按原失败路径处理。pi RPC 提供的错误可能只有 `errorMessage` 文本，解析以其可见字段为限，不保证所有 provider 的私有错误格式都能识别。
 
