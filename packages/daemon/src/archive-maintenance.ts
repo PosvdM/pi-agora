@@ -47,7 +47,7 @@ export async function deleteArchiveOffline(options: { home: string; sessionId: s
       catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
     }
     db = new DatabaseSync(database, { enableForeignKeyConstraints: true });
-    const version = Number((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version);
+    const version = Number((db.prepare("SELECT version FROM schema_version LIMIT 1").get() as { version?: number } | undefined)?.version);
     if (![4, 5, 6].includes(version)) refuse("数据库版本未通过维护接口核对");
     const session = db.prepare("SELECT session_file,status,control_state FROM agora_sessions WHERE id=? LIMIT 1").get(sessionId) as {
       session_file: string; status: string; control_state: string | null;
@@ -64,6 +64,7 @@ export async function deleteArchiveOffline(options: { home: string; sessionId: s
     if (!isSessionWriterLock(acquired)) refuse("会话写锁被占用");
     writer = acquired;
     if (!writer.previous || writer.previous.state !== "released") refuse("取得写锁后，旧写者释放证明发生变化");
+    if (await writer.recoverPreviousWriter() !== "none") refuse("旧写者状态不能由只读维护核对");
     await noLinks(directory);
     // 删除前重新核对真实路径与数据库状态；锁的持有期覆盖删除和元数据提交。
     await exactPath(run, true);

@@ -10,6 +10,12 @@
   "references": [
     {
       "path": "../protocol"
+    },
+    {
+      "path": "../archive"
+    },
+    {
+      "path": "../harness-pi"
     }
   ]
 }

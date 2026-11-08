@@ -30,7 +30,7 @@ interface ViewState {
   clients: Set<Client>;
   ring: ViewEvent[];
   issues: Issue[];
-  closing: boolean; ended: boolean; endReason?: string;
+  closing: boolean; ended: boolean; cleanupPending: boolean; endReason?: string;
   initialMessageCount?: number;
   baseline?: { hash: string; bytes: number };
   verification?: Verification;
@@ -67,7 +67,7 @@ export class SessionViews {
       sessionId, runId, epoch: `${this.instanceId}:${runId}`, seq: 0, handle,
       entries: [], leafId: null, diskEntries: [], rpcEntries: [], events: new PiArchiveEvents(runId),
       archivedPartials: [], pending: [], work: Promise.resolve(), ready: Promise.resolve(), lastWrite: 0,
-      off: [], clients: new Set(), ring: [], issues: [], closing: false, ended: false,
+      off: [], clients: new Set(), ring: [], issues: [], closing: false, ended: false, cleanupPending: false,
     };
   }
   private issue(state: ViewState, kind: string, error: unknown): void {
@@ -181,7 +181,17 @@ export class SessionViews {
       if (result.rows.length) this.scheduleWrite(state);
       if (result.refresh) void this.serial(state, () => this.refresh(state)).catch(() => {});
     }), handle.onExit(exit => {
-      void this.ended(sessionId, runId, exit.reason).catch(() => {});
+      if (exit.cleanupConfirmed === false) {
+        // 未确认退出时继续消费原 RPC，不能丢掉迟到的增量和最终消息。
+        state.cleanupPending = true;
+        this.status(sessionId);
+        void this.serial(state, async () => {
+          await this.refresh(state);
+          await this.writePending(state);
+          await this.verifyState(state);
+          await this.saveDiagnostics(state);
+        }).catch(() => {});
+      } else void this.ended(sessionId, runId, exit.reason).catch(() => {});
     }));
     this.publish(state, "agora_run", { runId, phase: "started" });
     state.ready = this.serial(state, async () => {
@@ -327,6 +337,7 @@ export class SessionViews {
     // 旧运行的延迟退出回调不能覆盖新运行的 epoch 或流状态。
     if (!state || state.runId !== runId) return;
     state.closing = true;
+    state.cleanupPending = false;
     if (reason !== undefined) state.endReason = reason;
     if (state.timer) { clearTimeout(state.timer); state.timer = undefined; }
     for (const off of state.off.splice(0)) off();
@@ -370,7 +381,7 @@ export class SessionViews {
     const state = this.states.get(sessionId);
     const phase = state?.handle && !state.ended ? state.events.activePhase : "idle";
     return { status: session.status, statusDetail: session.control_state ?? task?.status_detail ?? null,
-      phase: state?.handle && !state.ended && (state.closing || session.control_state === "stopping") ? "stopping" : phase,
+      phase: state?.handle && !state.ended && (state.closing || state.cleanupPending || session.control_state === "stopping") ? "stopping" : phase,
       revision: (session as unknown as { revision?: number }).revision ?? 0 };
   }
   private historySlice(state: ViewState, before: string | undefined, limit: number) {
@@ -388,8 +399,10 @@ export class SessionViews {
     return {
       cursor: { epoch: state.epoch, seq: state.seq }, ...this.historySlice(state, undefined, count),
       inFlight: { ...state.events.inFlight(state.entries, !!state.handle && !state.ended), phase: status.phase },
-      unfinishedPartials: projectPartials(clone([...state.archivedPartials, ...state.events.unfinished(state.diskEntries)])),
+      unfinishedPartials: projectPartials(clone([...state.archivedPartials,
+        ...state.events.unfinished(state.diskEntries, !!state.handle && !state.ended)])),
       status: status.status, statusDetail: status.statusDetail,
+      usage: this.store.sessionUsage(sessionId),
     };
   }
   async history(sessionId: string, q: { before?: string; limit?: number } = {}) {

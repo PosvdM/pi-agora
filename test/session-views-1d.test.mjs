@@ -9,7 +9,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { stripTypeScriptTypes } from 'node:module';
 
-// 这里只测试 daemon 服务；尚未合入的 archive/parser 以约定接口注入，不代替它们的独立测试。
+// 依赖注入覆盖并发与故障边界；真实共享包由 HTTP 联测和包构建验证。
 const temporary = await mkdtemp(path.join(tmpdir(), 'agora-session-modules-'));
 after(() => rm(temporary, { recursive: true, force: true }));
 const fixtureKey = `agora-session-test-${temporary}`;
@@ -154,6 +154,7 @@ async function setup(t, entries = []) {
   const store = {
     home,
     session(id) { if (id !== 's1') throw new Error('会话不存在'); return row; },
+    sessionUsage() { return undefined; },
     get(sql) { return sql.includes('process_runs') ? undefined : { status_detail: '模型生成中' }; },
   };
   const views = new SessionViews(store, 'daemon');
@@ -327,6 +328,8 @@ test('会话视图：相同角色与时间戳但不同完整消息不能闭片�
   await f.disk([unrelated]);
   await f.views.settled('s1');
   assert.equal((await f.partialRows()).some(row => row.closed), false);
+  assert.ok((await f.views.snapshot('s1')).inFlight.completed.length > 0);
+  await f.views.ended('s1', 'r1');
   assert.ok((await f.views.snapshot('s1')).unfinishedPartials.length > 0);
 });
 
@@ -616,7 +619,10 @@ test('会话视图：delta-only 块按索引重建，块结束和最终消息覆
   const snapshot = await f.views.snapshot('s1');
   assert.equal(snapshot.inFlight.assistant, undefined);
   assert.deepEqual(snapshot.inFlight.completed, [final]);
-  assert.deepEqual(snapshot.unfinishedPartials[0].blocks.map(block => block.text ?? block.argsText), ['最终思考', '最终文字', '{"path":"final"}']);
+  assert.deepEqual(snapshot.unfinishedPartials, []);
+  await f.views.ended('s1', 'r1');
+  const interrupted = await f.views.snapshot('s1');
+  assert.deepEqual(interrupted.unfinishedPartials[0].blocks.map(block => block.text ?? block.argsText), ['最终思考', '最终文字', '{"path":"final"}']);
   const rows = await f.partialRows();
   assert.ok(rows.some(row => row.blockType === 'toolCall' && row.toolCallId === 'c1' && row.toolName === 'read' && row.delta === ''));
   assert.ok(rows.some(row => row.replace && row.done && row.delta === '权威文字'));
@@ -805,54 +811,37 @@ test('会话视图：退出按运行和消息分组历史与当前片段，保�
   assert.ok(rows.some(row => row.done && row.replace && row.toolName === 'read' && row.args?.path === 'a'));
 });
 
-test('会话视图：按并行接口声明执行严格类型检查，不依赖尚未合入的包', async () => {
+test('会话视图：停止未确认时继续接收迟到流，活跃助手与中断片段不重复显示', async t => {
+  const f = await setup(t);
+  await f.views.begin('s1', 'r1', f.driver);
+  emitText(f.driver, '第一段', 2, false);
+  const initial = await f.views.snapshot('s1');
+  assert.equal(initial.inFlight.assistant.blocks[0].text, '第一段');
+  assert.deepEqual(initial.unfinishedPartials, []);
+  const { response } = stream(f.views, initial.cursor);
+  for (const listener of [...f.driver.exits]) listener({ reason: '停止未确认', cleanupConfirmed: false });
+  await f.views.flush();
+  assert.equal(f.driver.events.size, 1);
+  assert.equal(response.writableEnded, false);
+  f.driver.emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: '第二段' } });
+  await f.views.flush();
+  const pending = await f.views.snapshot('s1');
+  assert.equal(pending.inFlight.phase, 'stopping');
+  assert.equal(pending.inFlight.assistant.blocks[0].text, '第一段第二段');
+  assert.deepEqual(pending.unfinishedPartials, []);
+  assert.ok(response.values().some(value => value.event.assistantMessageEvent?.delta === '第二段'));
+  for (const listener of [...f.driver.exits]) listener({ reason: '确认退出', cleanupConfirmed: true });
+  await f.views.flush();
+  const exited = await f.views.snapshot('s1');
+  assert.equal(exited.inFlight.assistant, undefined);
+  assert.equal(exited.unfinishedPartials[0].blocks[0].text, '第一段第二段');
+  assert.equal(f.driver.events.size, 0);
+});
+
+test('会话视图：使用真实共享包执行严格类型检查', () => {
   const root = fileURLToPath(new URL('../', import.meta.url));
-  const parserTypes = path.join(temporary, 'parser.d.ts');
-  const archiveTypes = path.join(temporary, 'archive.d.ts');
-  const protocolTypes = path.join(temporary, 'protocol.d.ts');
-  await writeFile(protocolTypes, `
-export * from '${path.join(root, 'packages/protocol/src/index.ts').replaceAll('\\', '/')}';
-export type InFlightBlock =
-  | { type: 'text' | 'thinking'; contentIndex: number; text: string; done: boolean }
-  | { type: 'toolCall'; contentIndex: number; id: string; toolName: string; argsText: string; args?: unknown; done: boolean };
-export interface InFlightState {
-  phase: 'idle' | 'streaming' | 'tools' | 'compacting' | 'retrying' | 'waitingUi' | 'stopping';
-  assistant?: { startedAt: number; blocks: InFlightBlock[]; usage?: unknown }; completed?: unknown[];
-  tools: { toolCallId: string; toolName: string; args: unknown; partialResult?: unknown; startedAt: number }[];
-  queue: { steering: string[]; followUp: string[] };
-  retry?: { attempt: number; maxAttempts: number; delayMs: number; errorMessage: string };
-}
-export interface UnfinishedPartial { runId: string; at: string; blocks: InFlightBlock[] }
-export interface SessionStreamEvent { cursor: { epoch: string; seq: number }; sessionId: string; event: { type: string; [key: string]: unknown } }
-`);
-  await writeFile(parserTypes, `
-export interface SessionEntry { type: string; id: string; parentId: string | null; [key: string]: unknown }
-export interface ParsedSession { entries: SessionEntry[]; leafId: string | null; version: number | null;
-  idsStable: boolean; status: 'ok' | 'empty' | 'invalid'; header: unknown;
-  diagnostics: { line: number; kind: string; message: string }[]; hash: string; bytes: number }
-export function parseSessionFile(file: string): Promise<ParsedSession>;
-`);
-  await writeFile(archiveTypes, `
-import type { SessionEntry } from '@pi-agora/harness-pi';
-export function projectUserView(entries: SessionEntry[], leafId: string | null): SessionEntry[];
-export function verifySessionFile(file: string, expected?: { messageEndCount?: number;
-  lastMessage?: { role: string; timestamp: unknown }; previous?: { hash: string; bytes: number };
-  hasUnfinishedPartials?: boolean }): Promise<{ state: 'ok' | 'partial' | 'suspect' | 'missing';
-  hash: string | null; bytes: number; messageCount: number; diagnostics: unknown[] }>;
-export interface Fragment { runId: string; t: string; messageSeq: number; contentIndex: number;
-  blockType: 'thinking' | 'text' | 'toolCall'; delta: string; toolCallId?: string; toolName?: string;
-  replace?: boolean; done?: boolean; args?: unknown; messageRole?: string; messageTimestamp?: unknown }
-export function projectPartials(fragments: Fragment[]): import('@pi-agora/protocol').UnfinishedPartial[];
-export function openArchive(options: { home?: string; apiVersion: 1 }): Promise<{
-  readPartials(id: string): Promise<Fragment[]>; readDiagnostics(id: string): Promise<unknown[]>; close(): void }>;
-`);
-  const config = path.join(temporary, 'tsconfig.json');
-  await writeFile(config, JSON.stringify({ compilerOptions: {
-    target: 'ES2023', module: 'NodeNext', moduleResolution: 'NodeNext', strict: true, skipLibCheck: true,
-    noEmit: true, types: ['node'], typeRoots: [path.join(root, 'node_modules', '@types')],
-    paths: { '@pi-agora/harness-pi': [parserTypes], '@pi-agora/archive': [archiveTypes], '@pi-agora/protocol': [protocolTypes] },
-  }, files: [path.join(root, 'packages/daemon/src/sessions.ts'), path.join(root, 'packages/daemon/src/harness/pi/archive-events.ts')] }));
-  execFileSync(process.execPath, [path.join(root, 'node_modules/typescript/bin/tsc'), '--project', config], {
+  execFileSync(process.execPath, [path.join(root, 'node_modules/typescript/bin/tsc'),
+    '--build', path.join(root, 'packages/daemon'), '--pretty', 'false'], {
     cwd: root, timeout: 60_000, encoding: 'utf8', stdio: 'pipe',
   });
 });

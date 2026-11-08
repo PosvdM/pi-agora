@@ -105,6 +105,8 @@ export async function startDaemon(options: DaemonOptions): Promise<RunningDaemon
       if (opts.timeoutMs !== undefined && (!Number.isInteger(opts.timeoutMs) || opts.timeoutMs < 1 || opts.timeoutMs > 2_147_483_647)) return Promise.reject(new AgoraError(400, "invalid_params", "关闭超时无效"));
       closePromise = (async () => {
         await tasks.shutdown(opts.force ?? false, opts.timeoutMs ?? 600_000);
+        await tasks.flush();
+        await tasks.sessions.close();
         closing.abort();
         await new Promise<void>((resolve, reject) => {
           server!.close(error => error ? reject(error) : resolve());
@@ -145,5 +147,6 @@ export async function startDaemon(options: DaemonOptions): Promise<RunningDaemon
 export { Auth, proof } from "./auth.js";
 export { Store, openStore, consistentBackup, SCHEMA_VERSION } from "./store.js";
 export { AgoraError } from "./errors.js";
+export { deleteArchiveOffline } from "./archive-maintenance.js";
 export { RpcSubprocessDriver } from "./driver.js";
 export type { DriverHandle, SessionDriver, LaunchSpec } from "./driver.js";

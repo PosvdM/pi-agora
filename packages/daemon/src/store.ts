@@ -4,6 +4,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { AgoraError } from "./errors.js";
 import { archiveSchemaV6 } from "./archive-schema.js";
+import type { SessionParent } from "@pi-agora/protocol";
 
 export const SCHEMA_VERSION = 6;
 export const schemaMigrations: readonly string[] = [String.raw`
@@ -269,6 +270,26 @@ export class Store {
     totals.contextTokens = this.get<{ n: number }>(`SELECT COALESCE(SUM(context_tokens),0) AS n FROM usage_records WHERE seq IN (
       SELECT MAX(seq) FROM usage_records WHERE task_id IN (${ids}) AND context_tokens>0 AND (? IS NULL OR generation=?) GROUP BY task_id
     )`, taskId, generation ?? null, generation ?? null)!.n;
+    return totals;
+  }
+  sessionParent(sessionId: string): SessionParent | undefined {
+    const row = this.get<{ parent_task_id: string | null; parent_session_id: string | null; owner: string | null; pi_session_id: string | null }>(`SELECT t.parent_task_id, parent.agora_session_id AS parent_session_id,
+      s.convener_id AS owner,p.pi_session_id FROM agora_sessions s
+      LEFT JOIN tasks t ON t.id=s.task_id LEFT JOIN tasks parent ON parent.id=t.parent_task_id
+      LEFT JOIN principals p ON p.id=s.convener_id WHERE s.id=? LIMIT 1`, sessionId);
+    if (row?.parent_task_id && row.parent_session_id) return { kind: "task", taskId: row.parent_task_id, sessionId: row.parent_session_id };
+    if (row?.owner === "user") return { kind: "user" };
+    if (row?.pi_session_id) return { kind: "main", piSessionId: row.pi_session_id };
+    return undefined;
+  }
+  sessionUsage(sessionId: string): UsageSummary | undefined {
+    const totals = this.get<UsageSummary>(`SELECT COUNT(*) AS requests,
+      COALESCE(SUM(input_tokens),0) AS inputTokens, COALESCE(SUM(cache_read_tokens),0) AS cacheReadTokens,
+      COALESCE(SUM(cache_write_tokens),0) AS cacheWriteTokens, COALESCE(SUM(output_tokens),0) AS outputTokens,
+      COALESCE(SUM(reasoning_tokens),0) AS reasoningTokens, 0 AS contextTokens
+      FROM usage_records WHERE agora_session_id=?`, sessionId)!;
+    if (!totals.requests) return undefined;
+    totals.contextTokens = this.get<{ context_tokens: number }>("SELECT context_tokens FROM usage_records WHERE agora_session_id=? AND context_tokens>0 ORDER BY seq DESC LIMIT 1", sessionId)?.context_tokens ?? 0;
     return totals;
   }
   takeInbox(recipient: string, visibilityMs = 120_000, silentOnly = false): NoticeRow[] {

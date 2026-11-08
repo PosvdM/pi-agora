@@ -4,7 +4,7 @@ import path from "node:path";
 import { setImmediate } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import type { ParsedSession, SessionEntry } from "@pi-agora/harness-pi";
-import type { PermissionProfile, SessionKind } from "@pi-agora/protocol";
+import { agoraHome, type PermissionProfile, type SessionKind } from "@pi-agora/protocol";
 import type {
   ArchiveReaderV1, ArchivedSession, ArchivedSessionSummary, ArchiveState,
   Page, PartialFragment, RunDiagnostics, SessionQuery,
@@ -19,13 +19,13 @@ interface SessionRow {
   parent_task_id: string | null; parent_task_session_id: string | null; task_id: string | null;
   meeting_id: string | null; status: string; archive_state: ArchiveState | "live"; inherits_from: string | null;
   created_at: string; ended_at: string | null; session_file: string; pi_session_id: string | null;
-  thinking: string; cwd: string;
+  thinking: string; cwd: string; inherit_reason: string | null; task_current_session_id: string | null;
 }
 
 const SELECT_SESSION = `SELECT s.id,s.kind,COALESCE(t.title,'') AS title,s.model,s.profile,
   s.convener_id,p.type AS convener_type,p.pi_session_id AS parent_pi_session_id,
   t.parent_task_id,pt.agora_session_id AS parent_task_session_id,s.task_id,s.meeting_id,s.status,
-  s.archive_state,s.inherits_from,s.created_at,s.ended_at,s.session_file,s.pi_session_id,s.thinking,s.cwd
+  s.archive_state,s.inherits_from,s.inherit_reason,t.agora_session_id AS task_current_session_id,s.created_at,s.ended_at,s.session_file,s.pi_session_id,s.thinking,s.cwd
   FROM agora_sessions s LEFT JOIN tasks t ON t.id=s.task_id
   LEFT JOIN tasks pt ON pt.id=t.parent_task_id
   LEFT JOIN principals p ON p.id=s.convener_id`;
@@ -55,7 +55,7 @@ function parentOf(row: SessionRow): Pick<ArchivedSessionSummary, "parent" | "par
       parent: { kind: "task", taskId: row.parent_task_id, sessionId: row.parent_task_session_id },
     } : diagnostic("parent_task_missing", "父任务缺少当前会话，无法确定会话父关系");
   }
-  if (row.convener_type && ["user", "host:cli", "host:pane"].includes(row.convener_type)) {
+  if (row.convener_id === "user" || row.convener_type && ["user", "host:cli", "host:pane"].includes(row.convener_type)) {
     return { parent: { kind: "user" } };
   }
   if (row.convener_type === "agent:main") {
@@ -76,6 +76,8 @@ function summary(row: SessionRow, missing: boolean): ArchivedSessionSummary {
     ...(row.task_id ? { taskId: row.task_id } : {}),
     ...(row.meeting_id ? { meetingId: row.meeting_id } : {}),
     ...(row.inherits_from ? { inheritsFrom: row.inherits_from } : {}),
+    ...(row.inherit_reason ? { inheritReason: row.inherit_reason } : {}),
+    ...(row.task_id ? { isCurrent: row.task_current_session_id === row.id } : {}),
     ...(row.ended_at ? { endedAt: row.ended_at } : {}),
   };
 }
@@ -93,6 +95,15 @@ class ArchiveReader implements ArchiveReaderV1 {
   private row(id: string): SessionRow | undefined {
     this.active();
     return this.db.prepare(`${SELECT_SESSION} WHERE s.id=? LIMIT 1`).get(id) as unknown as SessionRow | undefined;
+  }
+  private usage(id: string): import("@pi-agora/protocol").UsageSummary | undefined {
+    const totals = this.db.prepare(`SELECT COUNT(*) AS requests,
+      COALESCE(SUM(input_tokens),0) AS inputTokens,COALESCE(SUM(cache_read_tokens),0) AS cacheReadTokens,
+      COALESCE(SUM(cache_write_tokens),0) AS cacheWriteTokens,COALESCE(SUM(output_tokens),0) AS outputTokens,
+      COALESCE(SUM(reasoning_tokens),0) AS reasoningTokens FROM usage_records WHERE agora_session_id=? LIMIT 1`).get(id) as unknown as Omit<import("@pi-agora/protocol").UsageSummary, "contextTokens">;
+    if (!totals.requests) return undefined;
+    const context = this.db.prepare("SELECT context_tokens FROM usage_records WHERE agora_session_id=? AND context_tokens>0 ORDER BY seq DESC LIMIT 1").get(id) as { context_tokens: number } | undefined;
+    return { ...totals, contextTokens: context?.context_tokens ?? 0 };
   }
   private async required(id: string): Promise<ArchivedSession> {
     const session = await this.getSession(id);
@@ -141,7 +152,7 @@ class ArchiveReader implements ArchiveReaderV1 {
     const items: ArchivedSessionSummary[] = [];
     for (const row of rows.slice(0, limit)) {
       const checked = await archivePath(this.home, row.session_file);
-      items.push(summary(row, checked.missing));
+      items.push({ ...summary(row, checked.missing), usage: this.usage(row.id) });
     }
     const last = rows[limit - 1];
     return { items, ...(rows.length > limit ? { nextCursor: encode({ v: 1, kind: "sessions", at: last.created_at, id: last.id, scope }) } : {}) };
@@ -151,7 +162,7 @@ class ArchiveReader implements ArchiveReaderV1 {
     const row = this.row(id);
     if (!row) return undefined;
     const checked = await archivePath(this.home, row.session_file);
-    return { ...summary(row, checked.missing), sessionFile: checked.file, thinking: row.thinking, cwd: row.cwd,
+    return { ...summary(row, checked.missing), usage: this.usage(row.id), sessionFile: checked.file, thinking: row.thinking, cwd: row.cwd,
       availability: checked.missing ? "missing" : "available",
       ...(row.pi_session_id ? { piSessionId: row.pi_session_id } : {}) };
   }
@@ -265,8 +276,8 @@ class ArchiveReader implements ArchiveReaderV1 {
           throw new ArchiveError("unsafe_path", "进程标识不能作为存档文件名");
         }
         const directory = path.dirname(session.sessionFile);
-        const candidates = [...(row.diagnostics_path ? [row.diagnostics_path] : []),
-          path.join(directory, "runs", `${row.id}.json`),
+        const candidates = [path.join(directory, "runs", `${row.id}.json`),
+          ...(row.diagnostics_path ? [row.diagnostics_path] : []),
           path.join(directory, "runs", `${row.id}.diagnostics.json`),
           path.join(directory, `${row.id}.diagnostics.json`)];
         for (const file of candidates) {
@@ -302,9 +313,7 @@ class ArchiveReader implements ArchiveReaderV1 {
 
 export async function openArchive(opts: { home?: string; apiVersion: 1 }): Promise<ArchiveReaderV1> {
   if (opts.apiVersion !== 1) throw new ArchiveError("unsupported_api", "存档 API 版本不支持");
-  const configuredHome = opts.home ?? process.env.AGORA_HOME;
-  if (!configuredHome) throw new ArchiveError("home_required", "请指定 home 或 AGORA_HOME 数据目录");
-  const home = await realpath(configuredHome);
+  const home = await realpath(agoraHome(opts.home));
   const file = await archivePath(home, path.join(home, "agora.db"));
   if (file.missing) throw new ArchiveError("database_missing", "存档数据库不存在");
   const db = new DatabaseSync(file.file, { readOnly: true });

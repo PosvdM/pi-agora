@@ -8,6 +8,7 @@ import { createServer } from "node:http";
 import { DatabaseSync } from "node:sqlite";
 import { stripTypeScriptTypes } from "node:module";
 import { acquireInstanceLock, acquireSessionWriterLock, currentProcessIdentity, isSessionWriterLock } from "pi-hostkit";
+import { assertIsolatedTestHome } from "./fixtures/test-home.mjs";
 
 // 独立转译允许 CLI 在并行 archive 包合入前验证接口，不修改任何生产依赖。
 const root = fileURLToPath(new URL("../", import.meta.url));
@@ -15,7 +16,8 @@ const compiled = await mkdtemp(path.join(tmpdir(), "agora-cli-1d-code-"));
 for (const [source, target] of [["packages/protocol/src/client.ts", "protocol.mjs"], ["packages/cli/src/archive.ts", "archive.js"], ["packages/cli/src/index.ts", "index.js"], ["packages/daemon/src/archive-maintenance.ts", "maintenance.mjs"]]) {
   let text = await readFile(path.join(root, source), "utf8");
   text = text.replaceAll('"@pi-agora/protocol"', JSON.stringify(pathToFileURL(path.join(compiled, "protocol.mjs")).href))
-    .replaceAll('"pi-hostkit"', JSON.stringify(pathToFileURL(path.join(root, "node_modules/pi-hostkit/dist/index.js")).href));
+    .replaceAll('"pi-hostkit"', JSON.stringify(pathToFileURL(path.join(root, "node_modules/pi-hostkit/dist/index.js")).href))
+    .replaceAll('"@pi-agora/archive"', JSON.stringify(pathToFileURL(path.join(root, "packages/archive/dist/index.js")).href));
   await writeFile(path.join(compiled, target), stripTypeScriptTypes(text, { mode: "transform" }));
 }
 await writeFile(path.join(compiled, "package.json"), '{"type":"module"}');
@@ -32,7 +34,7 @@ function harness(overrides = {}) {
     listSessions: async q => { calls.push(["list", q]); return { items: [{ agoraSessionId: "as_one", taskId: "tk_one", createdAt: "2026-01-01" }] }; },
     getSession: async () => ({ agoraSessionId: "as_one", status: "completed" }),
     readUserView: async (id, q) => { calls.push(["view", id, q]); return { leafId: "e2", entries: [{ id: "e1" }], historyBefore: "e1" }; },
-    readPartials: async () => [{ delta: "未完成" }],
+    readPartials: async () => [{ runId: "pr_one", t: "2026-01-01", messageSeq: 1, contentIndex: 0, blockType: "text", delta: "未完成" }],
     close: () => readerClosed++,
   };
   const client = { url: "http://127.0.0.1:1234", token: "test", expiresAt: "", request: async (...args) => { calls.push(args); return { agoraSessionId: "as_one" }; }, close: () => clientClosed++, refresh: async () => {} };
@@ -51,7 +53,7 @@ test("show 会话返回快照；离线 tail 明确无实时流", async () => {
     const h = harness();
     assert.equal(await h.run([command, "as_one"]), 0);
     assert.equal(h.output[0].leafId, "e2");
-    assert.equal(h.output[0].unfinishedPartials[0].delta, "未完成");
+    assert.equal(h.output[0].unfinishedPartials[0].blocks[0].text, "未完成");
     if (command === "tail") assert.equal(h.output[0].streaming, false);
   }
 });
@@ -102,6 +104,25 @@ test("ls --tree 保留分页及循环节点；未知用量不补零", async () =
   assert.equal(h.output[0].nextCursor, "next");
   assert.equal("usage" in h.output[0].items[0], false);
   assert.equal(sessionTree([{ id: "a", inheritsFrom: "b" }, { id: "b", inheritsFrom: "a" }]).length, 2);
+});
+test("中立 parent 将继承会话列为同级，子任务挂在父任务当前会话下", () => {
+  const tree = sessionTree([
+    { agoraSessionId: "old", parent: { kind: "user" } },
+    { agoraSessionId: "current", inheritsFrom: "old", parent: { kind: "user" } },
+    { agoraSessionId: "child", parent: { kind: "task", taskId: "parent-task", sessionId: "current" } },
+  ]);
+  assert.equal(tree.length, 2);
+  assert.deepEqual(tree.find(item => item.agoraSessionId === "old").children, []);
+  assert.equal(tree.find(item => item.agoraSessionId === "current").children[0].agoraSessionId, "child");
+});
+test("离线任务 ID 优先使用当前会话标记，不依据创建时间猜测", async () => {
+  const h = harness();
+  h.reader.listSessions = async () => ({ items: [
+    { agoraSessionId: "old", createdAt: "2099", isCurrent: false },
+    { agoraSessionId: "current", createdAt: "2000", isCurrent: true },
+  ] });
+  assert.equal(await h.run(["log", "tk_one"]), 0);
+  assert.equal(h.calls.find(call => call[0] === "view")[1], "current");
 });
 test("离线 verify 只计算、不连接或写 DB，拒绝越界路径", async () => {
   const home = await mkdtemp(path.join(tmpdir(), "agora-cli-verify-"));
@@ -164,10 +185,23 @@ async function maintenanceFixture() {
   const home = await mkdtemp(path.join(tmpdir(), "agora-cli-delete-")), id = "as_safe", directory = path.join(home, "sessions", id);
   await mkdir(directory, { recursive: true }); await mkdir(path.join(home, "run"));
   const file = path.join(directory, "session.jsonl"); await writeFile(file, "{}\n");
+  const savedEnvironment = new Map(["HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA"].map(key => [key, process.env[key]]));
+  process.env.HOME = process.env.USERPROFILE = path.join(home, "isolated-home");
+  process.env.APPDATA = path.join(home, "isolated-home", "AppData", "Roaming");
+  process.env.LOCALAPPDATA = path.join(home, "isolated-home", "AppData", "Local");
+  try { await assertIsolatedTestHome(home); }
+  catch (error) {
+    for (const [key, value] of savedEnvironment) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+    await rm(home, { recursive: true, force: true });
+    throw error;
+  }
   const db = new DatabaseSync(path.join(home, "agora.db"));
-  db.exec("PRAGMA user_version=6; CREATE TABLE agora_sessions(id TEXT PRIMARY KEY,session_file TEXT,status TEXT,control_state TEXT,archive_state TEXT,revision INTEGER); CREATE TABLE process_runs(id TEXT,agora_session_id TEXT,state TEXT,exited_at TEXT,cleanup_error TEXT); CREATE TABLE settings(key TEXT,value TEXT); INSERT INTO settings VALUES('epoch','test'); CREATE TABLE changes(seq INTEGER PRIMARY KEY,epoch TEXT,object_type TEXT,object_id TEXT,tombstone INTEGER,created_at TEXT);");
+  db.exec("CREATE TABLE schema_version(version INTEGER,migrated_at TEXT); INSERT INTO schema_version VALUES(6,'测试'); CREATE TABLE agora_sessions(id TEXT PRIMARY KEY,session_file TEXT,status TEXT,control_state TEXT,archive_state TEXT,revision INTEGER); CREATE TABLE process_runs(id TEXT,agora_session_id TEXT,state TEXT,exited_at TEXT,cleanup_error TEXT); CREATE TABLE settings(key TEXT,value TEXT); INSERT INTO settings VALUES('epoch','test'); CREATE TABLE changes(seq INTEGER PRIMARY KEY,epoch TEXT,object_type TEXT,object_id TEXT,tombstone INTEGER,created_at TEXT);");
   db.prepare("INSERT INTO agora_sessions VALUES(?,?,'completed',NULL,'ok',1)").run(id, file);
-  return { home, id, directory, file, db, cleanup: async () => { db.close(); await rm(home, { recursive: true, force: true }); } };
+  return { home, id, directory, file, db, cleanup: async () => {
+    try { db.close(); await rm(home, { recursive: true, force: true }); }
+    finally { for (const [key, value] of savedEnvironment) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } }
+  } };
 }
 async function releasedWriter(file) {
   const lock = await acquireSessionWriterLock(file, { app: "pi-agora", identity: currentProcessIdentity("cli-test") });

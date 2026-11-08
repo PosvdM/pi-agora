@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, rm, stat, mkdir } from 'node:fs/promises';
-import { join } from 'node:path';
+import { mkdtemp, readFile, writeFile, rm, stat, mkdir } from 'node:fs/promises';
+import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { setTimeout as delay } from 'node:timers/promises';
 import { DatabaseSync } from 'node:sqlite';
@@ -31,6 +31,8 @@ class MockDriver {
       this.failedTicket = spec.env.AGORA_LAUNCH_TICKET;
       throw failure;
     }
+    await mkdir(dirname(spec.sessionFile), { recursive: true });
+    await writeFile(spec.sessionFile, JSON.stringify({ type: 'session', version: 3, id: spec.agoraSessionId }) + '\n', { flag: 'wx' }).catch(error => { if (error.code !== 'EEXIST') throw error; });
     const events = new Set(), exits = new Set();
     const identity = { pid: 90000 + this.handles.length, startTime: '模拟进程身份', runId: spec.runId, instanceId: spec.instanceId };
     let resolveExit;
@@ -224,7 +226,7 @@ test('ready 两阶段先 HTTP 再 RPC；完整工具/模型/thinking 核对后�
   await until(() => f.driver.handles[0]?.commands.includes('prompt'));
   const handle = f.driver.handles[0];
   assert.equal(handle.readyStatus, 200);
-  assert.deepEqual(handle.commands.slice(0, 3), ['get_available_models', 'get_state', 'prompt']);
+  assert.deepEqual(handle.commands.slice(0, 4), ['get_available_models', 'get_state', 'get_entries', 'prompt']);
   assert.equal((await main.request('GET', `/v1/tasks/${spawned.taskId}`)).status, 'running');
   assert.equal(handle.spec.env.AGORA_HOME, undefined);
   assert.equal(handle.spec.env.PI_PANE_HOME, undefined);

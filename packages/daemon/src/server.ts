@@ -2,7 +2,8 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { Auth, type Connection } from "./auth.js";
-import { AgoraError, invalid, object, optionalBoolean, stableJson } from "./errors.js";
+import { AgoraError, invalid, object, optionalBoolean, stableJson, text } from "./errors.js";
+import { archiveStorageBytes } from "./archive-verification.js";
 import { Store, id, type SessionRow } from "./store.js";
 import { TaskManager } from "./tasks.js";
 import { Requests } from "./requests.js";
@@ -17,7 +18,7 @@ export interface ServerContext {
 interface Reply { status: number; body: unknown }
 interface Operation { id: string; state: string; fingerprint: string; status: number | null; result: string | null }
 function reply(response: ServerResponse, status: number, body: unknown): void {
-  if (response.destroyed || response.writableEnded) return;
+  if (response.destroyed || response.writableEnded || response.headersSent) return;
   response.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" });
   response.end(JSON.stringify(body));
 }
@@ -49,10 +50,15 @@ function positive(value: string | null, fallback: number, max: number, zero = fa
 function hostOnly(conn: Connection): void {
   if (conn.type !== "host:cli") throw new AgoraError(403, "forbidden", "此操作仅允许 CLI 执行");
 }
-function sessionView(session: SessionRow) {
+function sessionView(session: SessionRow, store: Store) {
   return { agoraSessionId: session.id, taskId: session.task_id, piSessionId: session.pi_session_id,
     profile: session.profile, model: session.model, thinking: session.thinking, cwd: session.cwd,
-    status: session.status, revision: session.revision, createdAt: session.created_at };
+    parent: store.sessionParent(session.id),
+    status: session.status, revision: session.revision, createdAt: session.created_at,
+    archiveState: session.archive_state, archiveHash: session.archive_hash, archiveBytes: session.archive_bytes,
+    archiveVerifiedAt: session.archive_verified_at, archiveError: session.archive_error,
+    inheritsFrom: session.inherits_from, inheritReason: session.inherit_reason, endedAt: session.ended_at,
+    ...(session.task_id ? { usage: store.sessionUsage(session.id), treeUsage: store.usage(session.task_id, true) } : {}) };
 }
 
 export function createHttpServer(context: ServerContext) {
@@ -162,21 +168,75 @@ async function route(context: ServerContext, method: string, url: URL, conn: Con
   if (pathname === "/v1/inbox/ack" && method === "POST") return ok(auth.ack(conn, body));
   if (pathname === "/v1/status" && method === "GET") {
     auth.requireMain(conn);
-    return ok({ daemonVersion: VERSION, instanceId: context.instanceId, protocol: PROTOCOL_RANGE, draining: tasks.draining, activeRuns: tasks.activeCount(), taskCounts: store.all("SELECT status,COUNT(*) AS count FROM tasks GROUP BY status LIMIT 20") });
+    return ok({ daemonVersion: VERSION, instanceId: context.instanceId, protocol: PROTOCOL_RANGE, draining: tasks.draining, activeRuns: tasks.activeCount(), archiveBytes: await archiveStorageBytes(store.home), taskCounts: store.all("SELECT status,COUNT(*) AS count FROM tasks GROUP BY status LIMIT 20") });
   }
   if (pathname === "/v1/sessions" && method === "GET") {
     auth.requireMain(conn);
     const limit = positive(url.searchParams.get("limit"), 50, 200), cursor = positive(url.searchParams.get("cursor"), 0, Number.MAX_SAFE_INTEGER, true);
     const owner = conn.type === "agent:main" ? conn.principalId! : null;
     const rows = store.all<SessionRow & { cursor: number }>("SELECT s.rowid AS cursor,s.* FROM agora_sessions s JOIN tasks t ON t.id=s.task_id WHERE s.rowid>? AND (? IS NULL OR t.convener_id=?) ORDER BY s.rowid LIMIT ?", cursor, owner, owner, limit + 1);
-    return ok({ items: rows.slice(0, limit).map(sessionView), nextCursor: rows.length > limit ? String(rows[limit - 1]!.cursor) : null,
+    return ok({ items: rows.slice(0, limit).map(row => sessionView(row, store)), nextCursor: rows.length > limit ? String(rows[limit - 1]!.cursor) : null,
       changesCursor: { epoch: store.get<{ value: string }>("SELECT value FROM settings WHERE key='epoch'")!.value, seq: store.get<{ seq: number }>("SELECT COALESCE(MAX(seq),0) AS seq FROM changes")!.seq } });
+  }
+  if (pathname === "/v1/archive/verify" && method === "POST") {
+    auth.requireMain(conn);
+    const sessionId = body.sessionId === undefined ? undefined : text(body.sessionId, "sessionId", 256);
+    if (sessionId) {
+      const row = store.session(sessionId);
+      tasks.status(conn, row.task_id);
+      await tasks.sessions.settled(sessionId);
+      return ok(await tasks.archives.verify(sessionId));
+    }
+    const items: unknown[] = [];
+    let cursor = "";
+    while (true) {
+      const rows = store.all<{ id: string; task_id: string }>("SELECT id,task_id FROM agora_sessions WHERE id>? ORDER BY id LIMIT 200", cursor);
+      if (!rows.length) break;
+      for (const row of rows) {
+        cursor = row.id;
+        try { tasks.status(conn, row.task_id); }
+        catch (error) { if (error instanceof AgoraError && error.status === 403) continue; throw error; }
+        await tasks.sessions.settled(row.id);
+        items.push(await tasks.archives.verify(row.id));
+      }
+    }
+    return ok({ items });
+  }
+  const view = pathname.match(/^\/v1\/sessions\/([^/]+)\/(snapshot|history|stream|diagnostics)$/);
+  if (method === "GET" && view) {
+    auth.requireMain(conn);
+    const sessionId = view[1]!, row = store.session(sessionId);
+    tasks.status(conn, row.task_id);
+    if (view[2] === "snapshot") return ok(await tasks.sessions.snapshot(sessionId, positive(url.searchParams.get("limit"), 100, 200)));
+    if (view[2] === "history") return ok(await tasks.sessions.history(sessionId, { before: url.searchParams.get("before") ?? undefined, limit: positive(url.searchParams.get("limit"), 100, 200) }));
+    if (view[2] === "diagnostics") return ok(await tasks.sessions.diagnostics(sessionId));
+    let epoch = url.searchParams.get("epoch") ?? undefined;
+    let afterSeq = url.searchParams.has("afterSeq") ? positive(url.searchParams.get("afterSeq"), 0, Number.MAX_SAFE_INTEGER, true) : undefined;
+    const lastId = request.headers["last-event-id"];
+    if (!epoch && afterSeq === undefined && typeof lastId === "string") {
+      const colon = lastId.lastIndexOf(":");
+      if (colon < 1) invalid("事件游标无效");
+      epoch = lastId.slice(0, colon);
+      afterSeq = positive(lastId.slice(colon + 1), 0, Number.MAX_SAFE_INTEGER, true);
+    }
+    await tasks.sessions.snapshot(sessionId);
+    const stop = () => { if (!response.writableEnded) response.end(); };
+    const guard = setInterval(() => {
+      try { auth.authenticate(request.headers.authorization); auth.requireMain(conn); tasks.status(conn, row.task_id); }
+      catch { stop(); }
+    }, 1000);
+    guard.unref();
+    context.closing.addEventListener("abort", stop, { once: true });
+    response.once("close", () => { clearInterval(guard); context.closing.removeEventListener("abort", stop); });
+    tasks.sessions.stream(sessionId, request, response, { epoch, afterSeq });
+    return ok(undefined);
   }
   const session = pathname.match(/^\/v1\/sessions\/([^/]+)$/);
   if (method === "GET" && session) {
+    auth.requireMain(conn);
     const row = store.session(session[1]!);
     tasks.status(conn, row.task_id);
-    return ok(sessionView(row));
+    return ok(sessionView(row, store));
   }
   if (pathname === "/v1/admin/shutdown" && method === "POST") {
     hostOnly(conn);

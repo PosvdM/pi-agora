@@ -35,19 +35,20 @@ async function fixture(t, version = 4) {
     CREATE TABLE agora_sessions(
       id TEXT PRIMARY KEY,kind TEXT,title TEXT,model TEXT,profile TEXT,convener_id TEXT,
       parent_principal_id TEXT,task_id TEXT,meeting_id TEXT,status TEXT,archive_state TEXT,
-      inherits_from TEXT,created_at TEXT,ended_at TEXT,session_file TEXT,pi_session_id TEXT,
+      inherits_from TEXT,inherit_reason TEXT,created_at TEXT,ended_at TEXT,session_file TEXT,pi_session_id TEXT,
       thinking TEXT,cwd TEXT);
     CREATE TABLE process_runs(id TEXT PRIMARY KEY,agora_session_id TEXT,diagnostics_path TEXT);
+    CREATE TABLE usage_records(seq INTEGER,agora_session_id TEXT,input_tokens INTEGER,cache_read_tokens INTEGER,cache_write_tokens INTEGER,output_tokens INTEGER,reasoning_tokens INTEGER,context_tokens INTEGER);
     INSERT INTO principals VALUES('convener','pi-parent','agent:main');
     INSERT INTO tasks VALUES('task-1','存档任务',NULL,'as-1');`);
   let reader;
   t.after(async () => { reader?.close(); db.close(); await rm(root, { recursive: true, force: true }); });
   const add = (id = "as-1", extra = {}) => {
     const file = extra.file ?? path.join(home, "sessions", id, "session.jsonl");
-    db.prepare(`INSERT INTO agora_sessions VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    db.prepare(`INSERT INTO agora_sessions VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
       id, "task", "不应暴露的内部标题", "test-model", "explore", extra.convener ?? "convener",
       "convener", extra.task ?? "task-1", extra.meeting ?? null, "completed", extra.state ?? "live",
-      extra.inherits ?? null, extra.createdAt ?? at, null, file, "pi-fixture", "medium", "/fixture");
+      extra.inherits ?? null, extra.inheritReason ?? null, extra.createdAt ?? at, null, file, "pi-fixture", "medium", "/fixture");
     return file;
   };
   const open = async () => (reader = await openArchive({ home, apiVersion: 1 }));
@@ -185,13 +186,16 @@ test("不存在的 home 或数据库不会建目录；未知版本和未支持�
   assert.deepEqual(await readdir(emptyHome), []);
   await assert.rejects(openArchive({ home: f.home, apiVersion: 2 }), { code: "unsupported_api" });
   const previousHome = process.env.AGORA_HOME;
+  const savedUserHome = new Map(["HOME", "USERPROFILE"].map(key => [key, process.env[key]]));
   try {
     delete process.env.AGORA_HOME;
-    await assert.rejects(openArchive({ apiVersion: 1 }), { code: "home_required" });
+    process.env.HOME = process.env.USERPROFILE = f.root;
+    await assert.rejects(openArchive({ apiVersion: 1 }), { code: "ENOENT" });
     process.env.AGORA_HOME = f.home;
     const fromEnvironment = await openArchive({ apiVersion: 1 });
     fromEnvironment.close();
   } finally {
+    for (const [key, value] of savedUserHome) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
     if (previousHome === undefined) delete process.env.AGORA_HOME;
     else process.env.AGORA_HOME = previousHome;
   }

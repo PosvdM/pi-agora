@@ -15,6 +15,7 @@ export interface ArchiveFragment {
   args?: unknown;
   messageRole?: string;
   messageTimestamp?: unknown;
+  [key: string]: unknown;
 }
 export interface OpenMessage {
   messageSeq: number;
@@ -84,7 +85,7 @@ export class PiArchiveEvents {
       const row: ArchiveFragment = {
         runId: this.runId, t, messageSeq: item.messageSeq, contentIndex: block.contentIndex,
         blockType: block.type, delta,
-        ...(replace ? { replace: true } : {}), ...(block.done ? { done: true } : {}),
+        ...(replace ? { replace: true } : {}), done: block.done,
         ...(block.type === "toolCall" ? { toolCallId: block.id, toolName: block.toolName,
           ...(block.args !== undefined ? { args: structuredClone(block.args) } : {}) } : {}),
         ...(typeof item.message.role === "string" ? { messageRole: item.message.role } : {}),
@@ -211,9 +212,10 @@ export class PiArchiveEvents {
       ...(completed.length ? { completed } : {}), ...(this.retry ? { retry: this.retry } : {}),
     });
   }
-  unfinished(entries: SessionEntry[]): ArchiveFragment[] {
+  unfinished(entries: SessionEntry[], orphanedOnly = false): ArchiveFragment[] {
     return structuredClone([...this.messages.values()].filter(item =>
-      !item.ended || !entries.some(entry => entry.type === "message" && sameMessage(entry.message, item.message)))
+      (!orphanedOnly || item !== this.current && !item.ended) &&
+      (!item.ended || !entries.some(entry => entry.type === "message" && sameMessage(entry.message, item.message))))
       .flatMap(item => item.fragments));
   }
 }

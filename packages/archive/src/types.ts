@@ -1,12 +1,8 @@
 import type { SessionEntry } from "@pi-agora/harness-pi";
-import type { Page, PermissionProfile, SessionKind } from "@pi-agora/protocol";
+import type { Page, PermissionProfile, SessionKind, SessionParent, UsageSummary } from "@pi-agora/protocol";
 
-export type { SessionEntry, Page };
+export type { SessionEntry, Page, SessionParent };
 export type ArchiveState = "ok" | "partial" | "suspect" | "missing";
-export type SessionParent =
-  | { kind: "task"; taskId: string; sessionId: string }
-  | { kind: "main"; piSessionId: string }
-  | { kind: "user" };
 
 export interface ArchivedSessionSummary {
   agoraSessionId: string;
@@ -24,6 +20,9 @@ export interface ArchivedSessionSummary {
   archiveState: ArchiveState;
   messageCount?: number;
   inheritsFrom?: string;
+  inheritReason?: string;
+  isCurrent?: boolean;
+  usage?: UsageSummary;
   createdAt: string;
   endedAt?: string;
 }

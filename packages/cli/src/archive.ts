@@ -1,6 +1,7 @@
 import path from "node:path";
 import { lstat, readFile, realpath } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
+import { projectPartials, type PartialFragment } from "@pi-agora/archive";
 import { AgoraConnectionError, AgoraHttpError, connectHost, loopbackUrl, negotiateProtocol, PROTOCOL_VERSION,
   type AgoraClient, type ConnectHostOptions } from "@pi-agora/protocol";
 
@@ -10,7 +11,7 @@ export interface CliArchiveReader {
   listSessions(q?: { taskId?: string; limit?: number; cursor?: string }): Promise<Page>;
   getSession(id: string): Promise<Row | undefined>;
   readUserView(id: string, q?: { before?: string; limit?: number }): Promise<{ leafId: string | null; entries: unknown[]; historyBefore: string | null }>;
-  readPartials(id: string): Promise<unknown[]>;
+  readPartials(id: string): Promise<PartialFragment[]>;
   close(): void;
 }
 export interface ArchiveCliDependencies {
@@ -83,9 +84,14 @@ export function sessionTree(items: Row[]): Row[] {
   const nodes = new Map<string, Row & { children: Row[] }>(items.map(item => [sessionId(item), { ...item, children: [] }]));
   const principals = new Map(items.filter(item => typeof item.principalId === "string").map(item => [String(item.principalId), sessionId(item)]));
   const roots: Row[] = [];
+  const parentOf = (value: Row): string | undefined => {
+    const relation = value.parent as Row | undefined;
+    if (relation && typeof relation === "object") return relation.kind === "task" && typeof relation.sessionId === "string" ? relation.sessionId : undefined;
+    return typeof value.inheritsFrom === "string" ? value.inheritsFrom : principals.get(String(value.parentPrincipalId ?? value.convenerId));
+  };
   for (const item of items) {
     const id = sessionId(item), node = nodes.get(id)!;
-    const parent = typeof item.inheritsFrom === "string" ? item.inheritsFrom : principals.get(String(item.parentPrincipalId ?? item.convenerId));
+    const parent = parentOf(item);
     // 遇到循环或本页之外的父节点时保留根节点，避免节点丢失。
     let ancestor = parent, cyclic = false;
     const seen = new Set([id]);
@@ -93,7 +99,7 @@ export function sessionTree(items: Row[]): Row[] {
       if (seen.has(ancestor)) { cyclic = true; break; }
       seen.add(ancestor);
       const candidate = nodes.get(ancestor)!;
-      ancestor = typeof candidate.inheritsFrom === "string" ? candidate.inheritsFrom : principals.get(String(candidate.parentPrincipalId ?? candidate.convenerId));
+      ancestor = parentOf(candidate);
     }
     if (parent && nodes.has(parent) && !cyclic) nodes.get(parent)!.children.push(node);
     else roots.push(node);
@@ -107,7 +113,10 @@ async function offlineId(reader: CliArchiveReader, id: string): Promise<string> 
   let latest: Row | undefined;
   do {
     const page = await reader.listSessions({ taskId: id, limit: 200, cursor });
-    for (const item of page.items) if (!latest || String(item.createdAt) > String(latest.createdAt)) latest = item;
+    for (const item of page.items) {
+      if (item.isCurrent === true) return sessionId(item);
+      if (!latest || String(item.createdAt) > String(latest.createdAt)) latest = item;
+    }
     cursor = page.nextCursor ?? undefined;
     if (cursor && seen.has(cursor)) throw new Error("归档分页游标重复");
     if (cursor) seen.add(cursor);
@@ -122,7 +131,9 @@ async function snapshot(reader: CliArchiveReader, id: string, options: Map<strin
   const session = await reader.getSession(id);
   if (!session) throw new Error("会话不存在");
   const view = await reader.readUserView(id, { limit: limitOption(options, 100), ...(options.has("--before") ? { before: String(options.get("--before")) } : {}) });
-  return { ...view, unfinishedPartials: await reader.readPartials(id), status: session.status, session, offline: true };
+  return { ...view, cursor: { epoch: `offline:${id}`, seq: 0 },
+    inFlight: { phase: "idle", tools: [], queue: { steering: [], followUp: [] } },
+    unfinishedPartials: projectPartials(await reader.readPartials(id)), status: session.status, statusDetail: null, usage: session.usage, session, offline: true };
 }
 async function safeFile(home: string, file: unknown): Promise<string> {
   if (typeof file !== "string" || !path.isAbsolute(file)) throw new Error("归档未提供可校验的会话文件路径");
