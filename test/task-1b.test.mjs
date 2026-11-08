@@ -2,14 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile, mkdir, readFile, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { startDaemon } from '../packages/daemon/dist/index.js';
 import { connectHost, createClient, gitExec, gitEnvironment } from '../packages/protocol/dist/index.js';
 import { DatabaseSync } from 'node:sqlite';
-import { Store, openStore, schemaMigrations } from '../packages/daemon/dist/store.js';
+import { Store, openStore, schemaMigrations, SCHEMA_VERSION } from '../packages/daemon/dist/store.js';
 import { NoticeDelivery } from '../packages/extension/dist/notifications.js';
 import { confirmUser } from './fixtures/security-signer.mjs';
 
@@ -24,6 +24,8 @@ class Driver {
     if (this.bootDelayMs) await delay(this.bootDelayMs);
     if (this.startBarrier) await this.startBarrier;
     if (this.failStart) { this.failStart = false; throw new Error('受控启动失败'); }
+    await mkdir(dirname(spec.sessionFile), { recursive: true });
+    await writeFile(spec.sessionFile, JSON.stringify({ type: 'session', version: 3, id: spec.agoraSessionId }) + '\n', { flag: 'wx' }).catch(error => { if (error.code !== 'EEXIST') throw error; });
     const listeners = new Set(), exits = new Set(); let resolve;
     const launch = await fetch(spec.env.AGORA_URL + '/v1/auth/launch', { method: 'POST', headers: { 'Agora-Protocol': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket: spec.env.AGORA_LAUNCH_TICKET }) }).then(r => r.json());
     const client = createClient({ url: spec.env.AGORA_URL, token: launch.token });
@@ -87,7 +89,7 @@ async function setup(t, options = {}) {
       return await until(() => {
         const row = daemon.store.task(task.taskId);
         if (['failed', 'interrupted', 'stopped'].includes(row.status)) throw new Error('模拟运行未通过就绪');
-        return driver.handles.findLast(h => h.spec.agoraSessionId === task.agoraSessionId && h.ready && !h.stopCount);
+        return driver.handles.findLast(h => h.spec.agoraSessionId === task.agoraSessionId && h.ready && !h.stopCount && daemon.store.get('SELECT state FROM process_runs WHERE id=?', h.spec.runId)?.state === 'ready');
       }, 10000);
     } catch (cause) {
       const generation = daemon.store.get('SELECT status,result_text FROM task_generations WHERE task_id=? AND generation=?', task.taskId, task.generation);
@@ -138,7 +140,8 @@ test('D14：父任务 settled 等待下级不完成且不占名额；回收父�
   assert.equal(f.daemon.tasks.activeCount(), 1);
   await until(() => p.stopCount === 1);
   await f.settled(child, '下级完成');
-  const p2 = await until(() => f.driver.handles.find(h => h !== p && h.spec.agoraSessionId === parent.agoraSessionId && h.ready));
+  const p2 = await f.handle(parent);
+  assert.notEqual(p2, p);
   assert.equal(p2.commands.some(c => c.type === 'prompt'), false, '重新拉起不能重放原任务书');
   assert.equal(f.daemon.store.task(parent.taskId).status, 'running');
   const inbox = await p2.client.request('GET', '/v1/inbox');
@@ -174,8 +177,10 @@ for (const fault of ['start', 'model', 'fatal', 'exit', 'result']) test(`F3：�
   await until(() => ['failed', 'interrupted'].includes(f.daemon.store.task(child.taskId).status));
   await until(() => f.daemon.store.task(parent.taskId).status === 'running');
   const inbox = await p.client.request('GET', '/v1/inbox');
-  assert.equal(inbox.items.length, 1); assert.equal(inbox.items[0].payload.taskId, child.taskId);
-  const calls = await injectNotices(p.client, inbox.items);
+  const taskNotices = inbox.items.filter(item => item.kind.startsWith('task:') && item.payload.taskId === child.taskId);
+  assert.equal(taskNotices.length, 1);
+  if (fault === 'start') assert.ok(inbox.items.some(item => item.kind === 'archive:warning'));
+  const calls = await injectNotices(p.client, taskNotices);
   assert.equal(calls[0].options.triggerTurn, true, '等待下级时必须实际启动回合');
   await f.settled(parent, '故障已经处理'); assert.equal(f.daemon.store.task(parent.taskId).status, 'completed');
   assert.equal(f.daemon.tasks.activeCount(), 0);
@@ -314,8 +319,9 @@ test('提问校验依赖与自定义答复；取消不算同意；等待答复�
   await f.settled(parent); assert.equal(f.daemon.store.task(parent.taskId).status, 'waiting_decision'); await until(() => p.stopCount);
   await assert.rejects(main.request('POST', `/v1/requests/${q.id}/answer`, { answers: [{ id: 'q', selected: [], custom: '假定同意' }] }), e => e.code === 'invalid_params');
   const result = await main.request('POST', `/v1/requests/${q.id}/cancel`, {}); assert.equal(result.state, 'cancelled');
-  await until(() => f.driver.handles.length === 2 && f.driver.handles[1].ready);
-  assert.match((await f.driver.handles[1].client.request('GET', '/v1/inbox')).items[0].payload.summary, /取消不代表批准/);
+  const restored = await f.handle(parent);
+  assert.notEqual(restored, p);
+  assert.match((await restored.client.request('GET', '/v1/inbox')).items[0].payload.summary, /取消不代表批准/);
 });
 
 test('worktree 从父目录当前提交创建，不带未提交修改，worktree 提问只核对 principal；脏目录拒绝清理', async t => {
@@ -361,7 +367,8 @@ test('中断任务 resume 不增加代数，reopen/replace 保留历史会话与
   h.emit({ type: 'agent_settled', aborted: true }); await f.daemon.tasks.flush();
   const resumed = await main.request('POST', `/v1/tasks/${task.taskId}/recover`, { mode: 'resume' });
   assert.equal(resumed.generation, 1); assert.equal(resumed.agoraSessionId, task.agoraSessionId);
-  const resumedHandle = await until(() => f.driver.handles.findLast(x => x !== h && x.ready));
+  const resumedHandle = await f.handle(resumed);
+  assert.notEqual(resumedHandle, h);
   assert.match(resumedHandle.commands.find(c => c.type === 'prompt').message, /不得自动重放/);
   resumedHandle.emit({ type: 'agent_settled', aborted: true }); await f.daemon.tasks.flush();
   const reopened = await main.request('POST', `/v1/tasks/${task.taskId}/recover`, { mode: 'reopen' });
@@ -383,7 +390,7 @@ test('v2 到 v3 迁移有一致性备份并保留旧任务，新树与提问表�
   db.exec("CREATE TABLE schema_version(version INTEGER,migrated_at TEXT); INSERT INTO schema_version VALUES(2,'v2'); PRAGMA journal_mode=WAL;");
   db.prepare("INSERT INTO principals(id,type,created_at) VALUES('main','agent:main','time')").run(); db.close();
   const store = await openStore(home); assert.equal(store.principal('main').type, 'agent:main');
-  assert.equal(store.get('SELECT version FROM schema_version').version, 5); assert.deepEqual(store.all('PRAGMA foreign_key_check'), []);
+  assert.equal(store.get('SELECT version FROM schema_version').version, SCHEMA_VERSION); assert.deepEqual(store.all('PRAGMA foreign_key_check'), []);
   for (const name of ['requests', 'steer_messages', 'worktrees']) assert.ok(store.get('SELECT name FROM sqlite_master WHERE name=?', name));
   store.close(); const backup = (await readdir(join(home, 'backups'))).find(f => f.endsWith('.db'));
   const old = new DatabaseSync(join(home, 'backups', backup), { readOnly: true });

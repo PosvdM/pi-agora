@@ -14,6 +14,12 @@ export interface LaunchSpec {
 
 export interface ResolvedSkill { name: string; path: string }
 
+export interface MessageObservation {
+  signature: string;
+  role: string;
+  timestamp: unknown;
+}
+
 /** 按单次请求计量；调用方按 runId 与 requestId 去重。 */
 export interface UsageRecordEvent extends Record<string, unknown> {
   type: "usage_record";

@@ -6,6 +6,10 @@ import { AgoraError, invalid, object, optionalBoolean, stableJson, text } from "
 import { Store, id } from "./store.js";
 import { pruneChanges, streamChanges } from "./changes.js";
 import { listSessions, sessionDetail } from "./session-list.js";
+import { archiveStorageBytes } from "./archive-verification.js";
+import { deleteArchiveOnline } from "./archive-maintenance.js";
+import { confirmationRequired } from "./acl.js";
+
 import { TaskManager } from "./tasks.js";
 import { Requests } from "./requests.js";
 import { Security, type SignatureBody } from "./security.js";
@@ -21,7 +25,7 @@ export interface ServerContext {
 interface Reply { status: number; body: unknown }
 interface Operation { id: string; state: string; fingerprint: string; status: number | null; result: string | null }
 function reply(response: ServerResponse, status: number, body: unknown): void {
-  if (response.destroyed || response.writableEnded) return;
+  if (response.destroyed || response.writableEnded || response.headersSent) return;
   response.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" });
   response.end(JSON.stringify(body));
 }
@@ -54,6 +58,7 @@ function hostOnly(conn: Connection): void {
   if (conn.type !== "host:cli") throw new AgoraError(403, "forbidden", "此操作仅允许 CLI 执行");
 }
 
+
 function hostClient(auth: Auth, conn: Connection): void {
   auth.requireMain(conn);
   if (!conn.type.startsWith("host:")) throw new AgoraError(403, "forbidden", "设备和安全设置仅供用户界面发起");
@@ -62,6 +67,7 @@ function userOperation(pathname: string, method: string, conn: Connection): { ac
   if (!["POST", "PUT"].includes(method)) return;
   const paths: [RegExp, string][] = [
     [/^\/v1\/settings\/([^/]+)$/, "agora.settings.set"],
+    [/^\/v1\/sessions\/([^/]+)\/archive\/delete$/, "agora.archive.delete"],
     [/^\/v1\/devices\/(pair|reset)$/, "agora.device"],
     [/^\/v1\/devices\/([^/]+)\/(approve|revoke)$/, "agora.device"],
     [/^\/v1\/security\/alerts\/([^/]+)\/acknowledge$/, "agora.security.acknowledge"],
@@ -76,7 +82,7 @@ function userOperation(pathname: string, method: string, conn: Connection): { ac
   }
 }
 function forceSignature(action: string): boolean {
-  return action.startsWith("agora.device.") || action === "agora.settings.set" || action === "agora.security.acknowledge";
+  return action.startsWith("agora.device.") || action === "agora.settings.set" || action === "agora.security.acknowledge" || action === "agora.archive.delete";
 }
 function confirmationReply(value: unknown): Reply {
   return { status: 202, body: { code: "confirmation_required", confirmation: value } };
@@ -139,6 +145,11 @@ function executeUserAction(context: ServerContext, conn: Connection, action: str
   if (action === "agora.task.limits") return context.tasks.limits(conn, target, params, proof);
   if (action === "agora.task.recover") return context.tasks.recover(conn, target, params, proof);
   if (action === "agora.task.takeover") return context.tasks.takeOver(conn, target, params, proof);
+  if (action === "agora.archive.delete") return context.tasks.archiveControl(target, async () => {
+    await context.tasks.archives.flush();
+    return deleteArchiveOnline({ store: context.store, sessions: context.tasks.sessions, sessionId: target,
+      expectedRevision: Number(params.expectedRevision), authorize: () => context.tasks.acl.session(conn, context.store.session(target)) });
+  });
   throw new AgoraError(400, "invalid_params", "不支持此用户级动作");
 }
 
@@ -255,7 +266,7 @@ async function route(context: ServerContext, method: string, url: URL, conn: Con
     if (method === "POST" && confirmation[2] === "sign") {
       const saved = visibleConfirmation(context, conn, confirmation[1]!);
       const execute = (action: string, target: string, params: Record<string, unknown>, proof: UserExecutionProof) => executeUser(context, conn!, action, target, params, proof);
-      const asynchronous = ["agora.task.spawn", "agora.task.recover"].includes(saved.challenge.action);
+      const asynchronous = ["agora.task.spawn", "agora.task.recover", "agora.archive.delete"].includes(saved.challenge.action);
       // 安全服务统一校验签名字段，并记录包括缺失字段在内的拒绝尝试。
       const signature = body as unknown as SignatureBody;
       const value = asynchronous ? await security.signAsync(conn, confirmation[1]!, signature, execute) : security.sign(conn, confirmation[1]!, signature, execute);
@@ -348,7 +359,7 @@ async function route(context: ServerContext, method: string, url: URL, conn: Con
   if (pathname === "/v1/inbox/ack" && method === "POST") return ok(auth.ack(conn, body));
   if (pathname === "/v1/status" && method === "GET") {
     auth.requireMain(conn);
-    return ok({ daemonVersion: VERSION, instanceId: context.instanceId, protocol: PROTOCOL_RANGE, draining: tasks.draining, activeRuns: tasks.activeCount(), taskCounts: store.all("SELECT status,COUNT(*) AS count FROM tasks GROUP BY status LIMIT 20"), security: security.state() });
+    return ok({ daemonVersion: VERSION, instanceId: context.instanceId, protocol: PROTOCOL_RANGE, draining: tasks.draining, activeRuns: tasks.activeCount(), archiveBytes: await archiveStorageBytes(store.home), security: security.state(), taskCounts: store.all("SELECT status,COUNT(*) AS count FROM tasks GROUP BY status LIMIT 20") });
   }
   if (pathname === "/v1/changes" && method === "GET") {
     await streamChanges(store, auth, conn, url, request, response, context.closing);
@@ -357,11 +368,81 @@ async function route(context: ServerContext, method: string, url: URL, conn: Con
   if (pathname === "/v1/sessions" && method === "GET") {
     auth.requireMain(conn);
     return ok(listSessions(store, conn, url.searchParams, positive(url.searchParams.get("limit"), 50, 200)));
+
+  }
+  const archiveDelete = pathname.match(/^\/v1\/sessions\/([^/]+)\/archive\/delete$/);
+  if (archiveDelete && method === "POST") {
+    auth.requireMain(conn);
+    if (Object.keys(body).some(key => key !== "expectedRevision")) invalid("存档删除仅接受 expectedRevision");
+    const row = store.session(archiveDelete[1]!);
+    tasks.acl.session(conn, row);
+    const expectedRevision = body.expectedRevision === undefined ? row.revision : body.expectedRevision;
+    if (!Number.isSafeInteger(expectedRevision) || Number(expectedRevision) < 1) invalid("expectedRevision 必须为正整数");
+    if (expectedRevision !== row.revision) throw new AgoraError(409, "conflict", "会话版本已变化，请重新读取");
+    confirmationRequired("agora.archive.delete", row.id, { expectedRevision });
+  }
+  if (pathname === "/v1/archive/verify" && method === "POST") {
+    auth.requireMain(conn);
+    const verify = async (sessionId: string) => {
+      const row = store.session(sessionId);
+      tasks.acl.session(conn!, row);
+      const run = async () => {
+        tasks.acl.session(conn!, store.session(sessionId));
+        await tasks.sessions.settled(sessionId);
+        const result = await tasks.archives.verify(sessionId);
+        tasks.acl.session(conn!, store.session(sessionId));
+        return result;
+      };
+      return row.task_id ? tasks.archiveControl(sessionId, run) : run();
+    };
+    const sessionId = body.sessionId === undefined ? undefined : text(body.sessionId, "sessionId", 128);
+    if (sessionId) return ok(await verify(sessionId));
+    const limit = positive(url.searchParams.get("limit"), 200, 200), cursor = positive(url.searchParams.get("cursor"), 0, Number.MAX_SAFE_INTEGER, true);
+    const rows = tasks.acl.sessions(conn, cursor, limit + 1), items: unknown[] = [];
+    for (const row of rows.slice(0, limit)) items.push(await verify(row.id));
+    for (const row of rows.slice(0, limit)) tasks.acl.session(conn, store.session(row.id));
+    return ok({ items, nextCursor: rows.length > limit ? String(rows[limit - 1]!.cursor) : null });
+  }
+  const view = pathname.match(/^\/v1\/sessions\/([^/]+)\/(snapshot|history|stream|diagnostics)$/);
+  if (method === "GET" && view) {
+    auth.requireMain(conn);
+    const sessionId = view[1]!, row = store.session(sessionId);
+    tasks.acl.session(conn, row);
+    const read = async (work: Promise<unknown>) => {
+      const value = await work;
+      tasks.acl.session(conn!, store.session(sessionId));
+      return ok(value);
+    };
+    if (view[2] === "snapshot") return read(tasks.sessions.snapshot(sessionId, positive(url.searchParams.get("limit"), 100, 200)));
+    if (view[2] === "history") return read(tasks.sessions.history(sessionId, { before: url.searchParams.get("before") ?? undefined, limit: positive(url.searchParams.get("limit"), 100, 200) }));
+    if (view[2] === "diagnostics") return read(tasks.sessions.diagnostics(sessionId));
+    let epoch = url.searchParams.get("epoch") ?? undefined;
+    let afterSeq = url.searchParams.has("afterSeq") ? positive(url.searchParams.get("afterSeq"), 0, Number.MAX_SAFE_INTEGER, true) : undefined;
+    const lastId = request.headers["last-event-id"];
+    if (!epoch && afterSeq === undefined && typeof lastId === "string") {
+      const colon = lastId.lastIndexOf(":");
+      if (colon < 1) invalid("事件游标无效");
+      epoch = lastId.slice(0, colon);
+      afterSeq = positive(lastId.slice(colon + 1), 0, Number.MAX_SAFE_INTEGER, true);
+    }
+    await tasks.sessions.snapshot(sessionId);
+    tasks.acl.session(conn, store.session(sessionId));
+    const stop = () => { if (!response.writableEnded) response.end(); };
+    const guard = setInterval(() => {
+      try { const current = auth.authenticate(request.headers.authorization); tasks.acl.session(current, store.session(sessionId)); }
+      catch { stop(); }
+    }, 1000);
+    guard.unref();
+    context.closing.addEventListener("abort", stop, { once: true });
+    response.once("close", () => { clearInterval(guard); context.closing.removeEventListener("abort", stop); });
+    tasks.sessions.stream(sessionId, request, response, { epoch, afterSeq });
+    return ok(undefined);
   }
   const session = pathname.match(/^\/v1\/sessions\/([^/]+)$/);
   if (method === "GET" && session) {
+    auth.requireMain(conn);
     const row = store.session(session[1]!);
-    tasks.status(conn, row.task_id);
+    tasks.acl.session(conn, row);
     return ok(sessionDetail(store, row.id));
   }
   if (pathname === "/v1/admin/shutdown" && method === "POST") {

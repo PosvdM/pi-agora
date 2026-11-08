@@ -65,17 +65,21 @@ function treeSql(): string {
   )`;
 }
 
-export function sessionView(session: ListedSession) {
+export function sessionView(session: ListedSession, store: Store) {
   return { agoraSessionId: session.id, taskId: session.task_id, piSessionId: session.pi_session_id,
     profile: session.profile, model: session.model, thinking: session.thinking, cwd: session.cwd,
-    status: session.effective_status ?? session.status, isCurrent: !!session.is_current, revision: session.tree_revision, createdAt: session.created_at,
+    status: session.effective_status ?? session.status, revision: session.tree_revision, createdAt: session.created_at,
     parentId: session.parent_id,
     ...(session.parent_id === "agora:root:user-tasks" ? { parent: { kind: "user" } }
       : session.task_parent_id && session.parent_session_id ? { parent: { kind: "task", taskId: session.task_parent_id, sessionId: session.parent_session_id } }
       : session.convener_pi_session_id ? { parent: { kind: "main", piSessionId: session.convener_pi_session_id } } : {}),
-    title: session.title, kind: session.kind, takenOver: session.taken_over_from !== null,
+    title: session.title, kind: session.kind,
+    ...store.sessionMetadata(session.id),
     hasChildren: session.child_count > 0, childCount: session.child_count,
     lastActivityAt: session.last_activity_at, statusDetail: session.status_detail, archiveState: session.archive_state,
+    archiveHash: session.archive_hash, archiveBytes: session.archive_bytes, archiveVerifiedAt: session.archive_verified_at, archiveError: session.archive_error,
+    ...(session.ended_at ? { endedAt: session.ended_at } : {}),
+    ...(session.task_id ? { treeUsage: store.usage(session.task_id, true) } : {}),
     ...(session.origin_call ? { originToolCall: JSON.parse(session.origin_call) } : {}) };
 }
 
@@ -114,7 +118,7 @@ export function listSessions(store: Store, conn: Connection, params: URLSearchPa
         ${filter.snapshot ? "AND b.id IN (SELECT id FROM wanted)" : ""} ORDER BY b.cursor LIMIT $limit`;
     const rows = store.db.prepare(sql).all({ ...args, ...(filter.snapshot ? { $open: JSON.stringify(filter.open), $recent: filter.recent } : {}) }) as unknown as ListedSession[];
     if (filter.snapshot && rows.length > resultLimit) throw new AgoraError(413, "snapshot_too_large", "热节点及祖先超过一万条，请减少打开的会话和最近时间范围");
-    const items = rows.slice(0, resultLimit).map(sessionView);
+    const items = rows.slice(0, resultLimit).map(row => sessionView(row, store));
     const nextCursor = rows.length > resultLimit ? Buffer.from(JSON.stringify({ v: 1, after: rows[resultLimit - 1]!.cursor, filter: fingerprint })).toString("base64url") : null;
     return { items, nextCursor, changesCursor: cursor };
   });
@@ -125,6 +129,6 @@ export function sessionDetail(store: Store, sessionId: string) {
     const row = store.db.prepare(`${treeSql()} SELECT b.*,(SELECT COUNT(*) FROM base child WHERE child.parent_id='agora:session:' || b.id) AS child_count FROM base b WHERE b.id=$id`)
       .get({ $owner: null, $id: sessionId }) as unknown as ListedSession | undefined;
     if (!row) throw new AgoraError(404, "not_found", "会话不存在");
-    return sessionView(row);
+    return sessionView(row, store);
   });
 }

@@ -11,6 +11,8 @@
   },
   "dependencies": {
     "@pi-agora/protocol": "0.1.0",
+    "@pi-agora/archive": "0.1.0",
+    "@pi-agora/harness-pi": "0.1.0",
     "pi-hostkit": "*"
   },
   "engines": {

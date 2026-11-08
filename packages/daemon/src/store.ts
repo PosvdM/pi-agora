@@ -3,8 +3,10 @@ import { mkdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { AgoraError } from "./errors.js";
+import { archiveSchemaV6 } from "./archive-schema.js";
+import type { SessionMetadata, SessionParent } from "@pi-agora/protocol";
 
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 export const schemaMigrations: readonly string[] = [String.raw`
 CREATE TABLE principals (
   id TEXT PRIMARY KEY, type TEXT NOT NULL, label TEXT NOT NULL DEFAULT '',
@@ -141,7 +143,7 @@ CREATE TABLE security_audit (
   confirmation_id TEXT, outcome TEXT NOT NULL, reason TEXT, via TEXT NOT NULL,
   details TEXT, created_at TEXT NOT NULL
 );
-`];
+`, archiveSchemaV6];
 
 export interface PrincipalRow {
   id: string; type: string; label: string; pi_session_id: string | null;
@@ -164,6 +166,9 @@ export interface SessionRow {
   pi_session_id: string | null; profile: string; model: string; thinking: string;
   cwd: string; status: string; revision: number; created_at: string;
   convener_id: string; parent_principal_id: string; control_state: string | null;
+  kind: string; meeting_id: string | null; inherits_from: string | null; inherit_reason: string | null;
+  archive_state: string; archive_hash: string | null; archive_bytes: number; archive_verified_at: string | null;
+  archive_error: string | null; ended_at: string | null;
 }
 export interface RunRow {
   id: string; agora_session_id: string; daemon_instance_id: string;
@@ -286,6 +291,46 @@ export class Store {
     totals.contextTokens = this.get<{ n: number }>(`SELECT COALESCE(SUM(context_tokens),0) AS n FROM usage_records WHERE seq IN (
       SELECT MAX(seq) FROM usage_records WHERE task_id IN (${ids}) AND context_tokens>0 AND (? IS NULL OR generation=?) GROUP BY task_id
     )`, taskId, generation ?? null, generation ?? null)!.n;
+    return totals;
+  }
+  sessionParent(sessionId: string): SessionParent | undefined {
+    const row = this.get<{ parent_task_id: string | null; parent_session_id: string | null; owner: string | null; type: string | null; pi_session_id: string | null }>(`SELECT t.parent_task_id, parent.agora_session_id AS parent_session_id,
+      s.convener_id AS owner,p.type,p.pi_session_id FROM agora_sessions s
+      LEFT JOIN tasks t ON t.id=s.task_id LEFT JOIN tasks parent ON parent.id=t.parent_task_id
+      LEFT JOIN principals p ON p.id=s.convener_id WHERE s.id=? LIMIT 1`, sessionId);
+    if (row?.owner === "user" || row?.type === "user") return { kind: "user" };
+    if (row?.parent_task_id) return row.parent_session_id ? { kind: "task", taskId: row.parent_task_id, sessionId: row.parent_session_id } : undefined;
+    if (row?.type === "host:cli" || row?.type === "host:pane") return { kind: "user" };
+    if (row?.type === "agent:main" && row.pi_session_id) return { kind: "main", piSessionId: row.pi_session_id };
+    return undefined;
+  }
+  sessionMetadata(sessionId: string): SessionMetadata {
+    const session = this.session(sessionId);
+    const task = session.task_id ? this.get<{ agora_session_id: string; taken_over_from: string | null; parent_task_id: string | null }>(
+      "SELECT agora_session_id,taken_over_from,parent_task_id FROM tasks WHERE id=?", session.task_id) : undefined;
+    const principal = session.convener_id ? this.principal(session.convener_id) : undefined;
+    const parent = this.sessionParent(sessionId);
+    const diagnostic = task?.parent_task_id ? { kind: "parent_task_missing", message: "父任务缺少当前会话，无法确定会话父关系" } :
+      principal?.type === "agent:main" ? { kind: "main_session_id_missing", message: "主 Agent 召集人的 pi 会话标识缺失" } :
+        { kind: "session_parent_unknown", message: "召集人或父任务关联缺失，无法确定会话父关系" };
+    return {
+      ...(parent ? { parent } : { parentDiagnostics: [diagnostic] }),
+      ...(principal?.type === "agent:main" && principal.pi_session_id ? { parentPiSessionId: principal.pi_session_id } : {}),
+      ...(session.inherits_from ? { inheritsFrom: session.inherits_from } : {}),
+      ...(session.inherit_reason ? { inheritReason: session.inherit_reason } : {}),
+      ...(session.task_id ? { isCurrent: task?.agora_session_id === session.id } : {}),
+      ...(task ? { takenOver: task.taken_over_from !== null } : {}),
+      usage: this.sessionUsage(sessionId),
+    };
+  }
+  sessionUsage(sessionId: string): UsageSummary | undefined {
+    const totals = this.get<UsageSummary>(`SELECT COUNT(*) AS requests,
+      COALESCE(SUM(input_tokens),0) AS inputTokens, COALESCE(SUM(cache_read_tokens),0) AS cacheReadTokens,
+      COALESCE(SUM(cache_write_tokens),0) AS cacheWriteTokens, COALESCE(SUM(output_tokens),0) AS outputTokens,
+      COALESCE(SUM(reasoning_tokens),0) AS reasoningTokens, 0 AS contextTokens
+      FROM usage_records WHERE agora_session_id=?`, sessionId)!;
+    if (!totals.requests) return undefined;
+    totals.contextTokens = this.get<{ context_tokens: number }>("SELECT context_tokens FROM usage_records WHERE agora_session_id=? AND context_tokens>0 ORDER BY seq DESC LIMIT 1", sessionId)?.context_tokens ?? 0;
     return totals;
   }
   takeInbox(recipient: string, visibilityMs = 120_000, silentOnly = false): NoticeRow[] {

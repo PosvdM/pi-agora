@@ -2,13 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, mkdir, writeFile, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
 import { DatabaseSync } from 'node:sqlite';
 import { startDaemon } from '../packages/daemon/dist/index.js';
 import { createClient, connectHost } from '../packages/protocol/dist/index.js';
-import { openStore, schemaMigrations } from '../packages/daemon/dist/store.js';
+import { openStore, schemaMigrations, SCHEMA_VERSION } from '../packages/daemon/dist/store.js';
 import { checkToolPath } from '../packages/extension/dist/permissions.js';
 
 async function until(fn) {
@@ -22,6 +22,8 @@ class Driver {
     return names.map(name => { if (!['allowed', 'other'].includes(name)) throw new Error('unknown'); return { name, path: join(tmpdir(), 'agora-skills', name) }; });
   }
   async start(spec) {
+    await mkdir(dirname(spec.sessionFile), { recursive: true });
+    await writeFile(spec.sessionFile, JSON.stringify({ type: 'session', version: 3, id: spec.agoraSessionId }) + '\n', { flag: 'wx' }).catch(error => { if (error.code !== 'EEXIST') throw error; });
     const launch = await fetch(spec.env.AGORA_URL + '/v1/auth/launch', { method: 'POST', headers: { 'Agora-Protocol': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ ticket: spec.env.AGORA_LAUNCH_TICKET }) }).then(r => r.json());
     const client = createClient({ url: spec.env.AGORA_URL, token: launch.token });
     const listeners = new Set(), exits = new Set(); let resolveExit;
@@ -244,7 +246,7 @@ test('D15 schema v3 到当前版本迁移前一致性备份，保留数据和默
   const home = await mkdtemp(join(tmpdir(), 'agora-d15-migrate-')); t.after(() => rm(home, { recursive: true, force: true }));
   const db = new DatabaseSync(join(home, 'agora.db')); for (const migration of schemaMigrations.slice(0, 3)) db.exec(migration);
   db.exec("CREATE TABLE schema_version(version INTEGER,migrated_at TEXT); INSERT INTO schema_version VALUES(3,'v3'); INSERT INTO principals(id,type,created_at) VALUES('main','agent:main','time'); PRAGMA journal_mode=WAL;"); db.close();
-  const store = await openStore(home); assert.equal(store.get('SELECT version FROM schema_version').version, 5); assert.equal(store.principal('main').type, 'agent:main'); assert.deepEqual(store.all('PRAGMA foreign_key_check'), []);
+  const store = await openStore(home); assert.equal(store.get('SELECT version FROM schema_version').version, SCHEMA_VERSION); assert.equal(store.principal('main').type, 'agent:main'); assert.deepEqual(store.all('PRAGMA foreign_key_check'), []);
   assert.equal(store.all('PRAGMA table_info(tasks)').find(column => column.name === 'skills').dflt_value, "'[]'");
   assert.equal(store.all('PRAGMA table_info(tasks)').find(column => column.name === 'skill_paths').dflt_value, "'[]'");
   store.close();
@@ -320,9 +322,17 @@ test('D15 auto 续跑父任务不隐式恢复无重置时间的下级；停止�
   await pause(f, c, null); await pause(f, p);
   await until(() => f.driver.handles.length === 3);
   assert.equal(f.daemon.store.task(child.taskId).status, 'quota_paused');
-  const stopTask = await f.spawn(main), s = await f.handle(stopTask); await pause(f, s, new Date(Date.now() + 100).toISOString());
-  await main.request('POST', `/v1/tasks/${stopTask.taskId}/stop`, {});
-  await delay(150); assert.equal(f.daemon.store.task(stopTask.taskId).status, 'stopped'); assert.equal(f.driver.handles.filter(h => h.spec.agoraSessionId === stopTask.agoraSessionId).length, 1);
+  const stopTask = await f.spawn(main), s = await f.handle(stopTask);
+  // 同时控制业务时钟和 daemon 的 setTimeout，避免归档与 HTTP stop 争抢恢复期限。
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout'], now: Date.now() });
+  try {
+    await pause(f, s, new Date(Date.now() + 60_000).toISOString());
+    assert.equal(f.daemon.store.task(stopTask.taskId).status, 'quota_paused');
+    await main.request('POST', `/v1/tasks/${stopTask.taskId}/stop`, {});
+    t.mock.timers.tick(60_001); await f.daemon.tasks.flush();
+    assert.equal(f.daemon.store.task(stopTask.taskId).status, 'stopped');
+    assert.equal(f.driver.handles.filter(h => h.spec.agoraSessionId === stopTask.agoraSessionId).length, 1);
+  } finally { t.mock.timers.reset(); }
 });
 
 test('N3 静默终态和强制唤醒同事务提交，调度前退出后重启仍唤醒等待父任务', async () => {

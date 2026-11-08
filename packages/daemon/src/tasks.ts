@@ -7,6 +7,9 @@ import { Store, id, now, type RunRow, type TaskRow } from "./store.js";
 import type { DriverHandle, DriverExit, SessionDriver } from "./driver.js";
 import { Worktrees } from "./worktrees.js";
 import { optionalBoolean } from "./errors.js";
+import { SessionViews } from "./sessions.js";
+import { ArchiveVerifier } from "./archive-verification.js";
+import { observePiMessage } from "./harness/pi/archive-observation.js";
 import { AccessControl, confirmationRequired } from "./acl.js";
 import type { RequestRow } from "./requests.js";
 import { Budgets, budgetConfig, type BudgetOptions, type UserExecutionProof } from "./budgets.js";
@@ -26,6 +29,7 @@ interface Runtime {
   usageGeneration: number; usageSessionId: string; usageClosed: boolean;
   stopped: boolean; accepted: boolean; active: boolean; ready: boolean;
   terminal?: "stopped" | "interrupted" | "failed"; assistantError?: boolean;
+  archiveStopReason?: string;
   quota?: { resumeAt: string | null; reason: string };
   resolveReady(): void; rejectReady(error: Error): void; readyPromise: Promise<void>;
   handlePromise: Promise<DriverHandle>; resolveHandle(handle: DriverHandle): void;
@@ -72,6 +76,9 @@ export class TaskManager {
   private readonly recoveryLocks = new Map<string, SessionWriterLock>();
   private occupied = 0;
   readonly worktrees: Worktrees;
+  readonly sessions: SessionViews;
+  readonly archives: ArchiveVerifier;
+  private readonly archiveChecks = new Set<Promise<void>>();
   private readonly waking = new Set<string>();
   private readonly quotaTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private halted = false;
@@ -82,12 +89,25 @@ export class TaskManager {
   readonly budgets: Budgets;
   constructor(readonly store: Store, readonly auth: Auth, readonly driver: SessionDriver, readonly options: TaskOptions) {
     this.worktrees = new Worktrees(store, options.worktreeRoot);
+    this.sessions = new SessionViews(store, options.instanceId);
+    this.archives = new ArchiveVerifier(store);
     this.acl = new AccessControl(store, auth);
     this.budgets = new Budgets(store, options);
     budgetConfig(store, options);
     bounded(options.maxTaskDepth, 2, "maxTaskDepth"); bounded(options.maxChildren, null, "maxChildren", true);
     this.maxConcurrentRuns = options.maxConcurrentRuns ?? 4;
     if (!Number.isInteger(this.maxConcurrentRuns) || this.maxConcurrentRuns < 1 || this.maxConcurrentRuns > 64) throw new Error("并发运行数必须为 1 到 64 的整数");
+  }
+  /** 与恢复、返工及退出收尾共用目标任务的控制队列。 */
+  archiveControl<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
+    const taskId = this.store.session(sessionId).task_id;
+    if (!taskId || !this.store.get("SELECT id FROM tasks WHERE id=?", taskId)) throw new AgoraError(409, "archive_offline_required", "无任务关联的存档请使用离线维护");
+    return this.control(taskId, async () => {
+      // checkArchive 的旁车收尾可在控制回调返回后继续运行，须在删除前排空。
+      while (this.archiveChecks.size) await Promise.allSettled([...this.archiveChecks]);
+      if (this.store.session(sessionId).task_id !== taskId) throw new AgoraError(409, "conflict", "会话所属任务已变化");
+      return fn();
+    });
   }
   private control<T>(taskId: string, fn: () => Promise<T>): Promise<T> {
     const promise = (this.controls.get(taskId) ?? Promise.resolve()).catch(() => {}).then(async () => {
@@ -224,8 +244,30 @@ export class TaskManager {
   }
   private transition(...args: Parameters<Store["transition"]>): TaskRow {
     const result = this.store.transition(...args);
-    if (TERMINAL.includes(result.status)) this.notifyConvener(result);
+    this.sessions.status(result.agora_session_id);
+    if (TERMINAL.includes(result.status)) {
+      this.notifyConvener(result);
+      this.checkArchive(result.agora_session_id);
+    }
     return result;
+  }
+  private archiveError(sessionId: string, error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error);
+    this.store.run("UPDATE agora_sessions SET archive_error=?,archive_state='suspect',revision=revision+1 WHERE id=?", message.slice(0, 2000), sessionId);
+    this.store.change("session", sessionId);
+    const session = this.store.session(sessionId);
+    for (const recipient of new Set([session.convener_id, "user"])) if (recipient) this.store.notice(recipient, `archive:${sessionId}:verification-error:${recipient}`, "archive:warning", { agoraSessionId: sessionId, archiveState: "suspect", summary: "存档校验未完成，请查看诊断", diagnostic: message.slice(0, 2000) });
+  }
+  private checkArchive(sessionId: string, endedRun?: { runId: string; reason: string }): void {
+    const check = (async () => {
+      try {
+        if (endedRun) await this.sessions.ended(sessionId, endedRun.runId, endedRun.reason);
+        else await this.sessions.settled(sessionId);
+        await this.archives.verify(sessionId);
+      } catch (error) { this.archiveError(sessionId, error); }
+    })();
+    this.archiveChecks.add(check);
+    void check.finally(() => this.archiveChecks.delete(check)).catch(() => {});
   }
   private notifyConvener(task: TaskRow, notify = task.notify): void {
     const parent = this.store.get<TaskRow>("SELECT t.* FROM tasks t JOIN agora_sessions s ON s.id=t.agora_session_id WHERE s.principal_id=?", task.convener_id);
@@ -268,6 +310,8 @@ export class TaskManager {
       this.store.run("UPDATE process_runs SET identity=?,pid=?,process_start_time=? WHERE id=?", JSON.stringify(handle.identity), handle.identity.pid, handle.identity.startTime, runId);
       handle.onEvent(event => {
         runtime.lastEvent = Date.now();
+        const observed = observePiMessage(event);
+        if (observed) this.archives.observe(session.id, runId, observed);
         if (event.type === "usage_record") this.recordUsage(runtime, event);
         if (event.type === "quota_exhausted") runtime.quota = { resumeAt: typeof event.resumeAt === "string" && Number.isFinite(Date.parse(event.resumeAt)) ? new Date(event.resumeAt).toISOString() : null, reason: typeof event.reason === "string" ? event.reason.slice(0, 2000) : "模型额度用完" };
         if (event.type === "tool_execution_start") runtime.tools.set(String(event.toolCallId), { name: String(event.toolName), at: Date.now(), count: 0 });
@@ -307,6 +351,7 @@ export class TaskManager {
       if (runtime.stopped) throw new Error("任务已停止");
       this.store.run("UPDATE agora_sessions SET pi_session_id=? WHERE id=?", typeof state.sessionId === "string" ? state.sessionId : null, session.id);
       handle.markReady();
+      await this.sessions.begin(session.id, runId, handle);
       this.store.run("UPDATE process_runs SET state='ready' WHERE id=?", runId);
       this.budgets.requireAvailable(this.store.task(taskId));
       runtime.accepted = true;
@@ -406,7 +451,8 @@ export class TaskManager {
     runtime.idleTimer = setTimeout(() => {
       void this.control(task.id, async () => {
         if (runtime.active || runtime.tools.size || runtime.stopped) return;
-        runtime.stopped = true; await handle.stop(); this.auth.revokeRun(runtime.runId);
+        runtime.stopped = true; runtime.archiveStopReason = "idle_reclaim";
+        await handle.stop(); this.auth.revokeRun(runtime.runId);
       }).catch(() => {});
     }, this.options.idleReclaimMs ?? 300_000);
     runtime.idleTimer.unref();
@@ -564,6 +610,8 @@ export class TaskManager {
     if (clean) runtime.usageClosed = true;
     this.store.run("UPDATE process_runs SET state=?,exited_at=?,exit_code=?,signal=?,diagnostics_path=COALESCE(?,diagnostics_path),cleanup_error=? WHERE id=?", clean ? "exited" : "stopping", clean ? now() : null, exit.code, exit.signal, exit.diagnosticsPath ?? null, clean ? null : "运行尚未确认退出", runtime.runId);
     const task = this.store.task(runtime.taskId);
+    if (clean) this.checkArchive(runtime.usageSessionId, { runId: runtime.runId, reason: runtime.archiveStopReason ?? exit.reason });
+    else this.checkArchive(runtime.usageSessionId);
     if (!runtime.stopped && ["created", "running", "waiting_children", "waiting_decision"].includes(task.status)) this.transition(task, runtime.accepted ? "interrupted" : "failed", "协作进程退出，请检查诊断", runtime.runId);
     this.releaseSlot(runtime);
     if (clean && this.runtimes.get(runtime.taskId) === runtime) this.runtimes.delete(runtime.taskId);
@@ -626,7 +674,7 @@ export class TaskManager {
       this.clearQuotaTimer(taskId);
       const droppedSteers = this.store.all("SELECT id,message FROM steer_messages WHERE task_id=? AND state IN ('accepted','queued') LIMIT 1000", taskId);
       const runtime = this.runtimes.get(taskId);
-      if (runtime) { runtime.stopped = true; runtime.terminal = "stopped"; runtime.rejectReady(new Error("任务已停止")); if (runtime.idleTimer) clearTimeout(runtime.idleTimer); }
+      if (runtime) { runtime.stopped = true; runtime.terminal = "stopped"; runtime.archiveStopReason = "stopped"; runtime.rejectReady(new Error("任务已停止")); if (runtime.idleTimer) clearTimeout(runtime.idleTimer); }
       let report;
       this.store.run("UPDATE tasks SET status_detail='停止中' WHERE id=?", taskId);
       this.store.run("UPDATE agora_sessions SET control_state='stopping' WHERE id=?", task.agora_session_id);
@@ -988,6 +1036,7 @@ export class TaskManager {
           this.store.run("UPDATE process_runs SET cleanup_error=? WHERE id=?", JSON.stringify({ message: "重启诊断写入失败，诊断保留在数据库中", diagnostic }), run.id);
         }
         if (clean) this.store.run("UPDATE process_runs SET state='exited',exited_at=? WHERE id=?", now(), run.id);
+        this.checkArchive(session.id, { runId: run.id, reason: startup ? "daemon_recovery" : "stopped" });
         const task = this.store.task(session.task_id);
         if (["created", "running"].includes(task.status)) this.transition(task, "interrupted", clean ? "daemon 重启，旧运行已停止；任务不会自动重放" : "旧进程尚未确认退出，禁止恢复", run.id);
       }
@@ -1005,6 +1054,9 @@ export class TaskManager {
   }
   async flush(): Promise<void> {
     while (this.controls.size) await Promise.allSettled([...this.controls.values()]);
+    while (this.archiveChecks.size) await Promise.allSettled([...this.archiveChecks]);
+    await this.sessions.flush();
+    await this.archives.flush();
   }
   startQueue(): void {
     this.reconcileBudgets();
@@ -1054,6 +1106,7 @@ export class TaskManager {
     for (const runtime of this.runtimes.values()) {
       runtime.stopped = true;
       runtime.terminal = "interrupted";
+      runtime.archiveStopReason = "daemon_shutdown";
       runtime.rejectReady(new Error("daemon 正在关闭"));
       if (runtime.idleTimer) clearTimeout(runtime.idleTimer);
       work.push(this.control(runtime.taskId, async () => {

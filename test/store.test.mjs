@@ -29,7 +29,7 @@ test('新库使用 WAL/FULL，schema 与后续领域字段完整，重复打开�
   let store = await openStore(home);
   assert.equal(store.get('PRAGMA journal_mode').journal_mode, 'wal');
   assert.equal(store.get('PRAGMA synchronous').synchronous, 2);
-  assert.equal(SCHEMA_VERSION, 5);
+  assert.equal(SCHEMA_VERSION, 6);
   assert.equal(store.get('SELECT version FROM schema_version').version, SCHEMA_VERSION);
   assert.equal(store.get('PRAGMA foreign_keys').foreign_keys, 1);
   assert.ok(store.all('PRAGMA foreign_key_list(task_generations)').some(fk => fk.from === 'agora_session_id' && fk.table === 'agora_sessions'));

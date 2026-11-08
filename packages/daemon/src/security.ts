@@ -45,7 +45,7 @@ function isInternalAction(action: string): action is InternalAction { return int
 // 外部动作的参数由 HTTP 层逐项校验；此处只允许明确的用户级动作。
 const EXTERNAL_ACTIONS = [
   "agora.request.answer", "agora.request.cancel", "agora.task.spawn", "agora.task.limits",
-  "agora.task.recover", "agora.task.takeover", "agora.principal.takeover",
+  "agora.task.recover", "agora.task.takeover", "agora.principal.takeover", "agora.archive.delete",
 ] as const;
 export type ExternalAction = typeof EXTERNAL_ACTIONS[number];
 const externalActions: ReadonlySet<string> = new Set(EXTERNAL_ACTIONS);
@@ -345,6 +345,10 @@ export class Security {
     record(params);
     if (!isInternalAction(action) && !isExternalAction(action)) fail("invalid_action", "不支持此用户级动作", 400);
     switch (action) {
+      case "agora.archive.delete":
+        exact(params, ["expectedRevision"]);
+        if (!/^[A-Za-z0-9_-]{1,128}$/.test(target) || !Number.isSafeInteger(params.expectedRevision) || Number(params.expectedRevision) < 1) invalid("存档删除目标或版本无效");
+        break;
       case "agora.device.pair":
         exact(params, ["deviceId", "publicKey", "label"]);
         if (text(params.deviceId, "deviceId", 128) !== target) invalid("设备与目标不匹配");

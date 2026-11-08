@@ -2,6 +2,7 @@ import type { ProtocolRange } from "./client.js";
 export * from "./client.js";
 export * from "./ports.js";
 export * from "./git.js";
+export * from "./sessions.js";
 
 export const VERSION = "0.1.0";
 export const EXPLORE_TOOLS = ["read", "grep", "find", "ls"] as const;
@@ -11,6 +12,11 @@ export type PermissionProfile = "explore" | "review" | "implement";
 export type TaskStatus = "created" | "running" | "waiting_decision" | "waiting_children" | "quota_paused" | "budget_paused" | "completed" | "failed" | "stopped" | "interrupted";
 export type PrincipalType = "user" | "host:cli" | "host:pane" | "agent:main" | "agent:child";
 export type SessionKind = "task" | "meeting-seat" | "secretary";
+
+export type SessionParent =
+  | { kind: "task"; taskId: string; sessionId: string }
+  | { kind: "main"; piSessionId: string }
+  | { kind: "user" };
 
 export interface Health {
   daemonVersion: string;
