@@ -27,6 +27,10 @@ pi -e ./packages/extension/dist/index.js
 
 `agora_task status` 和 `result` 返回单任务与任务树的 token 用量及最近报告的上下文大小。模型服务返回可识别的额度用完错误时，任务进入 `quota_paused`，不算失败、不占推理名额；到服务返回的重置时间后通知直接上级决定续跑或改派。`AGORA_HOME/config.json` 可设 `quotaRecovery: "auto"` 到期自动续跑；恢复父任务不会自动恢复下级。详细规则见 [docs/tasks.md](docs/tasks.md#额度暂停)。
 
+任务树还受软预算限制：达到本任务或任一祖先上限时，对应子树进入 `budget_paused` 并停止；停止尾量如实记账，可能超额。增额后仍须显式恢复，恢复父任务不会恢复下级。默认预算与封顶值待最终确认，配置与计数规则见 [任务树软预算](docs/tasks.md#任务树软预算)。
+
+用户可显式接管任务，包括召集人仍可达的任务；保护开启时需设备签名。接管后原 Agent 不能管理目标或其子树，但任务运行时仍可管理自己的下级；用量仍计入原祖先预算。详见 [用户接管](docs/tasks.md#用户接管)。
+
 扩展会自动启动后台 daemon。CLI 也可手动启动和查看：
 
 ```sh
@@ -38,6 +42,9 @@ node packages/cli/dist/main.js pending
 node packages/cli/dist/main.js answer <提问 ID> --answers '<答复 JSON 数组>'
 node packages/cli/dist/main.js confirmations
 node packages/cli/dist/main.js devices
+node packages/cli/dist/main.js task limits <任务 ID> --max-tokens <数量>
+node packages/cli/dist/main.js task takeover <任务 ID>
+node packages/cli/dist/main.js config get
 node packages/cli/dist/main.js shutdown
 ```
 
@@ -123,10 +130,10 @@ npm test         # 构建后用 node --test 验证，真实 pi 测试要求 1.5.
 
 | 文档 | 内容 |
 | --- | --- |
-| [docs/development.md](docs/development.md) | 1b 实现范围、配置、源码结构、构建、CLI、测试映射和限制 |
+| [docs/development.md](docs/development.md) | 1c 实现范围、配置、源码结构、构建、CLI、测试映射和限制 |
 | [docs/architecture.md](docs/architecture.md) | 总体架构、进程模型、受管扩展就绪检查、控制队列、daemon 生命周期、存储、权限档位与路径校验、worktree、崩溃与恢复、资源、平台注意事项 |
 | [docs/security.md](docs/security.md) | 安全模型：principal、主 Agent 级与用户级权限、用户确认、设备配对、只用终端、资源级访问控制、审计、剩余风险 |
-| [docs/tasks.md](docs/tasks.md) | 任务（子代理）：工具接口、状态机、返工与送达追踪、可靠通知、提问与转交、召集人离线 |
+| [docs/tasks.md](docs/tasks.md) | 任务（子代理）：工具接口、状态机、软预算、用户接管、返工与送达追踪、可靠通知、提问与转交、召集人离线 |
 | [docs/board.md](docs/board.md) | 共享桌面：数据模型、条目类型、可见性、投递与增量、工具、prompt cache |
 | [docs/meetings.md](docs/meetings.md) | 会议：召集、定方案流程、认可、反对意见、阶段 fencing、僵局、预算、书记与纪要、插话、崩溃 |
 | [docs/archive.md](docs/archive.md) | 全量对话存档：存什么、存在哪、三种投影、继承关系、完整性校验、只读 adapter |

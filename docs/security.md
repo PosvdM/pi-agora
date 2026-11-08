@@ -16,7 +16,7 @@
 | 级别 | 谁 | 凭证来源 | 能做什么 |
 | --- | --- | --- | --- |
 | 子 Agent 级 | `agent:child`（任务、参会者、书记） | launch ticket 换来的连接 token | 按档位做自己的工作；任务子代理在限制内派下级，查看、返工、停止及答复自己直接派出的任务；向直接上级提问或逐级转交。不能做主 Agent 级或用户级操作；board 与会议权限随对应切片提供 |
-| 主 Agent 级 | `agent:main`（主代理，用户的代理人）；`host:cli`、`host:pane` | 磁盘凭证（`secret/` 下的文件） | 派任务、召开会议、返工、停止、读取、转发、发起待确认；`agent:main` 还可以裁决自己召集的会议、答复发给自己的提问、在 `agentLimitCap` 以内提高自己会议的上限（见 [meetings.md](meetings.md#参数)） |
+| 主 Agent 级 | `agent:main`（主代理，用户的代理人）；`host:cli`、`host:pane` | 磁盘凭证（`secret/` 下的文件） | 派任务、召开会议、返工、停止、读取、转发、发起待确认；`agent:main` 还可以答复发给自己的提问，在预算封顶内管理自己召集的任务；会议裁决和会议上限随会议切片提供 |
 | 用户级 | `user` | 已配对浏览器的设备密钥对 daemon 挑战的签名 | 见下表 |
 
 **磁盘上的任何凭证都只有主 Agent 级权限**。daemon 没有用户密钥文件；用户身份只来自浏览器设备签名（或在关闭保护后来自 CLI，见“只用终端”）。`host:cli`、`host:pane` 代表用户的界面，但不代表用户本人：它们发起的用户级操作都要用户确认，也不享有 `agent:main` 的封顶内提高上限的权限。
@@ -25,14 +25,14 @@
 
 | 操作 | 说明 |
 | --- | --- |
-| 超过封顶的预算和上限 | 主 Agent 为自己的会议设定或提高的上限超过 `agentLimitCap`；用户召集的会议超过 `meetingLimitDefaults` 或之后的任何提高 |
+| 超过封顶的预算和上限 | 任务的根预算授予超过单树或每日未签名封顶；召集人为 `user` 的任务增额须确认。会议预算按后续切片的对应规则提供 |
 | 以用户身份答复、取消提问 | 主 Agent 明确转给用户（`escalated`）的提问、召集人是 `user` 的提问，以及召集人不可达时转到用户“待处理”的提问 |
 | 用户召集的会议的决定 | 用户召集的会议的 `decide`；召集人不可达时转给用户的会议决策和中断任务的处理（resume / reopen / replace / abandon） |
 | 以 `user` 为作者写 board 条目 | 包括会议插话；条目的权威来自作者身份，所以必须确认 |
-| 设备与安全设置 | 批准、撤销设备；在线重置配对；关闭 `userConfirmation`；调高 `meetingLimitDefaults`、`agentLimitCap`；`agora takeover` 强制转移主会话的控制租约；把任务的召集人改为 `user`（接管） |
+| 设备与安全设置 | 批准、撤销设备；在线重置配对；关闭 `userConfirmation`；调高 `taskLimitDefaults`、`meetingLimitDefaults`、`agentLimitCap` 或改变 `tokenAccounting`；`agora takeover` 强制转移主会话的控制租约；把任务的召集人改为 `user`（接管） |
 | 删除存档 | `agora archive delete` |
 
-主 Agent 对自己召集的任务和会议做的决定（返工、停止、处理中断、裁决、封顶以内的提高上限）不需要用户确认。
+主 Agent 管理自己召集的任务（返工、停止、处理中断、单树和每日未签名封顶以内的增额）不需要用户确认，但不能跨接管边界。会议裁决与预算规则随会议切片提供。
 
 ## principal
 
@@ -153,9 +153,13 @@ daemon 收到签名后依次检查，任何一步失败都拒绝并写审计：
 5. 挑战的 `action`、`target`、`paramsHash` 与待确认中保存的请求一致；
 6. 目标对象的当前状态仍允许该操作（如提问仍为 `escalated`）。
 
-通过后 daemon 以 `user` 身份执行原请求，并在同一事务里把待确认标为 `confirmed`、写审计。
+同步动作（提问答复与取消、任务 limits 与 takeover、租约接管、设备和安全设置）在同一事务内完成业务写入、nonce 消费、待确认的 `confirmed` 状态和审计；失败时共同回滚，拒绝审计另行保存。接管通知也在事务内写 outbox，提交后才唤醒。不能在事务回滚前触发停止等外部副作用。
+
+spawn 和 recover 涉及异步文件或进程操作，HTTP 签名入口使用 `signAsync`：先在短事务内验签、消费 nonce 并写 `executing`，再在事务外执行，最后持久化 `confirmed` 与结果或 `failed` 与受控失败原因。nonce 消费后，即使执行失败也不能重放；daemon 重启将遗留的 `executing` 标为 `failed`、`operation_interrupted`，不自动执行。同步动作使用 `sign`，不把异步回调放入 SQLite 事务。
 
 ### 经 pi-pane 确认
+
+以下浏览器流程为切片 2 的集成约束；1c 验收使用测试签名器，不提供正式浏览器界面。
 
 ```text
 浏览器点击动作 ─► pane 插件 invoke（带 RequestOrigin）
@@ -171,7 +175,9 @@ daemon 收到签名后依次检查，任何一步失败都拒绝并写审计：
 
 ### 经 CLI 发起
 
-CLI 执行用户级操作时，daemon 只生成一条待确认并返回 `202 confirmation_required`，CLI 显示“已提交，请在已配对的浏览器中确认（confirmationId）”。pane 插件收到 `confirmation:<id>:created` 通知后，用 `ctx.formAdded()` 在“待处理”区列出，表单写明操作内容、发起方（如“由 CLI 发起，无法区分是你本人还是 Agent”）和过期时间；用户提交时再走上面的签名流程。CLI 可以用 `agora confirmations` 查看状态，用 `--wait` 等待结果。
+保护开启时，CLI 执行用户级操作，daemon 只生成一条待确认并返回 `202 confirmation_required`，CLI 显示“已提交，请在已配对的浏览器中确认（confirmationId）”。pane 插件收到 `confirmation:<id>:created` 通知后，用 `ctx.formAdded()` 在“待处理”区列出，表单写明操作内容、发起方（如“由 CLI 发起，无法区分是你本人还是 Agent”）和过期时间；用户提交时再走上面的签名流程。CLI 可以用 `agora confirmations` 查看状态，用 `--wait` 等待结果；等待超时不代表操作取消，应查询原确认，不应重新发起。
+
+host 可读取全部待确认，主 Agent 只能读取 `requestedBy` 为自己的记录。host 可取消其他 host 或主 Agent 发起的待确认，以支持浏览器拒绝 CLI 请求；主 Agent 只能取消自己发起的待确认。已取消或过期的确认不能执行。
 
 “发起待确认”是主 Agent 级操作；子代理自己的 token 不能发起，但读到 `host.key` 的子代理可以经 CLI 发起。待确认的表单必须显示真实的发起 principal，用户不认识的待确认应当拒绝。
 
@@ -240,7 +246,7 @@ daemon 启动时、以及在线检测到状态变化时，检查以下情况，�
 | 值 | 行为 |
 | --- | --- |
 | `device`（默认） | CLI 的用户级操作只生成待确认，在已配对浏览器里确认后生效 |
-| `off` | CLI 的用户级操作直接以 `user` 身份执行，审计记录 `confirmedBy: "none"` |
+| `off` | CLI 的非强制签名用户级操作可直接以 `user` 身份执行，审计记录 `confirmedBy: "none"`；未签名预算封顶及安全动作的强制签名要求仍有效 |
 
 - 关闭（`off`）后，**daemon 无法区分用户与 Agent**：任何能运行 `agora` 命令的子代理都能以用户身份操作。
 - **在线关闭**：经 API 从 `device` 改为 `off` 是用户级操作，必须由已配对设备签名。
@@ -261,14 +267,18 @@ daemon 启动时、以及在线检测到状态变化时，检查以下情况，�
 | spawn | ✔（召集人记为 user） | — | ✔（成为新任务的召集人） | ✔，层数、下级数、档位不得放宽 |
 | list `scope: "mine"` | ✔（召集人为 user 的任务） | ✔ | ✔ | 仅直接下级 |
 | list `scope: "all"` | ✔ 全部 | 只返回摘要 | 只返回摘要 | ✘ |
-| 读详情、结果 | ✔ | ✔，包含自己任务树 | ✘ | 直接下级；另可读自己所属任务的状态 |
-| steer、cleanup | ✔ | 仅直接下级 | ✘ | 仅直接下级 |
-| stop | ✔，整个目标子树 | ✔，整个目标子树 | ✘ | 仅直接下级及随其停止的整棵子树 |
-| recover（召集人为 agent:main 且可达） | ✘ | ✔ | ✘ | ✘ |
-| recover（召集人为 user，或已转给用户） | 确认 | ✘（显示“已转给用户”） | ✘ | ✘ |
-| 接管（召集人改为 user） | 确认 | ✘ | ✘ | ✘ |
+| 读详情、结果 | ✔ | ✔，包含自己任务树，受接管边界限制 | ✘ | 直接下级；另可有限读取自己所属任务的状态 |
+| steer | 仅召集人为 `user` 的任务 | 仅直接下级 | ✘ | 仅直接下级 |
+| cleanup | ✔ | 仅直接下级 | ✘ | 仅直接下级 |
+| stop | ✔，整个目标子树 | ✔，整个目标子树，不能跨接管边界 | ✘ | 仅直接下级及其子树，不能跨接管边界 |
+| recover（召集人为 Agent） | ✘，须先显式用户接管 | 仅直接下级 | ✘ | 仅直接下级 |
+| recover（召集人为 `user`） | 确认 | ✘ | ✘ | ✘ |
+| 调整任务预算 | 仅召集人为 `user` 的任务；增额须确认 | 仅直接下级；增额受预算封顶限制 | ✘ | 仅直接下级；不得超过祖先上限 |
+| 接管（召集人改为 `user`） | 确认，召集人可达时也允许 | ✘ | ✘ | ✘ |
 
 `scope: "all"` 对 `host:*` 返回全部任务；对 `agent:main` 只返回摘要（id、标题、状态、召集人显示名），不返回任务书、结果和对话，用于了解并行中的其他工作。
+
+接管持久写入 `tasks.taken_over_from`，原召集人通过 outbox 收到通知。原 Agent 对目标及子树的读取和管理返回 `task_taken_over`；祖先 stop、abandon 和调低预算在任何副作用前检查接管边界。相关控制操作正在执行时返回 `task_busy`，排队操作在执行时重检权限。接管保留 `parent_task_id` 与祖先预算归属，不阻止任务运行时管理自己的下级；正常用量耗尽仍按原树暂停。完整语义见 [tasks.md](tasks.md#用户接管)。
 
 ### 提问
 
@@ -322,28 +332,43 @@ daemon 启动时、以及在线检测到状态变化时，检查以下情况，�
 | 首台设备配对（`everPaired = false`）、离线重置后的配对（`reTofuArmed = true`） | ✔（新设备自签） | ✘ | ✘ |
 | 新设备配对请求 | ✔（进入待批准） | ✘ | ✘ |
 | 批准、撤销设备；在线重置配对 | 确认 | ✘ | ✘ |
-| 关闭 `userConfirmation`；调高 `meetingLimitDefaults`、`agentLimitCap` | 确认 | ✘ | ✘ |
-| 开启 `userConfirmation`；调低上述配置 | ✔ | ✘ | ✘ |
+| 关闭 `userConfirmation`；调高预算默认值或封顶；改变 `tokenAccounting` | 确认 | ✘ | ✘ |
+| 开启 `userConfirmation`；调低预算默认值或封顶 | ✔ | ✘ | ✘ |
 | 确认知悉 `devices-reset` 警告 | 确认 | ✘ | ✘ |
 | 离线重置、离线关闭保护 | 只能在 daemon 停止时用离线命令 | — | — |
 
+## 任务预算与设置
+
+任务软预算的授予、计数、暂停和恢复以 [tasks.md](tasks.md#任务树软预算) 为准。预算检查在 daemon 内执行；子代理携带请求体中的 proof 或用户字段不能提高权限，`none` 证明不能免除未签名单树及每日封顶。
+
+安全设置保存在数据库 `settings`，不写入 `config.json`。`GET /v1/settings` 返回扁平的有效配置，`agora config get` 查询同一结果；通过 `POST /v1/settings/:key`（或 `PUT`）及 `agora config set` 写入。任务相关字段严格按下表校验，不接受未知字段或不完整对象：
+
+| 配置键 | 字段与约束 |
+| --- | --- |
+| `taskLimitDefaults` | `{ maxTokens }`，根任务默认上限，为正的安全整数 |
+| `agentLimitCap` | `{ perTaskFactor, dailyTokens, perMeetingFactor? }`；前两项必填，各项为正的安全整数，会议因子留给会议切片使用 |
+| `tokenAccounting` | `"all"` 或 `"uncached"` |
+| `meetingLimitDefaults` | `maxTokens`、`maxModelCalls`、`maxDurationMinutes`、`maxCycles`、`diagnosticReserveTokens` 五项；前四项为正的安全整数，预留可为 0，但不得超过 `maxTokens`。会议端点尚未开放 |
+
+根任务默认预算、单树因子、每日未签名封顶与计数口径的默认值待最终确认。调高任何预算默认值或封顶、增加维度或移除限制均不能作为调低处理，须设备签名；完整保留原字段且各项不增加时可直接设置。改变计数口径须签名，同值写入无需签名。关闭保护不能绕过这些强制签名规则。修改配置不重写已有任务的 `max_tokens`，授予和用量计算读取有效设置。
+
 ## 审计
 
-所有用户级操作（含被拒绝的尝试）、待确认的创建与处理、主 Agent 在封顶以内提高上限、设备配对和重置、`userConfirmation` 和上限配置的修改、离线命令、启动检查发现的安全状态异常，都写入 `audit_log`：
+待确认的创建与处理、签名拒绝、用户级业务执行、HTTP 任务预算调整、设备配对和重置、安全设置修改、离线命令及安全状态警告写入 `security_audit`。实际字段如下：
 
 | 字段 | 说明 |
 | --- | --- |
-| `principal_id` | 执行身份（确认后为 `user`） |
-| `requested_by` | 发起请求的 principal（如 `host:cli`、`host:pane`、某个 `agent:main`） |
-| `client` | 客户端自报的类型（`cli` / `pane` / `extension`），仅供参考 |
+| `seq` | 自增序号，供分页查询使用 |
 | `action`、`target` | 操作和目标 |
-| `confirmation_id`、`device_id` | 经设备确认时有值 |
-| `confirmed_by` | `device`、`none`（`userConfirmation = off`） |
-| `via` | `online`、`offline`（离线命令） |
-| `result`、`reason` | `allowed` / `denied` 及原因 |
-| `created_at` | 时间 |
+| `requested_by` | 发起请求的 principal，如 `host:cli`、`host:pane` 或主 Agent ID；系统或离线记录使用对应标识 |
+| `confirmed_by` | `device` 或 `none`；`none` 也用于待确认创建和拒绝记录，不只表示保护关闭 |
+| `device_id`、`confirmation_id` | 可空，关联实际签名设备和待确认 |
+| `outcome`、`reason` | 处理结果与受控原因码；结果包括 `requested`、`executing`、`confirmed`、`failed`、`rejected`、`cancelled`、`expired`、`applied`、`alert` |
+| `via` | `online` 或 `offline` |
+| `details` | 可空的规范 JSON，保存警告差异或离线设置等附加信息 |
+| `created_at` | 创建时间 |
 
-提问和决策的详情里显示“由谁、怎样确认”，如“由用户答复（设备：工作电脑 Chrome，2026-11-05 10:21）”或“由用户答复（CLI，未经设备确认）”。
+`GET /v1/audit?target=&limit=&cursor=` 仅供 host 查询，返回 `{ items }`；`cursor` 为序号水位，`limit` 默认 50，最大 200。审计不保存签名、凭证、回调异常原文或完整答复。提问的实际确认来源通过 `answeredVia` 返回，浏览器展示在切片 2 接入。
 
 ## 其他降低冒充成本的措施
 
@@ -430,7 +455,7 @@ CI 的 `git-minimum` job 在 Ubuntu 22.04 容器中安装发行版 Git 2.34.1 �
 - **停 daemon 改数据**：Agent 可以停掉 daemon，用离线命令或直接修改数据库来删设备记录、关闭保护、删除审计日志。设备记录变化和保护关闭会在下次启动时触发常驻警告；审计日志被删则无从追查。
 - **浏览器密钥可从磁盘挖出**：设备密钥“不可导出”只针对网页脚本。Chrome 等浏览器把 IndexedDB 中的密钥数据保存在用户配置目录里，同一系统用户的程序理论上可以取出并在别处使用。
 - **抢先配对**：从未配对过时的首台设备（TOFU），以及离线重置之后的下一台设备（`reTofuArmed`），如果被 Agent 抢先完成配对，Agent 就能以用户身份操作。后者会触发常驻警告。
-- **磁盘凭证的主 Agent 级权限**：子代理能读到 `host.key`，可以用它以 `host:cli` 身份操作，或注册一个新的主会话 principal，获得主 Agent 级权限（包括在 `agentLimitCap` 以内提高它自己召集的会议的上限）。每日封顶按数据目录统一计账，覆盖所有未经设备签名的会议创建和预算提高，不论用了多少个 principal，预算方面的影响都限制在封顶以内；所有操作都记到发起的 principal。
+- **磁盘凭证的主 Agent 级权限**：子代理能读到 `host.key`，可以用它以 `host:cli` 身份操作，或注册一个新的主会话 principal，获得主 Agent 级权限。任务预算的每日未签名授予按数据目录统一计账，覆盖根任务创建和增额，不因 principal 数量或保护关闭而放宽；设备签名授予单独记录。host 的未签名单树上限为任务默认值，主 Agent 的上限受 `perTaskFactor` 限制；更换身份不能绕过共用日账本。会议预算随会议切片提供。
 - **用户在不知情时确认**：用户确认能区分“用户点了确认”和“Agent 发起了请求”，不能防止用户确认一条 Agent 发起的待确认。待确认的表单写明真实的发起方。
 - **关闭保护**：`userConfirmation = off` 时无法区分用户与 Agent。
 - **工具层权限**：路径校验和工具白名单不是沙箱，见 [architecture.md](architecture.md#权限档位)。

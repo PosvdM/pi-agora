@@ -2,13 +2,13 @@
 
 ## 实现范围
 
-切片 1b 提供任务核心。四个 workspace 为 protocol、daemon、extension、cli，不依赖 pi-pane。任务动作包括 spawn、list、status、result、steer、stop、cleanup 和 recover；权限档位为 explore、review、implement。子代理可以继续派出下级，daemon 强制核对 principal、直接召集关系、任务树、层数、下级数和档位。
+切片 1c 提供任务核心与安全层。四个 workspace 为 protocol、daemon、extension、cli，不依赖 pi-pane。任务动作包括 spawn、list、status、result、steer、stop、cleanup 和 recover；权限档位为 explore、review、implement。子代理可以继续派出下级，daemon 强制核对 principal、直接召集关系、任务树、层数、下级数和档位。
 
 提问由 `agora_request` 创建、答复、逐级转交或取消；CLI 提供 pending 和 answer。父任务有未完成下级时进入 `waiting_children`，有未答复提问时进入 `waiting_decision`。两者 settled 后都释放推理名额，可空闲回收。需要推理的通知重新排队取得名额，必要时拉起原会话，再由扩展注入持久通知；静默投递与等待下级时的强制唤醒规则见 [tasks.md](tasks.md#工具一览)。
 
-尚未提供：用户设备确认、预算与完整资源 ACL、配对及安全状态审计（1c），可选扩展 / MCP 白名单及 `implement.projectTrust: "saved"`（建议随 1c 跟进），存档读取与会话视图（1d），board、会议和 pane 插件。生产子会话固定 `-ne --no-mcp --no-approve`，只显式加载 agora；测试 driver 可以独立注入假 provider，不开放生产 HTTP 注入。
+安全层提供任务与提问的资源 ACL、任务树软预算、用户接管、设备配对与签名确认、离线安全命令、持久警告和审计。保护默认为 `device`，CLI 用户级操作生成待确认；1c 用独立 P-256 测试签名器验收真实 HTTP 通路，浏览器配对与确认界面在切片 2 接入。仅使用终端时，须停止 daemon 后执行 `agora offline set userConfirmation off`；关闭后无法区分用户与 Agent，未签名预算封顶和强制签名的安全动作仍生效。
 
-**1b 的 CLI 答复未经设备确认，无法区分用户与 Agent。** 完整用户级安全模型仍以 [security.md](security.md) 为设计目标，不能把此通路视为已完成的用户身份验证。
+尚未提供：存档读取与会话视图（1d）、board、会议和 pane 插件。可选扩展 / MCP 白名单及 `implement.projectTrust: "saved"` 推迟至 [#10](https://github.com/PosvdM/pi-agora/issues/10)；生产子会话固定 `-ne --no-mcp --no-approve`，只显式加载 agora，不引入 SDK 或额外 pi 依赖。测试 driver 可以独立注入假 provider，不开放生产 HTTP 注入。
 
 ## 环境与构建
 
@@ -33,8 +33,11 @@ npm test
 | `packages/protocol/src/git.ts` | 共用 Git 安全调用层、配置与环境清理、字面路径和只读查询白名单 |
 | `packages/daemon/src/index.ts`、`main.ts` | 配置、单实例、启动恢复、排空与入口 |
 | `packages/daemon/src/server.ts`、`auth.ts` | HTTP、幂等记录、principal、租约、launch ticket |
-| `packages/daemon/src/store.ts` | schema v4、一致性备份、迁移、条件更新、outbox 和逐请求用量 |
-| `packages/daemon/src/tasks.ts` | 控制队列、树限制、调度、返工、恢复、回收和看门狗 |
+| `packages/daemon/src/store.ts` | schema v5、一致性备份、迁移、条件更新、outbox、逐请求用量和安全表 |
+| `packages/daemon/src/acl.ts` | 任务与提问的资源授权、直接召集关系、接管边界 |
+| `packages/daemon/src/budgets.ts` | 有效预算配置、计数口径、祖先预算、共享日授予账本 |
+| `packages/daemon/src/security.ts` | JCS、设备签名、同步 / 异步确认、设置、离线锁、警告与审计 |
+| `packages/daemon/src/tasks.ts` | 控制队列、树限制、调度、返工、恢复、软预算暂停、接管、回收和看门狗 |
 | `packages/daemon/src/requests.ts`、`worktrees.ts` | 提问及逐级转交、按仓库串行的 worktree 操作 |
 | `packages/daemon/src/driver.ts` | 既有导出的兼容入口，转出 pi 驱动实现 |
 | `packages/daemon/src/harness/types.ts` | 中立的启动规格、技能结果与逐请求用量 / 额度事件 |
@@ -69,6 +72,8 @@ daemon 启动时读取 `<AGORA_HOME>/config.json`。未配置时使用默认值�
 
 spawn 的 `maxDepth` 表示以新任务为第一层的子树层数，`maxChildren` 表示该任务及其下级继承的同时下级数限制。指定值不能超过配置或父任务剩余限制；下级可以继续收紧。模型没有额外层级限制。
 
+安全与预算设置通过数据库 `settings` 管理，与上述启动配置分开。`GET /v1/settings` 返回扁平有效配置，CLI 使用 `config get|set`。任务相关键为 `taskLimitDefaults`（`maxTokens`）、`agentLimitCap`（`perTaskFactor`、`dailyTokens`，可选 `perMeetingFactor`）及 `tokenAccounting`（`all` / `uncached`）；默认值待最终确认。调高默认值或封顶、改变计数口径需要签名，完整字段内的调低可直接设置。严格字段、会议预留设置和强制签名规则见 [security.md](security.md#任务预算与设置)。
+
 ```sh
 node packages/cli/dist/main.js daemon start --home <目录>
 node packages/cli/dist/main.js status --home <目录>
@@ -79,10 +84,15 @@ node packages/cli/dist/main.js answer <提问 ID> --answers '[{"id":"q","selecte
 node packages/cli/dist/main.js task stop <任务 ID> --home <目录>
 node packages/cli/dist/main.js task cleanup <任务 ID> --discard --home <目录>
 node packages/cli/dist/main.js task recover <任务 ID> --mode resume --home <目录>
+node packages/cli/dist/main.js task limits <任务 ID> --max-tokens <数量> --home <目录>
+node packages/cli/dist/main.js task takeover <任务 ID> --home <目录>
+node packages/cli/dist/main.js confirmations <确认 ID> --wait --home <目录>
+node packages/cli/dist/main.js devices --home <目录>
+node packages/cli/dist/main.js config get --home <目录>
 node packages/cli/dist/main.js shutdown --timeout 600 --home <目录>
 ```
 
-只有 daemon start 自动启动 daemon。CLI 输出 JSON，错误返回非零退出码。原生 PowerShell 中 JSON 参数应按当前 shell 的引号规则传入；机器可直接使用 HTTP API，避免 shell 转义。
+只有 daemon start 自动启动 daemon。CLI 输出 JSON，错误返回非零退出码。用户级命令默认生成待确认，`--wait` 超时后应查询原确认，不应重新发起。host 可读取全部待确认，主 Agent 只能读取自己的；host 可取消其他 host / 主 Agent 发起的待确认，主 Agent 只能取消自己的。原生 PowerShell 中 JSON 参数应按当前 shell 的引号规则传入；机器可直接使用 HTTP API，避免 shell 转义。
 
 shutdown 默认排空，超时后保留 daemon；force 中断并清理运行。停止固定先 clear_queue，再 abort 和 hostkit 清理；无法确认时保锁和诊断，不自动 assumeNoWriter。成功的重复 stop 不改已有终态结果、业务 revision 和更新时间。
 
@@ -93,7 +103,10 @@ shutdown 默认排空，超时后保留 daemon；force 中断并清理运行。�
 - **可靠通知**：状态、结果和通知同事务；每批最多 200，扩展取到空批。完整磁盘行的 entryId、noticeId、dedupeKey 全部相符才 ack。继承的历史通知不能代替当前 inbox 的授权。被 clear_queue 清掉的在途通知在 settled 后可重投；每代完成有独立 key。
 - **请求重试**：安全 GET、可幂等续期及带原 Idempotency-Key 的业务写入最多三次，共用一个总期限、原 token、参数与 key；间隔 50 / 100ms。取消、关闭、HTTP 拒绝、协议不兼容、无效 JSON 和一次性认证兑换不重试。子会话短暂续期传输错误不立即 fatal。`AgoraConnectionError.cause` 保留捕获的底层异常，message 附可获得的底层错误码；诊断提取不参与重试分类，不能将错误信息增强视为偶发 loopback 失败根因已解决。
 - **Windows 退出可见性**：有效 StopReport 后最多 2 秒纯身份查询，不补杀；持续 alive / unknown 仍保锁。driver 的失败 stop 可显式重试，只复查原报告、身份和 release，不重放清队列或底层停止；已有失败报告不能变成新成功报告。TaskManager 重试仍核对版本与租约。
-- **迁移**：schema v3 为任务树、限制、返工、提问和 worktree 增加字段与表；v4 保存 skill 名单与解析路径、额度恢复时间和逐请求用量。旧库依次升级到 v4，已有 v2 任务按第一层、默认两层回填。迁移前从同一 SQLite 连接做一致性 backup、只读 integrity_check，DDL 同事务，提交前 foreign_key_check；失败回滚原库。
+- **任务软预算**：根任务授予受单树和共享日封顶限制，`none` 不免除封顶，子树不重复占日授予；用量按请求去重并计入祖先。达到任一祖先上限先持久化对应子树的 `budget_paused`，再 clear_queue、abort、停止进程；合法尾量可超过上限。调度、返工、唤醒、额度自动恢复和 recover 都不能绕过；增额不自动恢复任何任务，显式恢复父任务也不恢复下级。计数与授予规则见 [tasks.md](tasks.md#任务树软预算)。
+- **用户接管**：显式接管允许目标召集人仍可达；普通 host 不能直接 recover Agent 资源。持久化 `taken_over_from` 与 outbox，保留 parent_task_id 和用量归属。原 Agent 的目标 / 子树管理返回 task_taken_over；祖先停止和调低预算在副作用前检查边界，相关控制执行中返回 task_busy，排队请求重新授权。内部任务运行时保留管理自身下级的权限。
+- **签名事务**：同步的 takeover、limits、提问及安全动作与 sign 共用业务 / nonce / 确认 / 审计事务；仅 spawn、recover 使用 signAsync，先提交 executing 和 nonce，再执行异步操作。重启将遗留 executing 标为 failed，不重放。实际审计表为 security_audit，字段见 [security.md](security.md#审计)。
+- **迁移**：当前 schema v5。v3 保存任务树、限制、返工、提问与 worktree；v4 保存 skill 名单、额度恢复和逐请求用量；v5 增加任务预算与接管来源、答复证明、budget_grants、devices、pending_confirmations、security_alerts 和 security_audit。旧库依次升级到 v5，已有 v2 任务按第一层、默认两层回填。迁移前从同一 SQLite 连接做一致性 backup、只读 integrity_check，DDL 同事务，提交前 foreign_key_check；失败回滚原库。
 - **恢复**：旧 run 未确认退出不能拉起写者；resume 代数不变，reopen / replace 新建继承会话并增加代数，历史 result 指向所属代数的会话。连续 resume 失败两次后需重开、换人或放弃，不自动重放副作用。
 
 ## 测试与 CI
@@ -102,6 +115,9 @@ shutdown 默认排空，超时后保留 daemon；force 中断并清理运行。�
 
 | 测试文件 | 验收与边界 |
 | --- | --- |
+| `test/security-core.test.mjs` | JCS 与 P-256 验签、挑战绑定、重放拒绝、同步事务与回滚、异步 nonce 消费及重启 failed、TOFU / reTOFU、设备撤销与重置、离线锁、持久警告、严格设置与审计脱敏、v4→v5 WAL 一致性备份和 DDL 回滚 |
+| `test/security-http-1c.test.mjs` | 真实 daemon / HTTP / CLI 的设备签名答复、host.key 与伪造身份不能冒充用户、幂等结果随确认更新、参数和 revision 变化拒绝、租约接管、在线签名关闭与终端离线关闭 / 重启 / 直接答复 / 重新开启的闭环；不依赖浏览器界面 |
+| `test/task-security-1c.test.mjs` | main / child / host 资源矩阵、提问 ACL 与证明、可达召集人显式接管及 none 通路、接管边界 / 排队复核 / task_busy / outbox 回滚与重投、祖先替换保留接管；共享日授予与增额差额、settings 优先级和计数口径、整子树预算暂停与尾量去重、quota 自动恢复门禁、逐项显式恢复及重启账本 |
 | `test/task-1b.test.mjs` | generation、幂等 steer / answer、送达追踪、中断旧代结果与用量、D14 七项规则、失败与额度通知唤醒、静默投递、直接停止孙任务、恢复后的提问路由、父提交 worktree、回收、看门狗、配置及 v2→v4 迁移 |
 | `test/task-d15.test.mjs`、`driver-d15.test.mjs`、`d15-e2e.test.mjs` | 子代理标记、skill 白名单与只读授权、同项目双主会话的提问路由、任务 / 代 / 树用量及 stop / interrupt 收尾记账、静默终态唤醒与未知重置时间提示的持久化恢复、额度暂停与通知 / 自动恢复、v3→v4 备份和迁移回滚；真实 pi 的本地 429 与 skill 加载 |
 | `test/tree-e2e.test.mjs` | 真实子代理调用 agora_task 再派下级；单名额下静默下级通知真正启动父回合，覆盖父进程未回收及回收重拉、通知落盘；恶意 MCP / 扩展不启动；Windows 原生 PowerShell 实际工具调用 |
@@ -131,8 +147,9 @@ macOS 完整测试后额外执行 25 次“忽略 abort 的 provider”真实用
 
 ## 未实测与限制
 
-- 可选 MCP / 扩展白名单和 saved 项目信任未开放。pi 1.5.0 没有独立 MCP 配置参数，配置隔离方式尚未确定；当前基线直接关闭 MCP。
-- CLI 答复无设备确认，完整用户身份与审计在 1c。此项限制不能通过工具层 ACL 消除。
+- 可选 MCP / 扩展白名单和 saved 项目信任推迟至 #10。生产保持 `-ne --no-mcp --no-approve`，不引入 SDK，隔离前提见 [security.md](security.md#可选扩展与-mcp-的隔离边界)。
+- 浏览器配对与确认界面在切片 2；1c 的签名器测试不等同于浏览器验收。仅使用终端时须离线关闭保护，并接受无法区分用户与 Agent 的风险。
+- 任务预算是请求结束后检查的软上限；停止尾量如实记账，不能保证精确限制 token。本文测试表仅列验收入口，不代表本轮全量测试或三平台验收已通过。
 - Git 最低设计版本为 2.34；1b 本机实际测试版本为 2.53.0.windows.2，旧版 2.34 的 P0 证据不等同于本轮重测。lazy-fetch 回归另行移除 `GIT_NO_LAZY_FETCH`，验证兼容旧版的协议防线。真实 TTY pager 由 Linux/macOS 的 Python PTY 执行；Windows 无 POSIX PTY 时说明原因跳过，固定 `--no-pager` argv 仍有独立回归。
 - 未做真实断电、PID 复用、机器重启、网络文件系统或 macOS 大小写敏感卷的破坏性实测。
 - hostkit 的快照盲窗及路径校验 TOCTOU 没有消除，snapshot_visible 的空 leftovers 不证明整树退出。
