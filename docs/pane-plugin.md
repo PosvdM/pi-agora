@@ -53,7 +53,7 @@ node scripts/vendor-pane-api.mjs generate <pi-pane仓库路径>
 
 ## 幂等与资源上限
 
-完整 `ActionInvocation`、`FormSubmission` 和 `sessions.send` 的调用身份至少保留 24 小时；同 key 不同内容返回 `idempotencyConflict`。插件不缓存 `pending`。Agent 管理的任务只能读取、停止、清理或显式接管；输入和恢复在设备签名接管后开放，状态说明会提示管理归属。接管表单写明原 Agent 将不能继续管理任务及子树，不自动代为接管。结构变化会使打开的会话 resync，以更新只读权限。
+完整 `ActionInvocation`、`FormSubmission` 和 `sessions.send` 的调用身份至少保留 24 小时；同 key 不同内容返回 `idempotencyConflict`。插件不缓存 `pending`。Agent 管理的任务只能读取、停止、清理或显式接管；输入和恢复在设备签名接管后开放，状态说明会提示管理归属。接管表单写明原 Agent 将不能继续管理任务及子树，不自动代为接管。结构变化会使打开的会话 resync，以更新只读权限；领域变更流单独断线后重订阅，也会重新读取会话权限，不能跳过断线期间的结构变化。
 
 输入框 composer 与 `sessions.send` 复用任务返工机制，不要求菜单动作表单的标识，且只能发送文字、不能隐式中断。任务动作在发送副作用请求之前将方法、路径和请求体原子写入 `actions.json`；重启后同 key 使用原请求快照，避免随当前状态改变条件字段。最终插件结果保存在 `operation-identities.json`，从完成时间起至少保留 24 小时。待处理表单的展示快照保存在 `forms-cache.json`，插件重启后离线仍能列出；缓存不授权操作，也不因显示的过期时间到达而自行移除。
 
@@ -74,7 +74,7 @@ HTTP JSON 响应最多 8 MiB，单个 SSE 事件最多 4 MiB。任务面板只�
 | `changes-s2.test.mjs`、`pane-daemon-s2.test.mjs` | 重启、游标过期和缺口、保留范围、按父分页、热节点祖先、原子切点、鉴权、背压与关闭；真实 HTTP 变更流驱动插件树并在 daemon 重启后收敛 |
 | `pane-api-vendor.test.mjs` | 固定协议副本的来源与哈希 |
 | `pane-transport-s2.test.mjs` | 相对端点、协议与幂等头、受控重试、分片 SSE 与取消 |
-| `pane-views-s2.test.mjs`、`pane-cursor-s2.test.mjs`、`tree-projection-s2.test.mjs` | 树水位、串行映射、结构迁移重建、跨周期分页、会话流、composer/abort、历史只读、任务用量和保活 |
+| `pane-views-s2.test.mjs`、`pane-cursor-s2.test.mjs`、`pane-history-race-s2.test.mjs`、`tree-projection-s2.test.mjs` | 树水位、串行映射、结构迁移重建、跨周期分页、会话流、composer/abort、历史只读及会话重开竞态、条件停止、任务用量和保活 |
 | `pane-actions-s2.test.mjs`、`pane-action-store-s2.test.mjs`、`pane-action-daemon-s2.test.mjs` | 六个任务动作、动态表单、显式签名接管、分步换人、pending 查询、跨重启固定请求、损坏和容量拒绝；真实 daemon 路径、创建目录及重复查询只执行一次 |
 | `pane-forms-s2.test.mjs`、`pane-form-cache-s2.test.mjs`、`pane-form-states-s2.test.mjs` | 表单排序、并发提交、取消、旧 revision、结果未知、跨插件重启的离线保留、容量、写入故障和停用竞态 |
 | `pane-security-s2.test.mjs`、`pane-security-daemon-s2.test.mjs`、`pane-takeover-s2.test.mjs`、`pane-takeover-action-s2.test.mjs` | 用户拒绝/超时/缺少设备、去重确认、设备自签、旧警告 revision 和持久横幅；真实 HTTP 与 P-256 签名、双标签答复、接管后权限/父链/预算和事务 marker |

@@ -419,6 +419,21 @@ test("接管结构 marker 使打开的会话重取权限，重入订阅不会被
   assert.equal(second[0].event.type, 'resync');
 });
 
+test("仅领域流断开后从新水位重订阅，已打开会话必须重新取权限", async t => {
+  const { a, plugin } = await activated(t);
+  const events = [];
+  plugin.sessions.subscribe(ref, sessionCursor, event => events.push(event));
+  const domain = a.streams.find(stream => stream.path.startsWith('/v1/changes?') && stream.stops === 0);
+  domain.failed(new Error('仅领域流断开'));
+  assert.equal(events.length, 0, '会话流本身仍健康');
+  a.state.sessions[0].parent = { kind: 'user' };
+  t.mock.timers.tick(RETRY_MS);
+  await eventually(() => events.length === 1, '重订阅的新 head 之前可能跳过接管 marker，必须主动 resync');
+  assert.equal(events[0].event.type, 'resync');
+  assert.equal((await plugin.sessions.snapshot(ref)).readonly, false);
+  assert.ok(a.streams.filter(stream => stream.path.startsWith('/v1/changes?')).length >= 2);
+});
+
 test("领域变更流过期必发树 reset，宿主据此重新对齐持久表单", async t => {
   const { h, a, plugin } = await activated(t, call => call.path === `/v1/requests/${question.id}` ? ok({ ...question, state: "answered" }) : undefined);
   const events = [];

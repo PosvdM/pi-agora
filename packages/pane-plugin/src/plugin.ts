@@ -133,6 +133,8 @@ export default function createPlugin(options: PluginOptions = {}): PanePlugin {
         void refreshDomains();
       }
     }, error => { domainOff?.(); domainOff = undefined; log("agora 领域变更流已断开", error); });
+    // 新 head 之前可能遗漏结构 marker，打开的会话必须重新读取当前权限。
+    resetSessionSubscribers();
   }
   async function inbox(token: number): Promise<void> {
     let wait = 25;
