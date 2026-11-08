@@ -477,8 +477,20 @@ test('会话视图：SSE 慢客户端和主动断开清理监听，关闭服务�
   const slow = stream(f.views, cut);
   slow.response.blocked = true;
   f.views.status('s1');
+  assert.equal(slow.response.writableEnded, false);
+  assert.equal(slow.response.listenerCount('drain'), 1);
+  f.views.status('s1');
+  assert.equal(slow.response.values().length, 1);
+  slow.response.blocked = false;
+  slow.response.emit('drain');
+  assert.equal(slow.response.values().length, 2);
+  assert.equal(slow.response.listenerCount('drain'), 0);
+  slow.response.blocked = true;
+  f.views.status('s1');
+  slow.request.emit('aborted');
   assert.equal(slow.response.writableEnded, true);
   assert.equal(slow.request.listenerCount('aborted'), 0);
+  assert.equal(slow.response.listenerCount('drain'), 0);
   const normal = stream(f.views, (await f.views.snapshot('s1')).cursor);
   normal.request.emit('aborted');
   assert.equal(normal.response.listenerCount('close'), 0);
@@ -487,6 +499,81 @@ test('会话视图：SSE 慢客户端和主动断开清理监听，关闭服务�
   assert.equal(live.response.writableEnded, true);
   assert.equal(f.driver.events.size, 0); assert.equal(f.driver.exits.size, 0);
   assert.equal(JSON.parse(await readFile(path.join(f.directory, 'runs', 'r1.json'), 'utf8')).reason, 'daemon_shutdown');
+});
+
+test('会话视图：大批历史回放遇背压逐帧暂停，终态排空后才 EOF，实时帧保持次序', async t => {
+  const f = await setup(t);
+  await f.views.begin('s1', 'r1', f.driver);
+  const cut = (await f.views.snapshot('s1')).cursor;
+  const payload = 'x'.repeat(128 * 1024);
+  for (let index = 0; index < 24; index++) f.driver.emit({ type: 'large_frame', index, payload });
+  const request = new EventEmitter(), response = new Response();
+  response.blocked = true;
+  f.views.stream('s1', request, response, { epoch: cut.epoch, afterSeq: cut.seq });
+  assert.equal(response.chunks.length, 1);
+  assert.equal(response.destroyed, false);
+  assert.equal(response.listenerCount('drain'), 1);
+  f.driver.emit({ type: 'large_frame', index: 24, payload });
+  await f.views.ended('s1', 'r1', 'stopped');
+  assert.equal(response.chunks.length, 1);
+  assert.equal(response.writableEnded, false);
+  response.blocked = false;
+  response.emit('drain');
+  assert.deepEqual(response.values().filter(value => value.event.type === 'large_frame').map(value => value.event.index), Array.from({ length: 25 }, (_, index) => index));
+  assert.deepEqual(response.values().slice(-2).map(value => value.event.type), ['agora_run', 'agora_status']);
+  assert.equal(response.writableEnded, true);
+  assert.equal(response.listenerCount('drain'), 0);
+  assert.equal(request.listenerCount('aborted'), 0);
+});
+
+test('会话视图：背压中的 resync 最后送达并结束，慢读实时队列超限才断开', async t => {
+  const f = await setup(t);
+  await f.views.begin('s1', 'r1', f.driver);
+  const cut = (await f.views.snapshot('s1')).cursor;
+  const paused = stream(f.views, cut);
+  paused.response.blocked = true;
+  f.driver.emit({ type: 'large_frame', payload: 'x'.repeat(128 * 1024) });
+  await f.views.begin('s1', 'r2', handle());
+  assert.equal(paused.response.writableEnded, false);
+  paused.response.blocked = false;
+  paused.response.emit('drain');
+  assert.deepEqual(paused.response.values().map(value => value.event.type), ['large_frame', 'agora_run', 'resync']);
+  assert.equal(paused.response.writableEnded, true);
+  assert.equal(paused.response.listenerCount('drain'), 0);
+  const slow = stream(f.views, (await f.views.snapshot('s1')).cursor);
+  slow.response.blocked = true;
+  const state = f.views.states.get('s1');
+  for (let index = 0; index < 12; index++) f.views.publish(state, 'large_frame', { payload: 'x'.repeat(128 * 1024), index });
+  assert.equal(slow.response.chunks.length, 1);
+  assert.equal(slow.response.destroyed, true);
+  assert.equal(slow.response.listenerCount('drain'), 0);
+  assert.equal(slow.request.listenerCount('aborted'), 0);
+});
+
+test('会话视图：心跳背压等待 drain，不堆积心跳且取消后移除监听', async t => {
+  const f = await setup(t);
+  await f.views.begin('s1', 'r1', f.driver);
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const paused = stream(f.views, (await f.views.snapshot('s1')).cursor);
+  paused.response.blocked = true;
+  t.mock.timers.tick(15_000);
+  assert.deepEqual(paused.response.chunks, [': keepalive\n\n']);
+  assert.equal(paused.response.writableEnded, false);
+  t.mock.timers.tick(30_000);
+  assert.equal(paused.response.chunks.length, 1);
+  f.views.status('s1');
+  paused.response.blocked = false;
+  paused.response.emit('drain');
+  assert.equal(paused.response.values()[0].event.type, 'agora_status');
+  assert.equal(paused.response.listenerCount('drain'), 0);
+  paused.response.blocked = true;
+  t.mock.timers.tick(15_000);
+  assert.equal(paused.response.listenerCount('drain'), 1);
+  paused.request.emit('aborted');
+  assert.equal(paused.response.listenerCount('drain'), 0);
+  const sent = paused.response.chunks.length;
+  t.mock.timers.tick(60_000);
+  assert.equal(paused.response.chunks.length, sent);
 });
 
 test('会话视图：片段写入失败可见且不伪装为 flush 成功', async t => {

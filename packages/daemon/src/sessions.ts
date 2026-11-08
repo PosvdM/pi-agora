@@ -14,7 +14,13 @@ import { readPiEntries, PiArchiveEvents, sameMessage, type ArchiveFragment, type
 type ViewEvent = SessionStreamEvent;
 interface DiskView { entries: SessionEntry[]; leafId: string | null; completeIds: Set<string>; idsStable: boolean }
 interface Issue { t: string; kind: string; message: string }
-interface Client { response: ServerResponse; close(): void }
+interface Client {
+  response: ServerResponse;
+  send(frame: string): void;
+  replay(events: ViewEvent[]): void;
+  finish(): void;
+  close(): void;
+}
 type Verification = Awaited<ReturnType<typeof verifySessionFile>>;
 interface ViewState {
   sessionId: string; runId: string; epoch: string; seq: number;
@@ -41,6 +47,9 @@ interface ViewState {
 const MAX_EVENTS = 2000;
 const MAX_CLIENT_BUFFER = 1024 * 1024;
 function clone<T>(value: T): T { return structuredClone(value); }
+function sseFrame(event: ViewEvent): string {
+  return `event: ${event.event.type === "resync" ? "resync" : "session"}\nid: ${event.cursor.epoch}:${event.cursor.seq}\ndata: ${JSON.stringify(event)}\n\n`;
+}
 function safeId(value: string): void {
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(value)) throw new AgoraError(400, "invalid_params", "会话或运行标识格式无效");
 }
@@ -355,7 +364,7 @@ export class SessionViews {
       // 进程已经退出，归档失败也不能继续暴露活动工具或 assistant。
       this.publish(state, "agora_run", { runId: state.runId, phase: "exited", ...(state.endReason !== undefined ? { reason: state.endReason } : {}) });
       this.status(sessionId);
-      for (const client of [...state.clients]) client.close();
+      for (const client of [...state.clients]) client.finish();
     }
   }
   private async ensure(sessionId: string): Promise<ViewState> {
@@ -446,14 +455,14 @@ export class SessionViews {
   private send(client: Client, event: ViewEvent): void {
     const response = client.response;
     try {
-      if (response.destroyed || response.writableEnded || response.writableLength > MAX_CLIENT_BUFFER ||
-          !response.write(`event: ${event.event.type === "resync" ? "resync" : "session"}\nid: ${event.cursor.epoch}:${event.cursor.seq}\ndata: ${JSON.stringify(event)}\n\n`)) client.close();
+      if (response.destroyed || response.writableEnded) { client.close(); return; }
+      client.send(sseFrame(event));
     } catch { client.close(); }
   }
   private resync(state: ViewState): void {
     for (const client of [...state.clients]) {
       this.send(client, { cursor: { epoch: state.epoch, seq: state.seq }, sessionId: state.sessionId, event: { type: "resync" } });
-      client.close();
+      client.finish();
     }
   }
   stream(sessionId: string, request: IncomingMessage, response: ServerResponse, q: { epoch?: string; afterSeq?: number }): void {
@@ -461,17 +470,60 @@ export class SessionViews {
     const state = this.states.get(sessionId);
     response.writeHead(200, { "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-cache", Connection: "keep-alive", "X-Accel-Buffering": "no" });
     let heartbeat: ReturnType<typeof setInterval> | undefined;
-    const client: Client = { response, close: () => {
-      state?.clients.delete(client);
-      if (heartbeat) clearInterval(heartbeat);
-      request.off("aborted", client.close);
-      response.off("close", client.close);
-      response.off("error", client.close);
-      if (!response.writableEnded && !response.destroyed) {
-        if (response.writableLength > MAX_CLIENT_BUFFER) response.destroy();
-        else response.end();
-      }
-    } };
+    let closed = false, ending = false, blocked = false, queuedBytes = 0, replayIndex = 0;
+    const queue: string[] = [];
+    let replay: ViewEvent[] = [];
+    const drain = () => { blocked = false; pump(); };
+    const pump = () => {
+      if (closed || blocked) return;
+      try {
+        while (replayIndex < replay.length || queue.length) {
+          if (response.destroyed || response.writableEnded) { client.close(); return; }
+          let next: string;
+          if (replayIndex < replay.length) next = sseFrame(replay[replayIndex++]!);
+          else { next = queue.shift()!; queuedBytes -= Buffer.byteLength(next); }
+          if (replayIndex >= replay.length) { replay = []; replayIndex = 0; }
+          // 回放只在写入时序列化一帧，不能把整个 ring 同步压进 socket 或字节队列。
+          const bytes = Buffer.byteLength(next);
+          if (bytes > MAX_CLIENT_BUFFER || response.writableLength > MAX_CLIENT_BUFFER) { response.destroy(); client.close(); return; }
+          const writable = response.write(next);
+          if (closed) return;
+          if (!writable) {
+            blocked = true;
+            response.once("drain", drain);
+            return;
+          }
+        }
+        if (ending) client.close();
+      } catch { client.close(); }
+    };
+    const client: Client = {
+      response,
+      send(value) {
+        if (closed || ending) return;
+        const bytes = Buffer.byteLength(value);
+        if (queuedBytes + bytes > MAX_CLIENT_BUFFER) { response.destroy(); client.close(); return; }
+        queue.push(value); queuedBytes += bytes;
+        pump();
+      },
+      replay(events) { replay = events; replayIndex = 0; pump(); },
+      finish() { ending = true; if (heartbeat) clearInterval(heartbeat); pump(); },
+      close() {
+        if (closed) return;
+        closed = true;
+        queue.length = 0; replay = []; queuedBytes = 0;
+        state?.clients.delete(client);
+        if (heartbeat) clearInterval(heartbeat);
+        request.off("aborted", client.close);
+        response.off("close", client.close);
+        response.off("error", client.close);
+        response.off("drain", drain);
+        if (!response.writableEnded && !response.destroyed) {
+          if (response.writableLength > MAX_CLIENT_BUFFER) response.destroy();
+          else response.end();
+        }
+      },
+    };
     request.on("aborted", client.close);
     response.on("close", client.close);
     response.on("error", client.close);
@@ -479,18 +531,16 @@ export class SessionViews {
     const earliest = state?.ring[0]?.cursor.seq ?? (state?.seq ?? 0) + 1;
     if (this.closed || this.transitions.has(sessionId) || !state || q.epoch !== state.epoch || !Number.isSafeInteger(after) || after! < earliest - 1 || after! > state.seq || after! < 0) {
       this.send(client, { cursor: { epoch: state?.epoch ?? `${this.instanceId}:archive`, seq: state?.seq ?? 0 }, sessionId, event: { type: "resync" } });
-      client.close(); return;
+      client.finish(); return;
     }
     // 回放与注册在同一同步段中完成，不存在 snapshot 到 stream 之间的丢事件窗口。
-    for (const event of state.ring) {
-      if (event.cursor.seq > after!) this.send(client, event);
-      if (response.writableEnded || response.destroyed) return;
-    }
-    if (state.ended) { client.close(); return; }
     state.clients.add(client);
+    client.replay(state.ring.filter(event => event.cursor.seq > after!));
+    if (closed) return;
+    if (state.ended) { client.finish(); return; }
     heartbeat = setInterval(() => {
-      try { if (!response.write(": keepalive\n\n")) client.close(); }
-      catch { client.close(); }
+      // 已背压时省略心跳，避免心跳占用待发送事件的有界队列。
+      if (!blocked && !ending) client.send(": keepalive\n\n");
     }, 15_000);
     heartbeat.unref();
   }
