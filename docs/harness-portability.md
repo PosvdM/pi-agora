@@ -23,6 +23,8 @@
 
 | 位置 | pi 依赖 | 更换 Harness 时的工作 | 代价 |
 | --- | --- | --- | --- |
+| `packages/harness-pi/src/session-parser.ts`、`json-prefix.ts` | pi v1/v2/v3 JSONL、内存迁移、v1 临时 id、重开后的叶子和不完整 JSON 前缀。供 archive 和 daemon 共同使用，解析前后不改会话文件。 | 替换原生会话解析器并重做版本、分支、压缩和截断差分测试；保持 archive 的返回合同及只读保证。 | 中 |
+| `packages/daemon/src/harness/pi/archive-observation.ts` | 从 `message_end.message` 提取最终消息角色、时间戳与摘要，供中立存档校验器记账。 | 替换最终消息证明的来源；保留去重和缺失消息检查。 | 低 |
 | `tasks.ts` 的会话分配、继承与 RPC 核对；`harness/pi/driver.ts` 的锁与恢复 | 固定 `sessions/<id>/session.jsonl`，pi 的原生 sessionId 与 sessionFile；只准原文件恢复，不允许进程内替换会话。 | 定义新会话文件、身份与继承关系；验证首次启动、恢复、写锁和崩溃清理，避免多个写者。 | 高 |
 | `packages/daemon/src/store.ts`：`PrincipalRow/SessionRow`、建表与迁移；`auth.ts`：`register/reclaim`；`server.ts`：`sessionView` | 数据库 `pi_session_id`、HTTP `piSessionId` 和主会话恢复认领。 | 设计旧数据及旧客户端兼容，不能只重命名字段；当前 schema 和 API 保持不变。 | 高，仅记录 |
 | `packages/extension/src/index.ts`：`principalReference/bindMain`；`notifications.ts`：`noticeEntry/persistedNotices/NoticeDelivery` | `custom/agora-principal`、`custom_message/agora:notice`、JSONL 完整行、entry ID 与 details；恢复及通知确认依赖真实落盘证明。 | 替换身份引用和消息持久化证明，并重做迟到确认、fork、重投和清队列回归。 | 高 |
@@ -78,10 +80,11 @@
 | `test/fixtures/*provider.ts`、`driver-extension.ts`、`notify-extension.ts`；`test/*e2e*.test.mjs`、`daemon*.test.mjs`、`cli.test.mjs`、`notification-clear-1b.test.mjs`、`claim-fork-1b.test.mjs` | pi Provider 注册、`@earendil-works/pi-ai/compat`、扩展工具与命令、`AgentSession/SessionManager`、真实会话格式和通知落盘。CLI 测试也有真实 pi 夹具。 | 替换模型假服务接入和运行夹具，保持不联网、HOME 隔离、正负控制、进程清理和通知证明。 | 高 |
 | `test/extension*.test.mjs`、`permissions-1b.test.mjs`、`notice-fork.test.mjs`、`notify-faults.test.mjs`；`experiments/p0/` | pi 扩展 API mock、生命周期、路径、消息字段和早期 pi 行为实测。 | 更新目标 Harness 的契约测试并独立实测；P0 文件属于历史证据，不能将其结果当作新 Harness 证据。 | 中—高 |
 | `test/task-1b.test.mjs`、`task-d15.test.mjs` | 假驱动构造 pi RPC 响应和事件，领域测试仍知道队列与会话格式。 | 随高成本任务层解耦统一替换，不只更新文件导入。 | 高 |
+| `test/archive-parser-1d.test.mjs`、`archive-parser-pi-1d.test.mjs` | pi v1/v2/v3、头部、条目、叶子与 JSON 截断分类，以及真实 pi 重新打开副本后的差分比对；v1 比较时规范化临时 id。 | 为新 Harness 建立原生存档差分及哈希不变回归。 | 中 |
 | `test/harness-pi.test.mjs` | pi 参数精确序列、派生事件和旧导出兼容。 | 保留 pi 专属回归，为新适配器增加对应测试。 | 低 |
 | `README.md`、`docs/development.md`、`architecture.md`、`security.md`、`tasks.md` | pi 安装与 `pi -e`、目录、配置、工具、RPC、信任、skill、用量和额度合同。 | 在实现实际适配后同步使用步骤、限制和能力映射。 | 文案低；合同验证中—高 |
 | `docs/archive.md`、`integration.md`、`board.md`、`meetings.md`、`roadmap.md` | 已实现边界与后续目标中的 pi JSONL、pi-pane、会话视图和集成假设。 | 区分当前与后续能力，核对原始会话读取、事件流投影和宿主接入方式；未实现部分不能宣称支持。 | 中—高 |
 
 ## 保留边界
 
-`harness/types.ts` 只定义启动规格、技能解析结果及中立用量 / 额度事件，不引入 pi 或 hostkit 类型。`driver.ts` 保留原导出并指向 `harness/pi/driver.ts`。`SessionDriver/DriverHandle` 仍暴露 pi RPC，任务状态机、数据库、HTTP、CLI 和 pi 扩展合同保持原样；这些高成本项只记录，不以重命名掩盖耦合。
+新的 pi 依赖只放在 `packages/daemon/src/harness/pi/` 或 `packages/harness-pi/`；整个 `packages/extension` 仍是 pi 扩展适配。前者放 daemon 独用的 RPC、参数、事件和诊断实现，后者放多个包共用的原生会话解析器；archive 默认装配共享解析器，不反向依赖 daemon。`harness/types.ts` 只定义启动规格、技能解析结果、中立用量 / 额度事件与最终消息观测，不引入 pi 或 hostkit 类型。`driver.ts` 保留原导出并指向 `harness/pi/driver.ts`。`SessionDriver/DriverHandle` 仍暴露 pi RPC，任务状态机、数据库、HTTP、CLI 和 pi 扩展合同保持原样；这些高成本项只记录，不以重命名掩盖耦合。

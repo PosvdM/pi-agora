@@ -5,6 +5,9 @@
       "path": "./packages/protocol"
     },
     {
+      "path": "./packages/harness-pi"
+    },
+    {
       "path": "./packages/daemon"
     },
     {

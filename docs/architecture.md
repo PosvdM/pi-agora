@@ -47,13 +47,14 @@ pi-agora 是 pi 的协作引擎：一个每用户单实例的后台进程（daem
 | pi 扩展 | `packages/extension` | 装进主代理和每个协作会话；按 token 的权限注册工具，收取通知并注入会话，执行工具层权限检查 |
 | CLI | `packages/cli` | 启停 daemon、列出和查看所有会话、发起用户级操作（生成待确认）、设备与配置管理 |
 | archive adapter | `packages/archive` | 版本化只读存档读取库与用户聊天视图投影，daemon 不运行时也能用，详见 [archive.md](archive.md) |
+| 共享 pi 适配 | `packages/harness-pi` | 多个包共用的 pi 专有实现，包括只读会话文件解析；不依赖 daemon |
 | pane 插件 | `packages/pane-plugin` | 运行在 pi-pane 服务端，把 daemon 的数据映射成 pi-pane 的树节点、面板、动作、表单，详见 [integration.md](integration.md) |
 | 协议类型 | `packages/protocol` | daemon HTTP API 的 TypeScript 类型与 JSON schema |
 | 平台能力 | `pi-hostkit`（独立仓库 [PosvdM/pi-hostkit](https://github.com/PosvdM/pi-hostkit)） | pi 定位、RPC 传输、进程树终止、锁、密钥权限、路径规范化，详见 [pi-hostkit 设计文档](https://github.com/PosvdM/pi-hostkit/blob/main/docs/design.md) |
 
 依赖方向：
 
-- `daemon` 依赖 `pi-hostkit`；`extension` 的路径校验也使用 `pi-hostkit` 的路径规范化。pi-pane 同样依赖 `pi-hostkit`，pi-pane 与 pi-agora 的核心包彼此不依赖。
+- `daemon` 依赖 `pi-hostkit` 和 `archive`；`archive` 与 `daemon` 共用 `harness-pi`。共享解析器不反向依赖 daemon，也不将同一源码重复编译到多个包。`extension` 的路径校验使用 `pi-hostkit` 的路径规范化。pi-pane 同样依赖 `pi-hostkit`，pi-pane 与 pi-agora 的核心包彼此不依赖。
 - `daemon`、`extension`、`cli`、`archive`、`protocol` 都不依赖 pi-pane；只有 `pane-plugin` 把 pi-pane 的 `@pi-pane/plugin-api` 作为 peer 依赖。pane 插件接口以 pi-pane 仓库的 `docs/plugin-api.md` 为准，daemon API 和 agora 到 pane 的映射以本仓库的 [integration.md](integration.md) 为准。
 
 模块边界：
@@ -68,11 +69,12 @@ pi-agora 是 pi 的协作引擎：一个每用户单实例的后台进程（daem
 
 - `packages/daemon/src/harness/types.ts` 定义与 Harness 无关的启动规格、技能解析结果及逐请求用量、额度事件，不依赖 pi 或 hostkit 类型。
 - `packages/daemon/src/harness/pi/driver.ts` 实现 pi 定位、skill 解析、RPC 驱动、会话写锁、心跳、UI 与进程清理；`launch.ts` 拼装 pi 参数，`events.ts` 将 pi usage 与额度错误转为中立派生事件。
+- `packages/harness-pi` 放 daemon 以外的包也需要使用的 pi 专有实现。只读会话解析器在这里维护 v1/v2/v3 的内存迁移、条目键、叶子和截断诊断；中立的 archive reader 接口与用户视图投影由 `packages/archive` 定义，archive 默认装配 pi 解析器。
 - `packages/daemon/src/driver.ts` 保留全部既有导出，避免为目录迁移改动任务调度及现有调用方。`SessionDriver` 和 `DriverHandle` 仍暴露 pi RPC 类型，未构成完整的中立 Harness 接口。
 - `packages/extension` 整个包属于 pi 侧适配；它的扩展 API、工具钩子、通知注入与会话落盘确认不另拆。
 - 任务状态机、数据库、HTTP API 和 CLI 不随目录迁移改变。任务层直接使用 pi RPC、会话身份和队列语义等高成本项见 [Harness 耦合清单](harness-portability.md)，清单同时覆盖代码、测试、配置、CLI 输出与文档。
 
-**新的 pi 依赖只能放在适配层**：daemon 放在 `harness/pi/`，扩展放在 `packages/extension`；`harness/types.ts` 不放 pi 字段、事件或导入。领域层已有的 pi 耦合按清单保留，不以修改原始事件解析的方式扩大。测试可直接验证 pi 适配器，但领域新增行为应使用中立结果，不引入新的 pi 假设。默认装配位置和既有配置暂不改名。
+**新的 pi 依赖只能放在适配层**：daemon 独用的实现放在 `packages/daemon/src/harness/pi/`，跨包共用的实现放在 `packages/harness-pi/`；扩展适配留在 `packages/extension`。`harness/types.ts` 不放 pi 字段、事件或导入。领域层已有的 pi 耦合按清单保留，不以修改原始事件解析的方式扩大。测试可直接验证 pi 适配器，但领域新增行为应使用中立结果，不引入新的 pi 假设。默认装配位置和既有配置暂不改名。
 
 更换 Harness 时，先核对其进程启动、工具授权、就绪、事件、停止及会话持久化接口，再实现对应适配器和宿主扩展。随后整体改造任务层的 RPC 调用与事件合同，并设计旧会话身份、数据库和公开字段的兼容方案；不能只替换启动命令。新适配器必须重新证明资源隔离、单写者、最终授权、通知落盘后确认、逐请求计量、队列清理和崩溃恢复，并通过 Windows、macOS、Linux 的真实运行测试。
 
