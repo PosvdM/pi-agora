@@ -12,6 +12,7 @@ export interface CliArchiveReader {
   getSession(id: string): Promise<Row | undefined>;
   readUserView(id: string, q?: { before?: string; limit?: number }): Promise<{ leafId: string | null; entries: unknown[]; historyBefore: string | null }>;
   readPartials(id: string): Promise<PartialFragment[]>;
+  verifySession?(id: string): Promise<unknown>;
   close(): void;
 }
 export interface ArchiveCliDependencies {
@@ -248,7 +249,8 @@ export async function runArchiveCli(input: {
         const verify = async (id: string) => {
           const session = await reader!.getSession(id);
           if (!session) throw new Error("会话不存在");
-          results.push({ sessionId: id, ...row(await deps.verify(await safeFile(home, session.sessionFile))) });
+          const result = reader!.verifySession ? await reader!.verifySession(id) : await deps.verify(await safeFile(home, session.sessionFile));
+          results.push({ sessionId: id, ...row(result) });
         };
         if (operand) await verify(await offlineId(reader, operand));
         else {

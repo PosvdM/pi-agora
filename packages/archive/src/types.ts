@@ -73,6 +73,7 @@ export interface ArchiveReaderV1 {
   readRawEntries(id: string, q?: { cursor?: string; limit?: number }): Promise<Page<SessionEntry>>;
   readPartials(id: string): Promise<PartialFragment[]>;
   readDiagnostics(id: string): Promise<RunDiagnostics[]>;
+  verifySession(id: string): Promise<VerificationResult>;
   listBoardEntries(boardId: string, q?: { afterSeq?: number; limit?: number }): Promise<Page<never>>;
   getMeeting(meetingId: string): Promise<never>;
   close(): void;

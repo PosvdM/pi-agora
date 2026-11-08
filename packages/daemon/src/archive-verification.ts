@@ -1,6 +1,6 @@
 import { readdir, lstat, realpath } from "node:fs/promises";
 import path from "node:path";
-import { openArchive, verifySessionFile } from "@pi-agora/archive";
+import { openArchive } from "@pi-agora/archive";
 import { Store, now } from "./store.js";
 import { AgoraError } from "./errors.js";
 import type { MessageObservation } from "./harness/types.js";
@@ -49,18 +49,10 @@ export class ArchiveVerifier {
     }
     const relative = path.relative(home, ancestor);
     if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw new AgoraError(403, "archive_path_outside_home", "存档路径不在数据目录内");
-    const observed = this.store.get<{ count: number }>("SELECT COUNT(*) AS count FROM archive_observed_messages WHERE agora_session_id=?", sessionId)!.count;
-    const last = this.store.get<{ role: string; timestamp: string | null }>("SELECT role,timestamp FROM archive_observed_messages WHERE agora_session_id=? ORDER BY seq DESC LIMIT 1", sessionId);
     const reader = await openArchive({ home: this.store.home, apiVersion: 1 });
-    let hasUnfinishedPartials: boolean;
-    try { hasUnfinishedPartials = (await reader.readPartials(sessionId)).length > 0; }
+    let result: Awaited<ReturnType<typeof reader.verifySession>>;
+    try { result = await reader.verifySession(sessionId); }
     finally { reader.close(); }
-    const result = await verifySessionFile(ancestor, {
-      messageEndCount: observed,
-      ...(last?.timestamp !== null && last?.timestamp !== undefined ? { lastMessage: { role: last.role, timestamp: JSON.parse(last.timestamp) } } : {}),
-      ...(session.archive_hash ? { previous: { hash: session.archive_hash, bytes: session.archive_bytes } } : {}),
-      hasUnfinishedPartials,
-    });
     const verifiedAt = now();
     this.store.transaction(() => {
       // 可疑文件不能覆盖最后一次可信基线，否则重复校验会把改动洗成正常。

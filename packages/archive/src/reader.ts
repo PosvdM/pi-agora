@@ -12,6 +12,7 @@ import type {
 import { ArchiveError } from "./errors.js";
 import { archiveDirectory, archivePath, jsonDocument, jsonLines } from "./io.js";
 import { projectUserViewAsync } from "./projection.js";
+import { verifySessionFile } from "./verify.js";
 
 interface SessionRow {
   id: string; kind: SessionKind; title: string; model: string; profile: PermissionProfile;
@@ -293,6 +294,20 @@ class ArchiveReader implements ArchiveReaderV1 {
       after = rows[rows.length - 1].id;
       await setImmediate();
     }
+  }
+
+  async verifySession(id: string) {
+    const session = await this.required(id);
+    let expected: import("./types.js").VerifyExpected = { hasUnfinishedPartials: (await this.readPartials(id)).length > 0 };
+    if (this.schemaVersion >= 6) {
+      const baseline = this.db.prepare("SELECT archive_hash,archive_bytes FROM agora_sessions WHERE id=? LIMIT 1").get(id) as { archive_hash: string | null; archive_bytes: number };
+      const count = this.db.prepare("SELECT COUNT(*) AS count FROM archive_observed_messages WHERE agora_session_id=? LIMIT 1").get(id) as { count: number };
+      const last = this.db.prepare("SELECT role,timestamp FROM archive_observed_messages WHERE agora_session_id=? ORDER BY seq DESC LIMIT 1").get(id) as { role: string; timestamp: string | null } | undefined;
+      expected = { ...expected, messageEndCount: count.count,
+        ...(baseline.archive_hash ? { previous: { hash: baseline.archive_hash, bytes: baseline.archive_bytes } } : {}),
+        ...(last?.timestamp != null ? { lastMessage: { role: last.role, timestamp: JSON.parse(last.timestamp) } } : {}) };
+    }
+    return verifySessionFile(session.sessionFile, expected);
   }
 
   async listBoardEntries(_boardId: string, _q?: { afterSeq?: number; limit?: number }): Promise<Page<never>> {

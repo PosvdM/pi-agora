@@ -8,6 +8,7 @@ import { openStore } from '../packages/daemon/dist/store.js';
 import { archiveSchemaV6 } from '../packages/daemon/dist/archive-schema.js';
 import { ArchiveVerifier, archiveStorageBytes } from '../packages/daemon/dist/archive-verification.js';
 import { observePiMessage } from '../packages/daemon/dist/harness/pi/archive-observation.js';
+import { runCli } from '../packages/cli/dist/index.js';
 
 async function setup(t) {
   const home = await mkdtemp(path.join(tmpdir(), 'agora-archive-verify-'));
@@ -52,6 +53,24 @@ test('校验保留可信哈希、接受追加，文件内容和重复通知保�
   assert.equal(hash(await readFile(f.file)), before);
   assert.equal(f.store.all("SELECT recipient_id FROM outbox WHERE kind='archive:warning'").length, 2);
   assert.deepEqual(new Set(f.store.all('SELECT recipient_id FROM outbox').map(row => row.recipient_id)), new Set(['main', 'user']));
+});
+
+test('离线 CLI 与 daemon 使用同一完整性证据，离线校验不更新数据库', async t => {
+  const f = await setup(t);
+  await writeFile(f.file, f.content);
+  f.verifier.observe('as_test', 'pr_test', observePiMessage({ type: 'message_end', message: f.message }));
+  assert.equal((await f.verifier.verify('as_test')).state, 'ok');
+  await writeFile(f.file, f.content.replace('归档测试', '改动测试'));
+  const before = f.store.get('SELECT archive_state,archive_hash,archive_verified_at FROM agora_sessions WHERE id=?', 'as_test');
+  const output = [], errors = [];
+  const exit = await runCli(['verify-archive', 'as_test', '--offline', '--home', f.home], {
+    out: text => output.push(JSON.parse(text)), error: text => errors.push(text),
+  });
+  assert.equal(exit, 0, errors.join('\n'));
+  assert.equal(output[0].results[0].state, 'suspect');
+  assert.equal(output[0].persisted, false);
+  assert.deepEqual(f.store.get('SELECT archive_state,archive_hash,archive_verified_at FROM agora_sessions WHERE id=?', 'as_test'), before);
+  assert.equal((await f.verifier.verify('as_test')).state, 'suspect');
 });
 
 test('丢失文件通知召集人与用户，条数或最终消息证据不足均为可疑', async t => {
