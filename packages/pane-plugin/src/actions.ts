@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { ActionInvocation, ActionResult, ActionSpec, ActionTarget, FormField, FormSpec, PanePlugin, RequestOrigin } from "@pi-pane/plugin-api";
 import { encoded, message, type ApiReply, type PluginRuntime } from "./contracts.js";
+import { ActionStore, ActionStoreError } from "./action-store.js";
 
 export type ExecuteOperation = (method: string, path: string, body: unknown, options: {
   idempotencyKey: string; origin: RequestOrigin; actAsUser?: boolean;
@@ -16,10 +17,9 @@ interface TargetState { nodeId?: string; task?: TaskState }
 interface FormRecord {
   form: FormSpec; action: TaskAction; target: string; state: TargetState; replace: boolean;
 }
-interface Operation { path: string; body: JsonRecord; actAsUser?: boolean }
+interface Operation { method: "POST"; path: string; body: JsonRecord; actAsUser?: boolean }
 interface Identity {
-  fingerprint: string; expiresAt: number; operation?: Operation;
-  preparing?: Promise<Operation | ActionResult>;
+  fingerprint: string; expiresAt: number; operation?: Operation; result?: ActionResult;
 }
 const DAY = 24 * 60 * 60 * 1000;
 const profiles = ["explore", "review", "implement"];
@@ -123,10 +123,143 @@ function outcome(reply: ApiReply, action: TaskAction): ActionResult {
 }
 
 export function createActions(runtime: PluginRuntime, execute: ExecuteOperation): NonNullable<PanePlugin["actions"]> {
-  // 此守卫只保留身份与固定请求参数，不保存 daemon 的执行结果；进程重启后需统一持久化身份模块接管。
+  // 只保存调用身份、HTTP 参数和未执行 HTTP 的表单结果；daemon 的结果每次转发。
   const identities = new Map<string, Identity>();
   const forms = new Map<string, { signature: string; record: FormRecord; expiresAt: number }>();
   const versions = new Map<string, FormRecord>();
+  const store = new ActionStore(runtime.context.dataDir);
+  let initialized: Promise<void> | undefined;
+  let queue: Promise<unknown> = Promise.resolve();
+  function entries(value: unknown): [string, unknown][] {
+    if (!Array.isArray(value) || value.length > 4096) throw new ActionStoreError();
+    const seen = new Set<string>();
+    return value.map(item => {
+      if (!Array.isArray(item) || item.length !== 2 || typeof item[0] !== "string" || seen.has(item[0])) throw new ActionStoreError();
+      seen.add(item[0]);
+      return [item[0], item[1]];
+    });
+  }
+  function recordFrom(value: unknown): FormRecord {
+    const record = object(value, "存储的表单记录");
+    keys(record, ["form", "action", "target", "state", "replace"], "存储的表单记录");
+    const action = actionName(`agora.task.${record.action}`);
+    if (action === "stop" || typeof record.target !== "string" || typeof record.replace !== "boolean" || (record.replace && action !== "recover")) throw new ActionStoreError();
+    const target = record.target;
+    targetKey(target === "global" ? undefined : { type: "node", nodeId: target }, action);
+    const state = object(record.state, "存储的任务状态");
+    keys(state, ["nodeId", "task"], "存储的任务状态");
+    if (target === "global") {
+      if (Object.keys(state).length) throw new ActionStoreError();
+    } else {
+      if (state.nodeId !== target) throw new ActionStoreError();
+      const task = object(state.task, "存储的任务");
+      keys(task, ["taskId", "status", "generation", "revision", "model", "profile", "cwd"], "存储的任务");
+      if (typeof task.taskId !== "string" || !/^tk_[A-Za-z0-9_-]+$/.test(task.taskId)) throw new ActionStoreError();
+      text(task.status, "任务状态", 64);
+      integer(task.generation, "任务代数"); integer(task.revision, "任务修订号");
+      for (const key of ["model", "profile", "cwd"]) if (task[key] !== undefined && typeof task[key] !== "string") throw new ActionStoreError();
+    }
+    const form = object(record.form, "存储的表单");
+    keys(form, ["id", "source", "revision", "title", "createdAt", "fields", "submitLabel", "nodeId"], "存储的表单");
+    const expectedId = `agora.action.${action}.${hash(target).slice(0, 24)}${record.replace ? ".replace" : ""}`;
+    if (form.id !== expectedId || form.source !== "agora" || !Array.isArray(form.fields) || form.fields.length > 16 || typeof form.createdAt !== "string" || !Number.isFinite(Date.parse(form.createdAt))) throw new ActionStoreError();
+    integer(form.revision, "表单修订号");
+    text(form.title, "表单标题", 200); text(form.submitLabel, "表单按钮", 32);
+    if (form.nodeId !== state.nodeId) throw new ActionStoreError();
+    for (const value of form.fields) {
+      const field = object(value, "存储的表单字段");
+      keys(field, ["id", "label", "type", "required", "default", "options", "description"], "存储的表单字段");
+      text(field.id, "字段标识", 64); text(field.label, "字段标签", 200);
+      enumValue(field.type, ["text", "select", "textarea", "checkbox"], "字段类型");
+      if (field.required !== undefined && typeof field.required !== "boolean") throw new ActionStoreError();
+      if (field.default !== undefined && typeof field.default !== "string") throw new ActionStoreError();
+      if (field.description !== undefined) text(field.description, "字段描述", 1024);
+      if (field.options !== undefined && (!Array.isArray(field.options) || field.options.length > 16 || field.options.some(value => typeof value !== "string"))) throw new ActionStoreError();
+    }
+    return record as unknown as FormRecord;
+  }
+  async function initialize(): Promise<void> {
+    try {
+      const saved = await store.load();
+      if (saved === undefined) return;
+      canonical(saved);
+      const data = object(saved, "动作存储");
+      keys(data, ["identities", "forms", "versions"], "动作存储");
+      for (const [key, value] of entries(data.forms)) {
+        const item = object(value, "存储的表单索引");
+        keys(item, ["signature", "record", "expiresAt"], "存储的表单索引");
+        const record = recordFrom(item.record);
+        integer(item.expiresAt, "表单过期时间");
+        if (key !== record.form.id || item.signature !== hash({ action: record.action, target: record.target, state: record.state, replace: record.replace })) throw new ActionStoreError();
+        forms.set(key, { signature: item.signature as string, record, expiresAt: item.expiresAt as number });
+      }
+      for (const [key, value] of entries(data.versions)) {
+        const record = recordFrom(value);
+        if (key !== `${record.form.id}:${record.form.revision}` || !forms.has(record.form.id)) throw new ActionStoreError();
+        versions.set(key, record);
+      }
+      for (const item of forms.values()) {
+        if (hash(versions.get(`${item.record.form.id}:${item.record.form.revision}`)) !== hash(item.record)) throw new ActionStoreError();
+      }
+      for (const [key, value] of entries(data.identities)) {
+        text(key, "请求标识", 1024);
+        const entry = object(value, "存储的请求身份");
+        keys(entry, ["fingerprint", "expiresAt", "operation", "result"], "存储的请求身份");
+        if (typeof entry.fingerprint !== "string" || !/^[a-f0-9]{64}$/.test(entry.fingerprint)) throw new ActionStoreError();
+        integer(entry.expiresAt, "请求过期时间");
+        if (entry.operation !== undefined) {
+          const op = object(entry.operation, "存储的 HTTP 快照");
+          keys(op, ["method", "path", "body", "actAsUser"], "存储的 HTTP 快照");
+          if (op.method !== "POST" || typeof op.path !== "string" || !/^\/tasks(?:\/tk_[A-Za-z0-9_-]+\/(?:steer|stop|cleanup|recover))?$/.test(op.path) || (op.actAsUser !== undefined && op.actAsUser !== true) || (op.actAsUser === true) !== op.path.endsWith("/recover")) throw new ActionStoreError();
+          const body = object(op.body, "存储的 HTTP 参数");
+          if (op.path === "/tasks") {
+            keys(body, ["model", "profile", "prompt", "thinking", "isolation", "title", "cwd"], "存储的创建参数");
+            model(body.model); enumValue(body.profile, profiles, "权限档位"); text(body.prompt, "任务书", 1_000_000);
+            if (body.thinking !== undefined) enumValue(body.thinking, thinking, "推理级别");
+            if (body.isolation !== undefined) enumValue(body.isolation, ["none", "worktree"], "隔离方式");
+            if (body.title !== undefined) text(body.title, "任务标题", 200);
+            if (body.cwd !== undefined) text(body.cwd, "工作目录", 32768);
+          } else {
+            integer(body.expectedGeneration, "任务代数"); integer(body.expectedRevision, "任务修订号");
+            const action = op.path.slice(op.path.lastIndexOf("/") + 1);
+            const fields = action === "steer" ? ["message", "interrupt"] : action === "cleanup" ? ["discard"] : action === "recover" ? ["mode", ...(body.mode === "replace" ? ["model", "profile"] : [])] : [];
+            keys(body, [...fields, "expectedGeneration", "expectedRevision"], "存储的任务参数");
+            if (action === "steer") {
+              text(body.message, "返工指令", 1_000_000);
+              if (typeof body.interrupt !== "boolean") throw new ActionStoreError();
+            }
+            if (action === "cleanup" && typeof body.discard !== "boolean") throw new ActionStoreError();
+            if (action === "recover") {
+              enumValue(body.mode, ["resume", "reopen", "replace", "abandon"], "恢复方式");
+              if (body.mode === "replace") { model(body.model); enumValue(body.profile, profiles, "权限档位"); }
+            }
+          }
+        }
+        if (entry.result !== undefined) {
+          const result = object(entry.result, "存储的表单结果");
+          keys(result, ["status", "followUpForm"], "存储的表单结果");
+          if (entry.operation !== undefined || result.status !== "needsInput") throw new ActionStoreError();
+          const form = object(result.followUpForm, "存储的后续表单");
+          const version = versions.get(`${form.id}:${form.revision}`);
+          if (!version || hash(version.form) !== hash(form)) throw new ActionStoreError();
+        }
+        identities.set(key, entry as unknown as Identity);
+      }
+    } catch { throw new ActionStoreError(); }
+  }
+  async function persist(): Promise<void> {
+    if ([identities.size, forms.size, versions.size].some(size => size > 4096)) throw new ActionStoreError();
+    await store.save({ identities: [...identities], forms: [...forms], versions: [...versions] });
+  }
+  function exclusive<T>(work: () => Promise<T>): Promise<T> {
+    const result = queue.then(async () => {
+      await (initialized ??= initialize());
+      prune();
+      return work();
+    });
+    queue = result.catch(() => {});
+    return result;
+  }
   function prune(): void {
     const now = Date.now();
     for (const [key, item] of identities) if (item.expiresAt <= now) identities.delete(key);
@@ -161,7 +294,10 @@ export function createActions(runtime: PluginRuntime, execute: ExecuteOperation)
     const id = `agora.action.${action}.${hash(target).slice(0, 24)}${replace ? ".replace" : ""}`;
     const signature = hash({ action, target, state, replace });
     const old = forms.get(id);
-    if (old?.signature === signature) return old.record;
+    if (old?.signature === signature) {
+      old.expiresAt = Date.now() + DAY;
+      return old.record;
+    }
     let fields: FormField[];
     if (replace) fields = [
       { id: "model", label: "替换模型（provider/id）", type: "text", required: true, default: state.task?.model },
@@ -188,7 +324,8 @@ export function createActions(runtime: PluginRuntime, execute: ExecuteOperation)
       createdAt: old?.record.form.createdAt ?? new Date().toISOString(),
       fields, submitLabel: "提交", ...(state.nodeId ? { nodeId: state.nodeId } : {}),
     };
-    const record = { form, action, target, state: structuredClone(state), replace };
+    // JSON 表单不携带 undefined 默认值，首次返回与重启后的副本保持一致。
+    const record = { form: JSON.parse(JSON.stringify(form)) as FormSpec, action, target, state: structuredClone(state), replace };
     forms.set(id, { signature, record, expiresAt: Date.now() + DAY });
     versions.set(`${id}:${form.revision}`, record);
     return record;
@@ -215,7 +352,7 @@ export function createActions(runtime: PluginRuntime, execute: ExecuteOperation)
       if (inv.formId !== undefined || inv.formRevision !== undefined || inv.input !== undefined) throw new Invalid("停止任务不接受表单输入");
       const state = await readTarget(target);
       if (!allowed(action, state.task)) throw new Invalid("任务当前状态不允许停止");
-      return { path: `/tasks/${encoded(state.task!.taskId)}/stop`, body: conditions(state) };
+      return { method: "POST", path: `/tasks/${encoded(state.task!.taskId)}/stop`, body: conditions(state) };
     }
     if (inv.input === undefined) {
       if (inv.formId !== undefined || inv.formRevision !== undefined) throw new Invalid("表单输入缺失");
@@ -237,7 +374,7 @@ export function createActions(runtime: PluginRuntime, execute: ExecuteOperation)
       if (fields.isolation !== undefined) body.isolation = enumValue(fields.isolation, ["none", "worktree"], "隔离方式");
       if (fields.title !== undefined && fields.title !== "") body.title = text(fields.title, "任务标题", 200);
       if (fields.cwd !== undefined && fields.cwd !== "") body.cwd = text(fields.cwd, "工作目录", 32768);
-      return { path: "/tasks", body };
+      return { method: "POST", path: "/tasks", body };
     }
     if (action === "steer") {
       const fields = inputFields(inv, ["message", "interrupt"]);
@@ -254,50 +391,68 @@ export function createActions(runtime: PluginRuntime, execute: ExecuteOperation)
       if (mode === "replace") return { status: "needsInput", followUpForm: structuredClone(formFor(action, target, state, true).form) };
       body = { mode };
     }
-    return { path: `/tasks/${encoded(state.task!.taskId)}/${action}`, body: { ...body, ...conditions(state) }, ...(action === "recover" ? { actAsUser: true } : {}) };
+    return { method: "POST", path: `/tasks/${encoded(state.task!.taskId)}/${action}`, body: { ...body, ...conditions(state) }, ...(action === "recover" ? { actAsUser: true } : {}) };
   }
   return {
     list: () => structuredClone(catalog),
     async resolveForm(actionId, target) {
-      prune();
       try {
-        const action = actionName(actionId);
-        if (!runtime.online()) return null;
-        return await resolve(action, targetKey(target, action));
+        return await exclusive(async () => {
+          const action = actionName(actionId);
+          if (!runtime.online()) return null;
+          const form = await resolve(action, targetKey(target, action));
+          await persist();
+          return form;
+        });
       } catch { return null; }
     },
     async invoke(inv, origin) {
-      prune();
-      let action: TaskAction;
-      let entry: Identity;
-      let idempotencyKey: string;
+      let prepared: { operation: Operation; action: TaskAction; idempotencyKey: string } | ActionResult;
       try {
-        object(inv, "动作调用");
-        idempotencyKey = text(inv.idempotencyKey, "请求标识", 1024);
-        const fingerprint = hash(inv);
-        const old = identities.get(idempotencyKey);
-        if (old && old.fingerprint !== fingerprint) return { status: "idempotencyConflict", message: "同一请求标识不能用于不同的动作调用" };
-        entry = old ?? { fingerprint, expiresAt: Date.now() + DAY };
-        identities.set(idempotencyKey, entry);
-        keys(inv as unknown as JsonRecord, ["actionId", "target", "input", "formId", "formRevision", "idempotencyKey"], "动作调用");
-        action = actionName(inv.actionId);
-        if (!runtime.online()) return { status: "pending", message: "agora 尚未连接，请使用同一请求标识重试" };
-        if (!entry.operation) {
-          // 参数快照只生成一次；重试不重新注入更新后的任务修订号。
-          entry.preparing ??= prepare(structuredClone(inv), action);
-          let prepared: Operation | ActionResult;
-          try { prepared = await entry.preparing; } finally { entry.preparing = undefined; }
-          if ("status" in prepared) return prepared;
-          entry.operation = structuredClone(prepared);
-        }
+        // 调用者可能在等待磁盘或预检期间修改参数，因此先复制完整调用。
+        const invocation = structuredClone(inv);
+        prepared = await exclusive(async () => {
+          object(invocation, "动作调用");
+          const idempotencyKey = text(invocation.idempotencyKey, "请求标识", 1024);
+          const fingerprint = hash(invocation);
+          const old = identities.get(idempotencyKey);
+          if (old && old.fingerprint !== fingerprint) return { status: "idempotencyConflict", message: "同一请求标识不能用于不同的动作调用" };
+          const entry = old ?? { fingerprint, expiresAt: Date.now() + DAY };
+          identities.set(idempotencyKey, entry);
+          // 预检失败和离线也保留完整调用的指纹，禁止同 key 改写调用。
+          await persist();
+          keys(invocation as unknown as JsonRecord, ["actionId", "target", "input", "formId", "formRevision", "idempotencyKey"], "动作调用");
+          const action = actionName(invocation.actionId);
+          if (entry.result) return structuredClone(entry.result);
+          if (!runtime.online()) return { status: "pending", message: "agora 尚未连接，请使用同一请求标识重试" };
+          if (!entry.operation) {
+            // HTTP 快照与表单版本在执行前提交；重试不能重读任务修订号。
+            const result = await prepare(invocation, action);
+            if ("status" in result) {
+              if (result.status === "needsInput") {
+                entry.result = structuredClone(result);
+                entry.expiresAt = Date.now() + DAY;
+                const form = forms.get(result.followUpForm!.id)!;
+                form.expiresAt = Math.max(form.expiresAt, entry.expiresAt);
+              }
+              await persist();
+              return result;
+            }
+            entry.operation = structuredClone(result);
+            entry.expiresAt = Date.now() + DAY;
+            await persist();
+          }
+          return { operation: structuredClone(entry.operation), action, idempotencyKey };
+        });
       } catch (error) {
-        if (error instanceof Invalid) return { status: "failed", message: error.message };
+        if (error instanceof Invalid || error instanceof ActionStoreError) return { status: "failed", message: error.message };
         if (error instanceof ReadReply) return outcome(error.reply, "stop");
         return { status: "pending", message: "网络结果未知，请使用同一请求标识重试" };
       }
+      if ("status" in prepared) return prepared;
       try {
-        const operation = entry.operation!;
-        return outcome(await execute("POST", operation.path, structuredClone(operation.body), {
+        const { operation, action, idempotencyKey } = prepared;
+        return outcome(await execute(operation.method, operation.path, structuredClone(operation.body), {
           idempotencyKey, origin, ...(operation.actAsUser ? { actAsUser: true } : {}),
         }), action);
       } catch {
