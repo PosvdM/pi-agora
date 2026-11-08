@@ -180,31 +180,72 @@ async function tail(client: AgoraClient, id: string, options: Map<string, string
   const cancel = () => controller.abort();
   process.once("SIGINT", cancel);
   const signal = deps.signal ? AbortSignal.any([controller.signal, deps.signal]) : controller.signal;
+  const refresh = async () => {
+    let abort!: () => void;
+    const cancelled = new Promise<never>((_, reject) => {
+      abort = () => reject(signal.reason);
+      signal.addEventListener("abort", abort, { once: true });
+    });
+    try { signal.throwIfAborted(); await Promise.race([client.refresh(), cancelled]); }
+    finally { signal.removeEventListener("abort", abort); }
+  };
+  let cursor: { epoch: string; seq: number } | undefined;
+  let terminal = false, ended = false;
   try {
+    if (client.expiresAt && Date.parse(client.expiresAt) - Date.now() < 60_000) await refresh();
     while (!signal.aborted) {
-      const snap = row(await client.request("GET", `/v1/sessions/${encodeURIComponent(id)}/snapshot?${query(options)}`, undefined, { signal }));
-      io.out(JSON.stringify(snap, null, 2));
-      const cursor = row(snap.cursor);
-      if (typeof cursor.epoch !== "string" || !Number.isSafeInteger(cursor.seq) || Number(cursor.seq) < 0) throw new Error("快照缺少有效流游标");
-      if (client.expiresAt && Date.parse(client.expiresAt) - Date.now() < 60_000) await client.refresh();
-      const q = new URLSearchParams({ epoch: cursor.epoch, afterSeq: String(cursor.seq) });
-      const response = await deps.fetch(`${client.url}/v1/sessions/${encodeURIComponent(id)}/stream?${q}`, {
-        headers: { Authorization: `Bearer ${client.token}`, "Agora-Protocol": String(PROTOCOL_VERSION), Accept: "text/event-stream" }, redirect: "error", signal,
-      });
-      if (!response.ok) throw new AgoraHttpError(response.status, "stream_failed");
-      if (!response.body || !response.headers.get("content-type")?.startsWith("text/event-stream")) throw new Error("daemon 未返回 SSE 流");
-      let resync = false, ended = false;
-      let terminal = ["completed", "failed", "stopped", "interrupted"].includes(String(snap.status));
-      for await (const event of readSse(response.body)) {
-        if (event.event === "resync" || (event.data && typeof event.data === "object" && (event.data as Row).type === "resync")) { resync = true; break; }
-        const data = event.data && typeof event.data === "object" ? event.data as Row : {};
-        const change = data.event && typeof data.event === "object" ? data.event as Row : data;
-        if (change.type === "agora_run" && change.phase === "exited") ended = true;
-        if (change.type === "agora_status") terminal = ["completed", "failed", "stopped", "interrupted"].includes(String(change.status));
-        io.out(JSON.stringify(event));
+      if (!cursor) {
+        const snap = row(await client.request("GET", `/v1/sessions/${encodeURIComponent(id)}/snapshot?${query(options)}`, undefined, { signal }));
+        io.out(JSON.stringify(snap, null, 2));
+        const cut = row(snap.cursor);
+        if (typeof cut.epoch !== "string" || !Number.isSafeInteger(cut.seq) || Number(cut.seq) < 0) throw new Error("快照缺少有效流游标");
+        cursor = { epoch: cut.epoch, seq: Number(cut.seq) };
+        terminal = ["completed", "failed", "stopped", "interrupted"].includes(String(snap.status)) &&
+          (snap.inFlight as Row | undefined)?.phase !== "stopping";
+        ended = false;
       }
-      if (!resync && (ended || terminal)) return;
-      if (!resync && !signal.aborted) throw new AgoraConnectionError();
+      const subscription = new AbortController();
+      const streamSignal = AbortSignal.any([signal, subscription.signal]);
+      let renewal = false, resync = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const remaining = Date.parse(client.expiresAt) - Date.now();
+      if (Number.isFinite(remaining)) {
+        // 留出续期余量；短有效期也在半程重订阅，不等服务端鉴权断流。
+        timer = setTimeout(() => { renewal = true; subscription.abort(); }, Math.max(0, Math.min(2_147_483_647, remaining - Math.min(60_000, remaining / 2))));
+        timer.unref();
+      }
+      try {
+        const q = new URLSearchParams({ epoch: cursor.epoch, afterSeq: String(cursor.seq) });
+        const response = await deps.fetch(`${client.url}/v1/sessions/${encodeURIComponent(id)}/stream?${q}`, {
+          headers: { Authorization: `Bearer ${client.token}`, "Agora-Protocol": String(PROTOCOL_VERSION), Accept: "text/event-stream" }, redirect: "error", signal: streamSignal,
+        });
+        if (!response.ok) throw new AgoraHttpError(response.status, "stream_failed");
+        if (!response.body || !response.headers.get("content-type")?.startsWith("text/event-stream")) throw new Error("daemon 未返回 SSE 流");
+        for await (const event of readSse(response.body)) {
+          const data = event.data && typeof event.data === "object" ? event.data as Row : {};
+          const change = data.event && typeof data.event === "object" ? data.event as Row : data;
+          if (event.event === "resync" || change.type === "resync") { resync = true; break; }
+          if (data.cursor !== undefined) {
+            const next = row(data.cursor);
+            if (next.epoch !== cursor.epoch || !Number.isSafeInteger(next.seq) || Number(next.seq) <= cursor.seq) throw new Error("SSE 事件游标无效");
+            cursor = { epoch: cursor.epoch, seq: Number(next.seq) };
+          }
+          if (change.type === "agora_run" && change.phase === "exited") ended = true;
+          if (change.type === "agora_status") terminal = ["completed", "failed", "stopped", "interrupted"].includes(String(change.status)) && change.phase !== "stopping";
+          io.out(JSON.stringify(event));
+        }
+      } catch (error) {
+        if (!renewal || !streamSignal.aborted || (error instanceof Error && error.name !== "AbortError")) throw error;
+      } finally {
+        if (timer) clearTimeout(timer);
+        subscription.abort();
+      }
+      if (signal.aborted) return;
+      if (resync) { cursor = undefined; continue; }
+      if (!renewal && (ended || terminal)) return;
+      if (!renewal) throw new AgoraConnectionError();
+      // 旧流绑定旧 Bearer；先取消，再续期并从最后已输出的游标回放。
+      await refresh();
     }
   } catch (error) { if (!signal.aborted) throw error; }
   finally { process.removeListener("SIGINT", cancel); controller.abort(); }

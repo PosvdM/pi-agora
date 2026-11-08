@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test, after } from 'node:test';
 import { EventEmitter } from 'node:events';
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, readFile, writeFile, appendFile, rm, readdir, link } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile, appendFile, rm, readdir, link, realpath } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -146,7 +146,7 @@ function stream(views, cursor) {
   return { request, response };
 }
 async function setup(t, entries = []) {
-  const home = await mkdtemp(path.join(tmpdir(), 'agora-session-view-'));
+  const home = await realpath(await mkdtemp(path.join(tmpdir(), 'agora-session-view-')));
   const directory = path.join(home, 'sessions', 's1');
   await mkdir(directory, { recursive: true });
   const file = path.join(directory, 'session.jsonl');
@@ -157,7 +157,7 @@ async function setup(t, entries = []) {
     home,
     session(id) { if (id !== 's1') throw new Error('会话不存在'); return row; },
     sessionUsage() { return undefined; },
-    get(sql) { return sql.includes('process_runs') ? undefined : { status_detail: '模型生成中' }; },
+    get(sql) { return sql.includes('process_runs') ? fixture.run : { status_detail: '模型生成中' }; },
   };
   const views = new SessionViews(store, 'daemon');
   t.after(async () => { await views.close().catch(() => {}); fixtures.delete(home); await rm(home, { recursive: true, force: true }); });
@@ -180,6 +180,38 @@ function emitText(driver, text = '回复', timestamp = 2, end = true) {
   if (end) driver.emit({ type: 'message_end', message: value });
   return value;
 }
+
+test('会话视图：全新实例读取历史快照，回放后 EOF；未确认 run 保留 stopping 流', async t => {
+  for (const [status, run, ended] of [
+    ['completed', undefined, true],
+    ['stopped', { id: 'old', state: 'exited', exited_at: '2026-01-01', cleanup_error: null }, true],
+    ['completed', { id: 'old', state: 'ready', exited_at: null, cleanup_error: null }, false],
+    ['stopped', { id: 'old', state: 'stopping', exited_at: null, cleanup_error: '退出未确认' }, false],
+    ['stopped', { id: 'old', state: 'exited', exited_at: '2026-01-01', cleanup_error: '清理未确认' }, false],
+  ]) {
+    await t.test(`${status}/${run?.state ?? '无 run'}/${run?.cleanup_error ?? '无清理错误'}`, async t => {
+      const f = await setup(t, [entry('history', null)]);
+      f.row.status = status;
+      // fixture 与 store 使用同一条运行记录，实例未调用 begin，也没有 DriverHandle。
+      fixtures.get(f.home).run = run;
+      const snapshot = await f.views.snapshot('s1');
+      assert.deepEqual(snapshot.entries.map(value => value.id), ['history']);
+      assert.equal(snapshot.inFlight.phase, ended ? 'idle' : 'stopping');
+      const { response } = stream(f.views, { ...snapshot.cursor, seq: 0 });
+      assert.deepEqual(response.values().map(value => value.event.type), ['agora_entries']);
+      assert.equal(response.writableEnded, ended);
+      assert.equal(stream(f.views, snapshot.cursor).response.writableEnded, ended);
+      if (!ended) {
+        await f.views.begin('s1', run.id, f.driver);
+        assert.equal(response.writableEnded, true);
+        const live = stream(f.views, (await f.views.snapshot('s1')).cursor).response;
+        emitText(f.driver, '迟到数据', 2, false);
+        assert.equal(live.writableEnded, false);
+        assert.ok(live.values().some(value => value.event.assistantMessageEvent?.delta === '迟到数据'));
+      }
+    });
+  }
+});
 
 test('会话视图：首次 begin 取得 RPC 条目，历史沿当前分支且排除 before', async t => {
   const values = [entry('a', null), entry('abandoned', 'a'), entry('b', 'a'), entry('c', 'b')];
