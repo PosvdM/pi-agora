@@ -241,3 +241,184 @@ test('主机握手的一次性 token 兑换在响应丢失后不重放', { timeo
   assert.equal(f.calls.filter(call => call.path === '/v1/auth/challenge').length, 1);
   assert.equal(f.calls.filter(call => call.path === '/v1/auth/token').length, 1);
 });
+
+test('真实 ECONNREFUSED 保留最后一次 fetch 异常和底层错误码', { timeout: 5000 }, async t => {
+  const server = createServer();
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const url = `http://127.0.0.1:${server.address().port}`;
+  await new Promise(resolve => server.close(resolve));
+  const client = createClient({ url, token: 'diagnostic-token' });
+  t.after(() => client.close());
+  const failures = [];
+  const realFetch = globalThis.fetch;
+  t.mock.method(globalThis, 'fetch', async (...args) => {
+    try { return await realFetch(...args); }
+    catch (error) { failures.push(error); throw error; }
+  });
+  await assert.rejects(client.request('GET', '/v1/tasks', undefined, { timeoutMs: 2000 }), error => {
+    assert.ok(error instanceof AgoraConnectionError);
+    assert.equal(error.cause, failures.at(-1));
+    assert.equal(error.cause.cause.code, 'ECONNREFUSED');
+    assert.match(error.message, /ECONNREFUSED/);
+    assert.ok(!error.message.includes('diagnostic-token'));
+    return true;
+  });
+  assert.equal(failures.length, 3);
+});
+
+test('ETIMEDOUT 重试三次并保留最后一次异常，不回显底层 message', { timeout: 5000 }, async t => {
+  const client = createClient({ url: 'http://127.0.0.1:12345', token: 'private-token' });
+  t.after(() => client.close());
+  const failures = [];
+  t.mock.method(globalThis, 'fetch', async () => {
+    const error = new TypeError('fetch failed', { cause: Object.assign(new Error('private-token'), { code: 'ETIMEDOUT' }) });
+    failures.push(error);
+    throw error;
+  });
+  await assert.rejects(client.request('GET', '/v1/tasks'), error => {
+    assert.ok(error instanceof AgoraConnectionError);
+    assert.equal(error.cause, failures.at(-1));
+    assert.equal(error.message, '无法连接 agora，请检查后台进程（ETIMEDOUT）');
+    return true;
+  });
+  assert.equal(failures.length, 3);
+});
+
+for (const [label, failure, codes] of [
+  ['多层 cause', new TypeError('fetch failed', { cause: new Error('wrapper', {
+    cause: Object.assign(new Error('timeout'), { code: 'ETIMEDOUT' }),
+  }) }), ['ETIMEDOUT']],
+  ['AggregateError', new TypeError('fetch failed', { cause: new AggregateError([
+    Object.assign(new Error('refused'), { code: 'ECONNREFUSED' }),
+    new Error('wrapper', { cause: Object.assign(new Error('timeout'), { code: 'ETIMEDOUT' }) }),
+  ]) }), ['ECONNREFUSED', 'ETIMEDOUT']],
+  ['无码异常', new TypeError('fetch failed'), []],
+]) {
+  test(`${label} 保留原始 cause，诊断遍历不扩大重试范围`, async t => {
+    const client = createClient({ url: 'http://127.0.0.1:12345', token: 'token' });
+    t.after(() => client.close());
+    const fetch = t.mock.method(globalThis, 'fetch', async () => { throw failure; });
+    await assert.rejects(client.request('GET', '/v1/tasks'), error => {
+      assert.ok(error instanceof AgoraConnectionError);
+      assert.equal(error.cause, failure);
+      for (const code of codes) assert.ok(error.message.includes(code));
+      if (!codes.length) assert.equal(error.message, '无法连接 agora，请检查后台进程');
+      return true;
+    });
+    assert.equal(fetch.mock.callCount(), 1);
+  });
+}
+
+test('诊断遍历容忍循环引用、去重错误码且不回显任意字符串', () => {
+  const nested = Object.assign(new Error('refused'), { code: 'ECONNREFUSED' });
+  const aggregate = new AggregateError([nested, nested, { code: 'private-token\nsecret' }, { code: 23 }]);
+  aggregate.cause = aggregate;
+  nested.cause = aggregate;
+  aggregate.errors.push(aggregate);
+  const error = new AgoraConnectionError({ cause: aggregate });
+  assert.equal(error.cause, aggregate);
+  assert.equal(error.message, '无法连接 agora，请检查后台进程（ECONNREFUSED）');
+  assert.equal(new AgoraConnectionError().name, 'AgoraConnectionError');
+  assert.equal(Object.hasOwn(new AgoraConnectionError(), 'cause'), false);
+});
+
+for (const status of [200, 401]) {
+  test(`读取 HTTP ${status} 响应正文中断保留原异常和重试次数`, { timeout: 5000 }, async t => {
+    const client = createClient({ url: 'http://127.0.0.1:12345', token: 'token' });
+    t.after(() => client.close());
+    const failure = new TypeError('terminated', { cause: Object.assign(new Error('socket closed'), { code: 'UND_ERR_SOCKET' }) });
+    const fetch = t.mock.method(globalThis, 'fetch', async () => ({ ok: status === 200,
+      async text() { throw failure; } }));
+    await assert.rejects(client.request('GET', '/v1/tasks'), error => {
+      assert.ok(error instanceof AgoraConnectionError);
+      assert.equal(error.cause, failure);
+      assert.match(error.message, /UND_ERR_SOCKET/);
+      return true;
+    });
+    assert.equal(fetch.mock.callCount(), status === 200 ? 3 : 1);
+  });
+}
+
+test('读取正文的非传输异常仍是无效响应且不重试', async t => {
+  const client = createClient({ url: 'http://127.0.0.1:12345', token: 'token' });
+  t.after(() => client.close());
+  const fetch = t.mock.method(globalThis, 'fetch', async () => ({ ok: true,
+    async text() { throw new Error('body failure'); } }));
+  await assert.rejects(client.request('GET', '/v1/tasks'), error => {
+    assert.ok(!(error instanceof AgoraConnectionError));
+    assert.equal(error.message, 'agora 返回了无效响应');
+    return true;
+  });
+  assert.equal(fetch.mock.callCount(), 1);
+});
+
+for (const action of ['取消', '关闭']) {
+  test(`等待响应时${action}保持原错误语义`, async t => {
+    const controller = new AbortController();
+    const client = createClient({ url: 'http://127.0.0.1:12345', token: 'token' });
+    t.after(() => client.close());
+    const failure = new DOMException('aborted', 'AbortError');
+    const fetch = t.mock.method(globalThis, 'fetch', async (_url, { signal }) => new Promise((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(failure), { once: true });
+      queueMicrotask(() => action === '取消' ? controller.abort() : client.close());
+    }));
+    await assert.rejects(client.request('GET', '/v1/tasks', undefined, { signal: controller.signal }), error => {
+      if (action === '取消') {
+        assert.ok(!(error instanceof AgoraConnectionError));
+        assert.equal(error.message, 'agora 请求已取消');
+        assert.equal(Object.hasOwn(error, 'cause'), false);
+      } else {
+        assert.ok(error instanceof AgoraConnectionError);
+        assert.equal(error.cause, failure);
+        assert.equal(error.message, '无法连接 agora，请检查后台进程');
+      }
+      return true;
+    });
+    assert.equal(fetch.mock.callCount(), 1);
+  });
+}
+
+for (const action of ['取消', '关闭', '超时']) {
+  test(`重试间隔${action}保留等待异常或调用方取消语义`, { timeout: 5000 }, async t => {
+    const controller = new AbortController();
+    const client = createClient({ url: 'http://127.0.0.1:12345', token: 'token' });
+    t.after(() => client.close());
+    let signal;
+    let timer;
+    t.after(() => clearTimeout(timer));
+    const fetch = t.mock.method(globalThis, 'fetch', async (_url, options) => {
+      signal = options.signal;
+      if (action !== '超时') timer = setTimeout(() => action === '取消' ? controller.abort() : client.close(), 0);
+      throw Object.assign(new Error('timeout'), { code: 'ETIMEDOUT' });
+    });
+    await assert.rejects(client.request('GET', '/v1/tasks', undefined,
+      { signal: controller.signal, timeoutMs: action === '超时' ? 10 : 1000 }), error => {
+      if (action === '取消') {
+        assert.ok(!(error instanceof AgoraConnectionError));
+        assert.equal(error.message, 'agora 请求已取消');
+      } else {
+        assert.ok(error instanceof AgoraConnectionError);
+        assert.equal(error.cause.name, 'AbortError');
+        assert.equal(error.cause.code, 'ABORT_ERR');
+        assert.equal(error.cause.cause, signal.reason);
+        assert.match(error.message, /ABORT_ERR/);
+      }
+      return true;
+    });
+    assert.equal(fetch.mock.callCount(), 1);
+  });
+}
+
+test('请求前已经关闭时不发送请求且不伪造 cause', async t => {
+  const client = createClient({ url: 'http://127.0.0.1:12345', token: 'token' });
+  client.close();
+  const fetch = t.mock.method(globalThis, 'fetch', async () => { throw new Error('不应发送请求'); });
+  await assert.rejects(client.request('GET', '/v1/tasks'), error => {
+    assert.ok(error instanceof AgoraConnectionError);
+    assert.equal(error.message, '无法连接 agora，请检查后台进程');
+    assert.equal(Object.hasOwn(error, 'cause'), false);
+    return true;
+  });
+  assert.equal(fetch.mock.callCount(), 0);
+});
