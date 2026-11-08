@@ -330,7 +330,11 @@ export function createViews(runtime: PluginRuntime): {
       if (req.expectedRevision !== undefined) throw new Error("agora 未提供会话控制修订号，请刷新后重试");
       const item = await get<SessionItem>(`/v1/sessions/${sessionId(ref)}`);
       if (!item.taskId || item.isCurrent === false) return { status: "nothingToStop" };
-      const reply = await runtime.api.request("POST", `/v1/tasks/${encoded(item.taskId)}/stop`, {},
+      const task = await get(`/v1/tasks/${encoded(item.taskId)}`);
+      if (task.taskId !== item.taskId || task.agoraSessionId !== ref.id) throw new Error("任务状态与目标不匹配");
+      if (!Number.isSafeInteger(task.generation) || task.generation < 1 || !Number.isSafeInteger(task.revision) || task.revision < 1) throw new Error("任务版本无效，请重新读取任务");
+      const reply = await runtime.api.request("POST", `/v1/tasks/${encoded(item.taskId)}/stop`,
+        { expectedGeneration: task.generation, expectedRevision: task.revision },
         { signal: lifetime.signal });
       if (reply.status < 200 || reply.status >= 300) throw new Error(message(reply));
       void refreshHolds().catch(warn);

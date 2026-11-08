@@ -18,7 +18,7 @@ function setup({ dataDir, parent = { kind: "main", piSessionId: "main-one" }, st
     directories.push(dataDir);
   }
   const session = { kind: "task", taskId: "tk_current", agoraSessionId: "as_current", isCurrent: true, parent };
-  const task = { taskId: "tk_current", status, generation: 2, revision: 7, model: "provider/model", profile: "explore", cwd: "D:/workspace" };
+  const task = { taskId: "tk_current", agoraSessionId: "as_current", status, generation: 2, revision: 7, model: "provider/model", profile: "explore", cwd: "D:/workspace" };
   const calls = [], reads = [], replies = [];
   let readFailure = false;
   const actions = createActions({

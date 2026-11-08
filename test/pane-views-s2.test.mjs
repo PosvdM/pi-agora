@@ -243,11 +243,13 @@ test('会话视图透传条目与历史，仅映射 agora 协议事件', async t
   assert.deepEqual(h.views.renderers.customMessages.map(value => value.customType), ['agora:notice', 'agora:board-delta', 'agora:meeting-turn']);
 });
 
-test('会话席位只读，返工与停止不伪造控制修订号', async t => {
+test('会话席位只读，停止使用任务版本且不伪造会话控制修订号', async t => {
   let current = item('s1', { parent: { kind: 'user' } });
   let steerStatus = 200, stopStatus = 200;
   const h = setup(t, ({ method, path }) => {
     if (method === 'GET' && path === '/v1/sessions/s1') return { status: 200, body: current };
+    if (method === 'GET' && path === '/v1/tasks/t-s1') return { status: 200,
+      body: { taskId: 't-s1', agoraSessionId: 's1', status: 'running', generation: 3, revision: 19 } };
     if (path.endsWith('/steer')) return { status: steerStatus, body: steerStatus === 200 ? {} : { error: { message: 'steer denied' } } };
     if (path.endsWith('/stop')) return { status: stopStatus, body: stopStatus === 200
       ? { droppedSteers: [{ message: '【agora 返工 st_1，第 2 代】\n原始\n文本' }, { message: '未加标注' }] }
@@ -266,7 +268,7 @@ test('会话席位只读，返工与停止不伪造控制修订号', async t => 
   assert.deepEqual(await h.views.sessions.send(ref, { text: 'x' }, req), { status: 'rejected', message: 'steer denied' });
   const result = await h.views.sessions.abort(ref, { clearQueue: true, origin: {} });
   assert.deepEqual(result, { status: 'done', clearedText: ['原始\n文本', '未加标注'] });
-  assert.equal('expectedRevision' in h.requests.find(request => request.path.endsWith('/stop')).body, false);
+  assert.deepEqual(h.requests.find(request => request.path.endsWith('/stop')).body, { expectedGeneration: 3, expectedRevision: 19 });
   assert.deepEqual(await h.views.sessions.abort(ref, { clearQueue: false, origin: {} }), { status: 'done' });
   stopStatus = 409;
   await assert.rejects(h.views.sessions.abort(ref, { clearQueue: true, origin: {} }), /stop incomplete/);
