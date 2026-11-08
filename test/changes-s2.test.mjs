@@ -140,9 +140,21 @@ test('按父节点分页绑定 parent、snapshot、openNodeId、recentSince 和�
   assert.equal(own.items[0].hasChildren, true);
   assert.equal(own.items[0].childCount, 1);
   const hot = listSessions(store, host, params('snapshot=1&openNodeId=agora:session:a&openNodeId=agora:session:b'), 1);
-  assert.ok(hot.nextCursor);
-  assert.throws(() => listSessions(store, host, params({ snapshot: '1', openNodeId: 'agora:session:a', cursor: hot.nextCursor }), 1), /游标/);
-  assert.throws(() => listSessions(store, host, params({ snapshot: '1', recentSince: OLD, cursor: hot.nextCursor }), 1), /游标/);
+  assert.equal(hot.nextCursor, null);
+  assert.ok(hot.items.some(item => item.agoraSessionId === 'a'));
+  assert.ok(hot.items.some(item => item.agoraSessionId === 'b'));
+  assert.throws(() => listSessions(store, host, params({ snapshot: '1', openNodeId: 'agora:session:a', cursor: page.nextCursor }), 1), /游标/);
+  assert.throws(() => listSessions(store, host, params({ snapshot: '1', recentSince: OLD, cursor: page.nextCursor }), 1), /游标/);
+});
+
+test('热快照在单个切点返回超过默认页大小的全部节点', async t => {
+  const store = await database(t);
+  main(store);
+  for (let index = 0; index < 60; index++) seed(store, `hot-${index}`, { status: 'running' });
+  const snapshot = listSessions(store, host, params('snapshot=1'), 50);
+  assert.equal(snapshot.items.length, 60);
+  assert.equal(snapshot.nextCursor, null);
+  assert.equal(snapshot.changesCursor.seq, 60);
 });
 
 test('热快照包含祖先与状态映射，继承会话保留召集关系，冷节点不混入', async t => {

@@ -14,7 +14,7 @@ const RESULT_LIMIT = 20;
 function status(value: string): NodeStatus {
   const mapped: Record<string, NodeStatus> = {
     created: "waiting", waiting_decision: "waiting", waiting_children: "waiting",
-    quota_paused: "paused", completed: "done", convening: "waiting", queued: "waiting",
+    quota_paused: "paused", budget_paused: "paused", completed: "done", convening: "waiting", queued: "waiting",
     sealed: "running", critique: "running", merging: "running", reviewing: "running",
     minuting: "running", ended: "done",
   };
@@ -39,11 +39,11 @@ function node(item: SessionItem, revision = item.revision): TreeNode {
   if (steerable) capabilities.push("send", "action:agora.task.steer");
   if (item.taskId && !TERMINAL.has(item.status)) capabilities.push("abort", "action:agora.task.stop");
   if (item.taskId && ["completed", "failed"].includes(item.status)) capabilities.push("action:agora.task.cleanup");
-  if (item.taskId && ["quota_paused", "interrupted"].includes(item.status)) capabilities.push("action:agora.task.recover");
+  if (item.taskId && ["quota_paused", "budget_paused", "interrupted"].includes(item.status)) capabilities.push("action:agora.task.recover");
   return {
     id: nodeId(item.agoraSessionId), source: "agora", kind: "session",
     parentId: item.parentId ?? (item.taskId ? USER_TASKS : null), title: item.title,
-    badge: item.taskId ? "子代理" : item.kind === "scribe" ? "书记" : "参会",
+    badge: item.taskId ? "子代理" : item.kind === "secretary" ? "书记" : "参会",
     sessionRef: { source: "agora", id: item.agoraSessionId }, status: status(item.status),
     ...(item.statusDetail ? { statusDetail: item.statusDetail } : {}),
     availability: item.archiveState === "missing" ? "missing" : item.archiveState === "archived" ? "archived" : "online",
@@ -225,6 +225,9 @@ export function createViews(runtime: PluginRuntime): {
             }
             runtime.context.panelChanged({ panelId: TASK_PANEL, revision, nodeId: nodeId(id) });
             void refreshHolds().catch(warn);
+          } else {
+            // 非树对象也推进来源水位，避免分页等待一个永远不会推送的修订号。
+            emit({ type: "upsert", revision, node: group(revision) });
           }
           seq = revision;
         }).catch(error => { if (!stopped && stream!.active()) { warn(error); reset(); } });
@@ -283,9 +286,9 @@ export function createViews(runtime: PluginRuntime): {
       const item = await get<SessionItem>(`/v1/sessions/${sessionId(ref)}`);
       if (!item.taskId || !STEERABLE.has(item.status)) return { status: "rejected", message: "此会话当前不能返工" };
       const reply = await runtime.api.request("POST", `/v1/tasks/${encoded(item.taskId)}/steer`,
-        { message: input.text, interrupt: false }, { actAsUser: true, idempotencyKey: req.idempotencyKey, signal: lifetime.signal });
+        { message: input.text, interrupt: false }, { idempotencyKey: req.idempotencyKey, signal: lifetime.signal });
       if (reply.status < 200 || reply.status >= 300) return {
-        status: reply.body?.error?.code === "idempotency_conflict" ? "idempotencyConflict" : "rejected", message: message(reply),
+        status: ["idempotency_mismatch", "idempotency_conflict"].includes(reply.body?.error?.code) ? "idempotencyConflict" : "rejected", message: message(reply),
       };
       return { status: reply.status === 202 ? "pending" : "accepted" };
     },
@@ -294,7 +297,7 @@ export function createViews(runtime: PluginRuntime): {
       const item = await get<SessionItem>(`/v1/sessions/${sessionId(ref)}`);
       if (!item.taskId) return { status: "nothingToStop" };
       const reply = await runtime.api.request("POST", `/v1/tasks/${encoded(item.taskId)}/stop`, {},
-        { actAsUser: true, signal: lifetime.signal });
+        { signal: lifetime.signal });
       if (reply.status < 200 || reply.status >= 300) throw new Error(message(reply));
       void refreshHolds().catch(warn);
       // stop 总会清队列；clearQueue 只决定是否把原文交还输入框。

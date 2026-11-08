@@ -62,13 +62,13 @@ function change(stream, seq, objectType = 'session', objectId = 's1', patch = {}
   stream.emit({ type: 'change', data: { cursor: { epoch: 'db', seq }, objectType, objectId, ...patch } });
 }
 
-test('tree maps snapshot filters, virtual user root, statuses and children epochs', async t => {
+test('树映射热快照、虚拟根、状态与子节点分页 epoch', async t => {
   const rows = [
     item('created', { status: 'created', parentId: null }),
     item('paused', { status: 'quota_paused' }),
     item('done', { status: 'completed', archiveState: 'missing' }),
     item('interrupted', { status: 'interrupted' }),
-    item('seat', { taskId: null, kind: 'scribe', status: 'completed', originToolCall: {
+    item('seat', { taskId: null, kind: 'secretary', status: 'completed', originToolCall: {
       sessionRef: { source: 'pane', id: 'main' }, toolCallId: 'call' } }),
   ];
   const h = setup(t, ({ url }) => url.pathname === '/v1/sessions' ? { status: 200, body: page(rows) } : undefined);
@@ -96,7 +96,7 @@ test('tree maps snapshot filters, virtual user root, statuses and children epoch
   assert.equal(childParams.get('parent'), 'pane:session:main'); assert.equal(childParams.get('cursor'), 'cursor?');
 });
 
-test('tree serializes task-to-session reads, advances past non-tree changes and uses source revisions', async t => {
+test('树串行读取任务会话，非树对象推进来源修订号', async t => {
   const task = deferred(), session = deferred();
   const h = setup(t, ({ path }) => {
     if (path === '/v1/tasks/t1') return task.promise;
@@ -118,13 +118,14 @@ test('tree serializes task-to-session reads, advances past non-tree changes and 
   assert.deepEqual(h.requests.map(req => req.path), ['/v1/tasks/t1', '/v1/sessions/s1']);
   session.resolve({ status: 200, body: item() });
   await tick();
-  assert.deepEqual(emitted.map(value => [value.type, value.revision]), [['upsert', 1], ['upsert', 2], ['remove', 4]]);
+  assert.deepEqual(emitted.map(value => [value.type, value.revision]), [['upsert', 1], ['upsert', 2], ['upsert', 3], ['remove', 4]]);
   assert.equal(emitted[1].node.revision, 2);
-  assert.equal(emitted[2].id, 'agora:session:s2');
+  assert.equal(emitted[2].node.id, 'agora:root:user-tasks');
+  assert.equal(emitted[3].id, 'agora:session:s2');
   assert.equal(h.panels[0].nodeId, 'agora:session:s1');
 });
 
-test('tree reset and cancellation invalidate queued reads without late upserts', async t => {
+test('树重置和取消使排队读取失效，禁止迟到更新', async t => {
   for (const mode of ['reset', 'unsubscribe', 'dispose']) {
     const pending = deferred();
     const h = setup(t, ({ path }) => path === '/v1/sessions/s1' ? pending.promise : undefined);
@@ -143,7 +144,7 @@ test('tree reset and cancellation invalidate queued reads without late upserts',
   }
 });
 
-test('HTTP failures reset trees instead of forging deletions; only tombstones remove nodes', async t => {
+test('HTTP 失败触发重置，仅 tombstone 删除节点', async t => {
   const h = setup(t, ({ path }) => path === '/v1/sessions/s1'
     ? { status: 404, body: { error: { message: 'missing metadata' } } } : undefined);
   const emitted = [];
@@ -162,7 +163,7 @@ test('HTTP failures reset trees instead of forging deletions; only tombstones re
   assert.deepEqual(removed, [{ type: 'remove', revision: 11, id: 'agora:session:s1' }]);
 });
 
-test('session views pass entries/history through and map only agora protocol events', async t => {
+test('会话视图透传条目与历史，仅映射 agora 协议事件', async t => {
   const entries = [{ opaquePiShape: { content: ['no parsing'] } }];
   const inFlight = { phase: 'streaming', tools: [], queue: { steering: [], followUp: [] } };
   const h = setup(t, ({ url }) => {
@@ -200,7 +201,7 @@ test('session views pass entries/history through and map only agora protocol eve
   assert.deepEqual(h.views.renderers.customMessages.map(value => value.customType), ['agora:notice', 'agora:board-delta', 'agora:meeting-turn']);
 });
 
-test('sessions enforce read-only seats and map steer/stop without inventing concurrency checks', async t => {
+test('会话席位只读，返工与停止不伪造控制修订号', async t => {
   let current = item();
   let steerStatus = 200, stopStatus = 200;
   const h = setup(t, ({ method, path }) => {
@@ -218,7 +219,7 @@ test('sessions enforce read-only seats and map steer/stop without inventing conc
   assert.deepEqual(await h.views.sessions.send(ref, { text: '补充说明' }, req), { status: 'accepted' });
   assert.deepEqual(h.requests.at(-1).body, { message: '补充说明', interrupt: false });
   assert.equal(h.requests.at(-1).options.idempotencyKey, 'send-key');
-  assert.equal(h.requests.at(-1).options.actAsUser, true);
+  assert.equal(h.requests.at(-1).options.actAsUser, undefined);
   steerStatus = 403;
   assert.deepEqual(await h.views.sessions.send(ref, { text: 'x' }, req), { status: 'rejected', message: 'steer denied' });
   const result = await h.views.sessions.abort(ref, { clearQueue: true, origin: {} });
@@ -235,7 +236,7 @@ test('sessions enforce read-only seats and map steer/stop without inventing conc
   assert.equal(h.requests.filter(request => request.method === 'POST').length, before);
 });
 
-test('holds include the whole task tree and register for unhosted main sessions; counts and lifecycle release', async t => {
+test('保活统计整棵任务树，未托管主会话可登记并按生命周期释放', async t => {
   let rows = [
     item('parent', { status: 'completed', hasChildren: true }),
     item('child', { parentId: 'agora:session:parent', status: 'quota_paused', hasChildren: true }),
@@ -268,7 +269,7 @@ test('holds include the whole task tree and register for unhosted main sessions;
   assert.ok(h.held.every(hold => hold.releases === 1));
 });
 
-test('tree changes refresh holds and ordinary disposal releases live holds and streams', async t => {
+test('树变更刷新保活，停用释放保活与事件流', async t => {
   let current = item();
   const h = setup(t, ({ url }) => {
     if (url.pathname === '/v1/sessions') return { status: 200, body: page([current]) };
@@ -295,7 +296,7 @@ test('tree changes refresh holds and ordinary disposal releases live holds and s
   assert.throws(() => h.views.tree.subscribe({ epoch: 'db', revision: 12 }, () => {}), /视图已关闭/);
 });
 
-test('holds reject non-advancing pagination and dispose suppresses in-flight registrations', async t => {
+test('保活拒绝停滞分页，停用阻止迟到登记', async t => {
   const broken = setup(t, ({ url }) => url.pathname === '/v1/sessions'
     ? { status: 200, body: page([item()], { nextCursor: 'same' }) } : undefined);
   await assert.rejects(broken.views.refreshHolds(), /游标未前进/);
@@ -309,7 +310,7 @@ test('holds reject non-advancing pagination and dispose suppresses in-flight reg
   assert.equal(h.held.length, 0);
 });
 
-test('task panels use task/tree usage, context tokens and bounded generation results', async t => {
+test('任务面板显示任务树用量、上下文和有界各代结果', async t => {
   const h = setup(t, ({ url }) => {
     if (url.pathname === '/v1/sessions/s1') return { status: 200, body: item() };
     if (url.pathname === '/v1/tasks/t-s1') return { status: 200, body: { model: 'model', profile: 'fast',

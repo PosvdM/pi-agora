@@ -28,7 +28,7 @@ export function createForms(runtime: PluginRuntime, security: Security) {
     return items;
   }
   async function load(): Promise<FormSpec[]> {
-    if (!runtime.online()) return [...current.values()].map(item => item.form);
+    if (!runtime.online()) return [...current.values()].map(item => item.form).sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
     const [requests, confirmations, devices, decisions] = await Promise.all([
       pages("/v1/requests?state=open&state=escalated"), pages("/v1/confirmations"), pages("/v1/devices"), pages("/v1/tasks?scope=mine&status=interrupted"),
     ]);

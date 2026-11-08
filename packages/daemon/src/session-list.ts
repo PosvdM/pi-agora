@@ -83,7 +83,9 @@ export function listSessions(store: Store, conn: Connection, params: URLSearchPa
       }
       if (!Number.isSafeInteger(after) || after < 0) invalid("分页游标无效");
     }
-    const args = { $owner: filter.owner, $legacy: filter.legacy ? 1 : 0, $after: after, $limit: limit + 1, $parent: filter.parent };
+    if (filter.snapshot && raw) invalid("树快照不接受分页游标");
+    const resultLimit = filter.snapshot ? 10_000 : limit;
+    const args = { $owner: filter.owner, $legacy: filter.legacy ? 1 : 0, $after: after, $limit: resultLimit + 1, $parent: filter.parent };
     let sql = treeSql();
     if (filter.snapshot) {
       sql += `, hot(id) AS (SELECT id FROM base WHERE effective_status IN ('created','running','waiting','paused','waiting_decision','waiting_children','quota_paused')
@@ -95,8 +97,9 @@ export function listSessions(store: Store, conn: Connection, params: URLSearchPa
         AND ($legacy=0 OR $owner IS NULL OR b.task_convener_id=$owner)
         ${filter.snapshot ? "AND b.id IN (SELECT id FROM wanted)" : ""} ORDER BY b.cursor LIMIT $limit`;
     const rows = store.db.prepare(sql).all({ ...args, ...(filter.snapshot ? { $open: JSON.stringify(filter.open), $recent: filter.recent } : {}) }) as unknown as ListedSession[];
-    const items = rows.slice(0, limit).map(sessionView);
-    const nextCursor = rows.length > limit ? Buffer.from(JSON.stringify({ v: 1, after: rows[limit - 1]!.cursor, filter: fingerprint })).toString("base64url") : null;
+    if (filter.snapshot && rows.length > resultLimit) throw new AgoraError(413, "snapshot_too_large", "热节点及祖先超过一万条，请减少打开的会话和最近时间范围");
+    const items = rows.slice(0, resultLimit).map(sessionView);
+    const nextCursor = rows.length > resultLimit ? Buffer.from(JSON.stringify({ v: 1, after: rows[resultLimit - 1]!.cursor, filter: fingerprint })).toString("base64url") : null;
     return { items, nextCursor, changesCursor: cursor };
   });
 }
