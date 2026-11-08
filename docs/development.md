@@ -121,8 +121,8 @@ shutdown 默认排空，超时后保留 daemon；force 中断并清理运行。�
 | `test/security-core.test.mjs` | JCS 与 P-256 验签、挑战绑定、重放拒绝、同步事务与回滚、异步 nonce 消费及重启 failed、TOFU / reTOFU、设备撤销与重置、离线锁、持久警告、严格设置与审计脱敏、v4→v5 WAL 一致性备份和 DDL 回滚 |
 | `test/security-http-1c.test.mjs` | 真实 daemon / HTTP / CLI 的设备签名答复、host.key 与伪造身份不能冒充用户、幂等结果随确认更新、参数和 revision 变化拒绝、租约接管、在线签名关闭与终端离线关闭 / 重启 / 直接答复 / 重新开启的闭环；不依赖浏览器界面 |
 | `test/task-security-1c.test.mjs` | main / child / host 资源矩阵、提问 ACL 与证明、可达召集人显式接管及 none 通路、接管边界 / 排队复核 / task_busy / outbox 回滚与重投、祖先替换保留接管；共享日授予与增额差额、settings 优先级和计数口径、整子树预算暂停与尾量去重、quota 自动恢复门禁、逐项显式恢复及重启账本 |
-| `test/task-1b.test.mjs` | generation、幂等 steer / answer、送达追踪、中断旧代结果与用量、D14 七项规则、失败与额度通知唤醒、静默投递、直接停止孙任务、恢复后的提问路由、父提交 worktree、回收、看门狗、配置及 v2→v4 迁移 |
-| `test/task-d15.test.mjs`、`driver-d15.test.mjs`、`d15-e2e.test.mjs` | 子代理标记、skill 白名单与只读授权、同项目双主会话的提问路由、任务 / 代 / 树用量及 stop / interrupt 收尾记账、静默终态唤醒与未知重置时间提示的持久化恢复、额度暂停与通知 / 自动恢复、v3→v4 备份和迁移回滚；真实 pi 的本地 429 与 skill 加载 |
+| `test/task-1b.test.mjs` | generation、幂等 steer / answer、送达追踪、中断旧代结果与用量、D14 七项规则、失败与额度通知唤醒、静默投递、直接停止孙任务、恢复后的提问路由、父提交 worktree、回收、看门狗、配置及 v2 旧库至当前版本迁移 |
+| `test/task-d15.test.mjs`、`driver-d15.test.mjs`、`d15-e2e.test.mjs` | 子代理标记、skill 白名单与只读授权、同项目双主会话的提问路由、任务 / 代 / 树用量及 stop / interrupt 收尾记账、静默终态唤醒与未知重置时间提示的持久化恢复、额度暂停与通知 / 自动恢复、v3 旧库备份和迁移回滚；真实 pi 的本地 429 与 skill 加载 |
 | `test/tree-e2e.test.mjs` | 真实子代理调用 agora_task 再派下级；单名额下静默下级通知真正启动父回合，覆盖父进程未回收及回收重拉、通知落盘；恶意 MCP / 扩展不启动；Windows 原生 PowerShell 实际工具调用 |
 | `test/permissions-1b.test.mjs`、`git-1b.test.mjs`、`git-paths-review.test.mjs`、`git-contexts-review.test.mjs` | 三档精确工具集合、受保护路径及祖先、新文件、真实 junction、Unicode / 大小写、Windows 8.3 短名（所在卷不分配短名时说明原因并跳过）；Git 字面路径与 cwd 边界、非提交对象拒绝、范围端点固定 OID、恶意配置、worktree 创建/清理的条件 filter / hooks 正负控及进程退出、子模块递归与清理边界 |
 | `test/git-security-review.test.mjs`、`git-execution-review.test.mjs`、`git-index-review.test.mjs` | notes/replace/grafts/mailmap 的受保护内容正负控；缺失 promisor 对象的 SSH/helper、空协议白名单及 Windows 环境删除绕过；执行入口代表性正控与命令白名单拒绝；POSIX TTY pager；超过 1 MiB 干净索引的流式清理。完整分类见 [Git 安全调用层](security.md#git-安全调用层) |
@@ -151,6 +151,7 @@ macOS 完整测试后额外执行 25 次“忽略 abort 的 provider”真实用
 ## 未实测与限制
 
 - 可选 MCP / 扩展白名单和 saved 项目信任推迟至 #10。生产保持 `-ne --no-mcp --no-approve`，不引入 SDK，隔离前提见 [security.md](security.md#可选扩展与-mcp-的隔离边界)。
+- 异步 worktree 创建成功后，若并发预算增额使最终授予复核失败，可能遗留未登记资源；资源补偿机制跟踪于 [#15](https://github.com/PosvdM/pi-agora/issues/15)。最终预算复核仍失败关闭，不放松账本检查。
 - 浏览器配对与确认界面在切片 2；1c 的签名器测试不等同于浏览器验收。仅使用终端时须离线关闭保护，并接受无法区分用户与 Agent 的风险。
 - 任务预算是请求结束后检查的软上限；停止尾量如实记账，不能保证精确限制 token。本文测试表仅列验收入口，不代表本轮全量测试或三平台验收已通过。
 - Git 最低设计版本为 2.34；1b 本机实际测试版本为 2.53.0.windows.2，旧版 2.34 的 P0 证据不等同于本轮重测。lazy-fetch 回归另行移除 `GIT_NO_LAZY_FETCH`，验证兼容旧版的协议防线。真实 TTY pager 由 Linux/macOS 的 Python PTY 执行；Windows 无 POSIX PTY 时说明原因跳过，固定 `--no-pager` argv 仍有独立回归。
