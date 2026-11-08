@@ -243,7 +243,8 @@ async function route(context: ServerContext, method: string, url: URL, conn: Con
   if (pathname === "/v1/confirmations" && method === "GET") {
     auth.requireMain(conn);
     const limit = positive(url.searchParams.get("limit"), 50, 200), cursor = positive(url.searchParams.get("cursor"), 0, Number.MAX_SAFE_INTEGER, true);
-    const rows = security.listConfirmations(limit + 1, cursor, conn.type.startsWith("host:") ? undefined : conn.principalId);
+    const states = url.searchParams.getAll("state");
+    const rows = security.listConfirmations(limit + 1, cursor, conn.type.startsWith("host:") ? undefined : conn.principalId, states.length ? states : undefined);
     return ok({ items: rows.slice(0, limit), nextCursor: rows.length > limit ? String(rows[limit - 1]!.cursor) : null });
   }
   const confirmation = pathname.match(/^\/v1\/confirmations\/([^/]+)(?:\/(sign|cancel))?$/);
