@@ -290,7 +290,7 @@ export function createActions(runtime: PluginRuntime, execute: ExecuteOperation)
     const taskId = text(session.taskId, "任务标识", 256);
     if (!/^tk_[A-Za-z0-9_-]+$/.test(taskId)) throw new Invalid("会话未关联合法任务");
     const task = await get(`/tasks/${encoded(taskId)}`);
-    if (task.taskId !== taskId) throw new Invalid("任务状态与目标不匹配");
+    if (task.taskId !== taskId || task.agoraSessionId !== id) throw new Invalid("任务状态与目标不匹配");
     return { nodeId: key, task: {
       taskId, userOwned, status: text(task.status, "任务状态", 64),
       generation: integer(task.generation, "任务代数"), revision: integer(task.revision, "任务修订号"),

@@ -345,7 +345,7 @@ test("周期健康检测断线触发离线 reset，恢复在线再次 reset 并�
 test("sessions.send 复用 composer 的固定请求机制，历史切换不污染 pending 查询", async t => {
   let writes = 0;
   const { a, plugin } = await activated(t, call => {
-    if (call.method === "GET" && call.path === `/v1/tasks/${session.taskId}`) return ok({ taskId: session.taskId, status: "running", generation: 1, revision: 7 });
+    if (call.method === "GET" && call.path === `/v1/tasks/${session.taskId}`) return ok({ taskId: session.taskId, agoraSessionId: ref.id, status: "running", generation: 1, revision: 7 });
     if (call.method === "POST" && call.path === `/v1/tasks/${session.taskId}/steer`) {
       writes++;
       assert.deepEqual(call.body, { message: "固定返工", interrupt: false, expectedGeneration: 1, expectedRevision: 7 });
@@ -362,6 +362,41 @@ test("sessions.send 复用 composer 的固定请求机制，历史切换不污�
   assert.equal(a.calls.filter(call => call.method === "GET" && call.path === `/v1/tasks/${session.taskId}`).length, 1);
   assert.equal((await plugin.sessions.send(ref, { text: "固定返工" }, { ...req, idempotencyKey: "new-history-send" })).status, "rejected");
   assert.equal(writes, 2);
+});
+
+test("sessions.send 两读之间重开会话时拒绝向新运行返工", async t => {
+  const { a, plugin } = await activated(t, (call, state) => {
+    if (call.method === "GET" && call.path === `/v1/tasks/${session.taskId}`) {
+      state.sessions[0].isCurrent = false;
+      return ok({ taskId: session.taskId, agoraSessionId: "as_reopened", status: "running", generation: 2, revision: 8 });
+    }
+  });
+  a.state.sessions[0].parent = { kind: "user" };
+  const result = await plugin.sessions.send(ref, { text: "不能误控新运行" }, { idempotencyKey: "send-race", origin });
+  assert.equal(result.status, "rejected");
+  assert.match(result.message, /任务状态与目标不匹配/);
+  assert.equal(a.calls.filter(call => call.method === "POST" && call.path.endsWith("/steer")).length, 0);
+});
+
+test("sessions.abort 的任务条件在写入处理前 revision 变化时返回 stale", async t => {
+  let revision = 7, stopped = false;
+  const { a, plugin } = await activated(t, call => {
+    if (call.method === "GET" && call.path === `/v1/tasks/${session.taskId}`) {
+      return ok({ taskId: session.taskId, agoraSessionId: ref.id, status: "running", generation: 2, revision });
+    }
+    if (call.method === "POST" && call.path === `/v1/tasks/${session.taskId}/stop`) {
+      assert.deepEqual(call.body, { expectedGeneration: 2, expectedRevision: 7 });
+      revision++;
+      if (call.body.expectedRevision !== revision) return { status: 409, body: { error: { code: "stale", message: "stale task revision" } } };
+      stopped = true;
+      return ok({ droppedSteers: [] });
+    }
+  });
+  a.state.sessions[0].parent = { kind: "user" };
+  assert.equal((await plugin.sessions.snapshot(ref)).readonly, false);
+  await assert.rejects(plugin.sessions.abort(ref, { clearQueue: true, origin }), /stale task revision/);
+  assert.equal(stopped, false);
+  assert.equal(a.calls.filter(call => call.method === "GET" && call.path === `/v1/tasks/${session.taskId}`).length, 1);
 });
 
 test("接管结构 marker 使打开的会话重取权限，重入订阅不会被旧集合清理", async t => {
