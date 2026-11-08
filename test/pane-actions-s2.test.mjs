@@ -26,7 +26,7 @@ function setup(status = "running", dataDir = temporaryDirectory()) {
   let online = true;
   let readFailure;
   let beforeRead;
-  let session = { agoraSessionId: "as_original", taskId: "tk_actual", kind: "task" };
+  let session = { agoraSessionId: "as_original", taskId: "tk_actual", kind: "task", parent: { kind: "user" } };
   const runtime = {
     context: { dataDir, token: "此凭据不可写入快照" }, online: () => online,
     api: {
@@ -80,7 +80,7 @@ async function composerInvocation(s, key = "composer", message = "补充检查�
         assert.equal(method, "GET");
         assert.ok(path.startsWith("/v1/sessions?"));
         return { status: 200, body: {
-          items: [{ ...s.state, kind: "task", parentId: null, title: "任务", hasChildren: false, createdAt: origin.receivedAt }],
+          items: [{ ...s.state, kind: "task", parentId: "agora:root:user-tasks", parent: { kind: "user" }, title: "任务", hasChildren: false, createdAt: origin.receivedAt }],
           changesCursor: { epoch: "composer-test", seq: 1 }, nextCursor: null,
         } };
       },
@@ -276,15 +276,15 @@ test("历史会话不能通过任务动作误控当前会话", async () => {
   assert.equal(s.calls.length, 0);
 });
 
-test("静态目录仅开放五个任务动作，返回副本且文案为中文", () => {
+test("静态目录仅开放六个任务动作，返回副本且文案为中文", () => {
   const s = setup();
   const list = s.actions.list();
-  assert.deepEqual(list.map(item => item.id), ["spawn", "steer", "stop", "cleanup", "recover"].map(id));
+  assert.deepEqual(list.map(item => item.id), ["spawn", "steer", "stop", "cleanup", "recover", "takeover"].map(id));
   assert.ok(list.every(item => /[\u4e00-\u9fff]/.test(item.title)));
   assert.equal(list.find(item => item.id === id("recover")).timeoutMs, 60000);
   assert.ok(list.find(item => item.id === id("stop")).confirm);
   list.length = 0;
-  assert.equal(s.actions.list().length, 5);
+  assert.equal(s.actions.list().length, 6);
   assert.equal(s.reads.length, 0);
 });
 

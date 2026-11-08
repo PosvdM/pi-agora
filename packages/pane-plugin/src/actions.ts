@@ -7,10 +7,10 @@ export type ExecuteOperation = (method: string, path: string, body: unknown, opt
   idempotencyKey: string; origin: RequestOrigin; actAsUser?: boolean;
 }) => Promise<ApiReply>;
 
-type TaskAction = "spawn" | "steer" | "stop" | "cleanup" | "recover";
+type TaskAction = "spawn" | "steer" | "stop" | "cleanup" | "recover" | "takeover";
 type JsonRecord = Record<string, unknown>;
 interface TaskState {
-  taskId: string; status: string; generation: number; revision: number;
+  taskId: string; status: string; generation: number; revision: number; userOwned: boolean;
   model?: string; profile?: string; cwd?: string;
 }
 interface TargetState { nodeId?: string; task?: TaskState }
@@ -31,6 +31,7 @@ const catalog: ActionSpec[] = [
   { id: "agora.task.stop", source: "agora", title: "停止任务", scope: ["node"], confirm: "确定停止此任务及其下级任务？", danger: true },
   { id: "agora.task.cleanup", source: "agora", title: "清理工作树", scope: ["node"], hasForm: true, danger: true },
   { id: "agora.task.recover", source: "agora", title: "恢复任务", scope: ["node"], hasForm: true, timeoutMs: 60000 },
+  { id: "agora.task.takeover", source: "agora", title: "接管任务", scope: ["node"], hasForm: true, confirm: "确定接管此任务？接管后原 Agent 将不能再管理该任务及子树。", danger: true, timeoutMs: 60000 },
 ];
 class Invalid extends Error {}
 class ReadReply extends Error { constructor(readonly reply: ApiReply) { super(message(reply)); } }
@@ -107,8 +108,9 @@ function modes(task: TaskState): string[] {
 function allowed(action: TaskAction, task?: TaskState): boolean {
   if (action === "spawn") return true;
   if (!task) return false;
-  if (action === "recover") return modes(task).length > 0;
-  if (action === "steer") return [...active.filter(status => status !== "created"), "completed", "failed"].includes(task.status);
+  if (action === "takeover") return task.userOwned === false;
+  if (action === "recover") return task.userOwned === true && modes(task).length > 0;
+  if (action === "steer") return task.userOwned === true && [...active.filter(status => status !== "created"), "completed", "failed"].includes(task.status);
   if (action === "cleanup") return ["completed", "failed", "stopped", "interrupted"].includes(task.status);
   return [...active, "quota_paused", "budget_paused", "interrupted", "completed", "failed", "stopped"].includes(task.status);
 }
@@ -153,14 +155,17 @@ export function createActions(runtime: PluginRuntime, execute: ExecuteOperation)
     } else {
       if (state.nodeId !== target) throw new ActionStoreError();
       const task = object(state.task, "存储的任务");
-      keys(task, ["taskId", "status", "generation", "revision", "model", "profile", "cwd"], "存储的任务");
+      keys(task, ["taskId", "status", "generation", "revision", "userOwned", "model", "profile", "cwd"], "存储的任务");
+      // 旧记录保留原始指纹以支持 prepared 请求查询；缺少所有权的表单不能匹配新状态。
+      if (task.userOwned !== undefined && typeof task.userOwned !== "boolean") throw new ActionStoreError();
       if (typeof task.taskId !== "string" || !/^tk_[A-Za-z0-9_-]+$/.test(task.taskId)) throw new ActionStoreError();
       text(task.status, "任务状态", 64);
       integer(task.generation, "任务代数"); integer(task.revision, "任务修订号");
       for (const key of ["model", "profile", "cwd"]) if (task[key] !== undefined && typeof task[key] !== "string") throw new ActionStoreError();
     }
     const form = object(record.form, "存储的表单");
-    keys(form, ["id", "source", "revision", "title", "createdAt", "fields", "submitLabel", "nodeId"], "存储的表单");
+    keys(form, ["id", "source", "revision", "title", "description", "createdAt", "fields", "submitLabel", "nodeId"], "存储的表单");
+    if (form.description !== undefined) text(form.description, "表单描述", 4096);
     const expectedId = `agora.action.${action}.${hash(target).slice(0, 24)}${record.replace ? ".replace" : ""}`;
     if (form.id !== expectedId || form.source !== "agora" || !Array.isArray(form.fields) || form.fields.length > 16 || typeof form.createdAt !== "string" || !Number.isFinite(Date.parse(form.createdAt))) throw new ActionStoreError();
     integer(form.revision, "表单修订号");
@@ -210,7 +215,7 @@ export function createActions(runtime: PluginRuntime, execute: ExecuteOperation)
         if (entry.operation !== undefined) {
           const op = object(entry.operation, "存储的 HTTP 快照");
           keys(op, ["method", "path", "body", "actAsUser"], "存储的 HTTP 快照");
-          if (op.method !== "POST" || typeof op.path !== "string" || !/^\/tasks(?:\/tk_[A-Za-z0-9_-]+\/(?:steer|stop|cleanup|recover))?$/.test(op.path) || (op.actAsUser !== undefined && op.actAsUser !== true) || (op.actAsUser === true) !== op.path.endsWith("/recover")) throw new ActionStoreError();
+          if (op.method !== "POST" || typeof op.path !== "string" || !/^\/tasks(?:\/tk_[A-Za-z0-9_-]+\/(?:steer|stop|cleanup|recover|takeover))?$/.test(op.path) || (op.actAsUser !== undefined && op.actAsUser !== true) || (op.actAsUser === true) !== /\/(?:recover|takeover)$/.test(op.path)) throw new ActionStoreError();
           const body = object(op.body, "存储的 HTTP 参数");
           if (op.path === "/tasks") {
             keys(body, ["model", "profile", "prompt", "thinking", "isolation", "title", "cwd"], "存储的创建参数");
@@ -279,12 +284,15 @@ export function createActions(runtime: PluginRuntime, execute: ExecuteOperation)
     const session = await get(`/sessions/${encoded(id)}`);
     if (session.isCurrent === false) throw new Invalid("历史会话不能操作任务的当前运行");
     if (session.kind !== undefined && session.kind !== "task") throw new Invalid("此会话不属于任务");
+    const parentKind = session.parent && typeof session.parent === "object" && !Array.isArray(session.parent) ? (session.parent as JsonRecord).kind : undefined;
+    const userOwned = parentKind === "user" || session.parentId === "agora:root:user-tasks";
+    if (!userOwned && parentKind !== "main" && parentKind !== "task") throw new Invalid("任务所有权未知，请重新读取任务");
     const taskId = text(session.taskId, "任务标识", 256);
     if (!/^tk_[A-Za-z0-9_-]+$/.test(taskId)) throw new Invalid("会话未关联合法任务");
     const task = await get(`/tasks/${encoded(taskId)}`);
     if (task.taskId !== taskId) throw new Invalid("任务状态与目标不匹配");
     return { nodeId: key, task: {
-      taskId, status: text(task.status, "任务状态", 64),
+      taskId, userOwned, status: text(task.status, "任务状态", 64),
       generation: integer(task.generation, "任务代数"), revision: integer(task.revision, "任务修订号"),
       ...(typeof task.model === "string" ? { model: task.model } : {}),
       ...(typeof task.profile === "string" ? { profile: task.profile } : {}),
@@ -318,10 +326,12 @@ export function createActions(runtime: PluginRuntime, execute: ExecuteOperation)
       { id: "interrupt", label: "中断当前执行", type: "checkbox", default: "false" },
     ];
     else if (action === "cleanup") fields = [{ id: "discard", label: "丢弃未提交的工作树修改", type: "checkbox", default: "false" }];
+    else if (action === "takeover") fields = [];
     else fields = [{ id: "mode", label: "恢复方式", description: "resume：继续恢复；reopen：重开会话；replace：替换模型和档位；abandon：放弃任务。", type: "select", options: modes(state.task!), required: true }];
     const form: FormSpec = {
       id, source: "agora", revision: (old?.record.form.revision ?? 0) + 1,
       title: replace ? "替换任务执行者" : catalog.find(item => item.id === `agora.task.${action}`)!.title,
+      ...(action === "takeover" ? { description: "接管后原 Agent 将不能再管理该任务及子树；任务管理权限转交给用户，相关待答复请求可能转交给用户。提交后仍须完成用户确认或设备签名。" } : {}),
       createdAt: old?.record.form.createdAt ?? new Date().toISOString(),
       fields, submitLabel: "提交", ...(state.nodeId ? { nodeId: state.nodeId } : {}),
     };
@@ -391,6 +401,9 @@ export function createActions(runtime: PluginRuntime, execute: ExecuteOperation)
     } else if (action === "cleanup") {
       const fields = inputFields(inv, ["discard"]);
       body = { discard: fields.discard === undefined ? false : bool(fields.discard, "丢弃选项") };
+    } else if (action === "takeover") {
+      inputFields(inv, []);
+      body = {};
     } else if (record.replace) {
       const fields = inputFields(inv, ["model", "profile"]);
       body = { mode: "replace", model: model(fields.model), profile: enumValue(fields.profile, profiles, "权限档位") };
@@ -400,7 +413,7 @@ export function createActions(runtime: PluginRuntime, execute: ExecuteOperation)
       if (mode === "replace") return { status: "needsInput", followUpForm: structuredClone(formFor(action, target, state, true).form) };
       body = { mode };
     }
-    return { method: "POST", path: `/tasks/${encoded(state.task!.taskId)}/${action}`, body: { ...body, ...conditions(state) }, ...(action === "recover" ? { actAsUser: true } : {}) };
+    return { method: "POST", path: `/tasks/${encoded(state.task!.taskId)}/${action}`, body: { ...body, ...conditions(state) }, ...(["recover", "takeover"].includes(action) ? { actAsUser: true } : {}) };
   }
   return {
     list: () => structuredClone(catalog),
