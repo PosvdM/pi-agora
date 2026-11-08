@@ -65,8 +65,11 @@ const globalKey = `__driver_d15_${process.pid}`;
 globalThis[globalKey] = bridge;
 const mockSource = Object.keys(bridge).map((name) => `export const ${name} = globalThis[${JSON.stringify(globalKey)}][${JSON.stringify(name)}];`).join("\n");
 const mockUrl = `data:text/javascript;base64,${Buffer.from(mockSource).toString("base64")}`;
-const driverSource = await readFile(new URL("../packages/daemon/src/driver.ts", import.meta.url), "utf8");
-const compiled = stripTypeScriptTypes(driverSource, { mode: "transform" }).replace('from "pi-hostkit"', `from ${JSON.stringify(mockUrl)}`);
+const driverSource = await readFile(new URL("../packages/daemon/src/harness/pi/driver.ts", import.meta.url), "utf8");
+const compiled = stripTypeScriptTypes(driverSource, { mode: "transform" })
+  .replace('from "pi-hostkit"', `from ${JSON.stringify(mockUrl)}`)
+  .replaceAll('from "./events.js"', `from ${JSON.stringify(new URL("../packages/daemon/dist/harness/pi/events.js", import.meta.url).href)}`)
+  .replaceAll('from "./launch.js"', `from ${JSON.stringify(new URL("../packages/daemon/dist/harness/pi/launch.js", import.meta.url).href)}`);
 const { RpcSubprocessDriver, normalizePiEvent } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString("base64")}`);
 delete globalThis[globalKey];
 

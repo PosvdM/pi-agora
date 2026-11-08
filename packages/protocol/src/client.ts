@@ -31,7 +31,11 @@ export interface AgoraClient {
   close(): void;
 }
 export class AgoraConnectionError extends Error {
-  constructor() { super('无法连接 agora，请检查后台进程'); this.name = 'AgoraConnectionError'; }
+  constructor(options?: ErrorOptions) {
+    const codes = connectionErrorCodes(options?.cause);
+    super(`无法连接 agora，请检查后台进程${codes.length ? `（${codes.join('，')}）` : ''}`, options);
+    this.name = 'AgoraConnectionError';
+  }
 }
 export class AgoraHttpError extends Error {
   constructor(public readonly status: number, public readonly code: string) {
@@ -63,6 +67,21 @@ function record(value: unknown): value is Record<string, unknown> {
 }
 function nonempty(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
+}
+// 诊断遍历不参与重试判定，避免嵌套错误改变请求策略。
+function connectionErrorCodes(error: unknown): string[] {
+  const pending = [error];
+  const seen = new Set<object>();
+  const codes = new Set<string>();
+  for (let index = 0; index < pending.length; index++) {
+    const value = pending[index];
+    if (!record(value) || seen.has(value)) continue;
+    seen.add(value);
+    if (typeof value.code === 'string' && /^[A-Z][A-Z0-9_]{0,63}$/.test(value.code)) codes.add(value.code);
+    pending.push(value.cause);
+    if (value instanceof AggregateError) pending.push(...value.errors);
+  }
+  return [...codes];
 }
 function isTransportError(error: unknown): boolean {
   const codes = ['ECONNRESET', 'ECONNREFUSED', 'EPIPE', 'ETIMEDOUT', 'ENETUNREACH', 'EHOSTUNREACH', 'EAI_AGAIN',
@@ -108,11 +127,11 @@ async function jsonRequest<T>(url: string, method: string, path: string, body: u
       // 至多发送三次；收到 HTTP 拒绝后，即使正文中断也不重试。
       if (retryable && attempt < 2 && !signal.aborted && transportError && (!response || response.ok)) {
         try { await delay(50 * (attempt + 1), undefined, { signal }); }
-        catch { assertActive(requestSignal); throw new AgoraConnectionError(); }
+        catch (delayError) { assertActive(requestSignal); throw new AgoraConnectionError({ cause: delayError }); }
         continue;
       }
       if (response && !transportError && !signal.aborted) throw new Error('agora 返回了无效响应');
-      throw new AgoraConnectionError();
+      throw new AgoraConnectionError({ cause: error });
     }
     let data: unknown;
     try { data = JSON.parse(text); } catch { throw new Error('agora 返回了无效响应'); }

@@ -36,12 +36,14 @@ npm test
 | `packages/daemon/src/store.ts` | schema v4、一致性备份、迁移、条件更新、outbox 和逐请求用量 |
 | `packages/daemon/src/tasks.ts` | 控制队列、树限制、调度、返工、恢复、回收和看门狗 |
 | `packages/daemon/src/requests.ts`、`worktrees.ts` | 提问及逐级转交、按仓库串行的 worktree 操作 |
-| `packages/daemon/src/driver.ts` | RPC、会话写锁、整树停止、UI 取消、心跳、诊断及 pi 的 skill、用量和额度适配 |
+| `packages/daemon/src/driver.ts` | 既有导出的兼容入口，转出 pi 驱动实现 |
+| `packages/daemon/src/harness/types.ts` | 中立的启动规格、技能结果与逐请求用量 / 额度事件 |
+| `packages/daemon/src/harness/pi/` | pi 的 RPC、会话写锁、整树停止、UI 取消、心跳、诊断、skill 解析、参数与用量 / 额度适配 |
 | `packages/extension/src/index.ts`、`permissions.ts` | 主 / 子会话工具、最终就绪门槛、三档与路径检查 |
 | `packages/extension/src/notifications.ts` | 在途去重、完整磁盘记录核对和确认 |
 | `packages/cli/src/index.ts`、`main.ts` | CLI 参数和命令 |
 
-扩展的路径检查只加载 `pi-hostkit/paths`，不加载原生模块。archive 和 pane-plugin 包在对应切片创建。
+扩展的路径检查只加载 `pi-hostkit/paths`，不加载原生模块。archive 和 pane-plugin 包在对应切片创建。Harness 适配层边界及高成本保留项见 [总体架构](architecture.md#harness-适配层) 和 [耦合清单](harness-portability.md)。
 
 ## 启动与配置
 
@@ -89,7 +91,7 @@ shutdown 默认排空，超时后保留 daemon；force 中断并清理运行。�
 - **两阶段就绪**：扩展报告工具 / 模型后先结束 session_start，daemon 再通过 RPC 核对可用模型、thinking 和会话路径。子会话工具授权另等 `GET /v1/runs/:id/authorized` 返回最终 ready；不能把 HTTP ready 的接受响应当作授权。
 - **控制与名额**：发送、返工、停止、恢复、回收和唤醒经任务控制队列执行，写入时核对 generation / revision。停止在队列内重查租约与权限，拒绝过期请求前不改变停止标志。等待下级或提问的 settled 父任务不占名额，重新唤醒仍排队。启动恢复扫描只调度需要推理的 outbox，统一队列在旧运行核对和 HTTP 监听完成后才启动。
 - **可靠通知**：状态、结果和通知同事务；每批最多 200，扩展取到空批。完整磁盘行的 entryId、noticeId、dedupeKey 全部相符才 ack。继承的历史通知不能代替当前 inbox 的授权。被 clear_queue 清掉的在途通知在 settled 后可重投；每代完成有独立 key。
-- **请求重试**：安全 GET、可幂等续期及带原 Idempotency-Key 的业务写入最多三次，共用一个总期限、原 token、参数与 key；间隔 50 / 100ms。取消、关闭、HTTP 拒绝、协议不兼容、无效 JSON 和一次性认证兑换不重试。子会话短暂续期传输错误不立即 fatal。
+- **请求重试**：安全 GET、可幂等续期及带原 Idempotency-Key 的业务写入最多三次，共用一个总期限、原 token、参数与 key；间隔 50 / 100ms。取消、关闭、HTTP 拒绝、协议不兼容、无效 JSON 和一次性认证兑换不重试。子会话短暂续期传输错误不立即 fatal。`AgoraConnectionError.cause` 保留捕获的底层异常，message 附可获得的底层错误码；诊断提取不参与重试分类，不能将错误信息增强视为偶发 loopback 失败根因已解决。
 - **Windows 退出可见性**：有效 StopReport 后最多 2 秒纯身份查询，不补杀；持续 alive / unknown 仍保锁。driver 的失败 stop 可显式重试，只复查原报告、身份和 release，不重放清队列或底层停止；已有失败报告不能变成新成功报告。TaskManager 重试仍核对版本与租约。
 - **迁移**：schema v3 为任务树、限制、返工、提问和 worktree 增加字段与表；v4 保存 skill 名单与解析路径、额度恢复时间和逐请求用量。旧库依次升级到 v4，已有 v2 任务按第一层、默认两层回填。迁移前从同一 SQLite 连接做一致性 backup、只读 integrity_check，DDL 同事务，提交前 foreign_key_check；失败回滚原库。
 - **恢复**：旧 run 未确认退出不能拉起写者；resume 代数不变，reopen / replace 新建继承会话并增加代数，历史 result 指向所属代数的会话。连续 resume 失败两次后需重开、换人或放弃，不自动重放副作用。
@@ -105,7 +107,8 @@ shutdown 默认排空，超时后保留 daemon；force 中断并清理运行。�
 | `test/tree-e2e.test.mjs` | 真实子代理调用 agora_task 再派下级；单名额下静默下级通知真正启动父回合，覆盖父进程未回收及回收重拉、通知落盘；恶意 MCP / 扩展不启动；Windows 原生 PowerShell 实际工具调用 |
 | `test/permissions-1b.test.mjs`、`git-1b.test.mjs`、`git-paths-review.test.mjs`、`git-contexts-review.test.mjs` | 三档精确工具集合、受保护路径及祖先、新文件、真实 junction、Unicode / 大小写、Windows 8.3 短名（所在卷不分配短名时说明原因并跳过）；Git 字面路径与 cwd 边界、非提交对象拒绝、范围端点固定 OID、恶意配置、worktree 创建/清理的条件 filter / hooks 正负控及进程退出、子模块递归与清理边界 |
 | `test/git-security-review.test.mjs`、`git-execution-review.test.mjs`、`git-index-review.test.mjs` | notes/replace/grafts/mailmap 的受保护内容正负控；缺失 promisor 对象的 SSH/helper、空协议白名单及 Windows 环境删除绕过；执行入口代表性正控与命令白名单拒绝；POSIX TTY pager；超过 1 MiB 干净索引的流式清理。完整分类见 [Git 安全调用层](security.md#git-安全调用层) |
-| `test/client-retry.test.mjs` | 保留 keep-alive 的真实 socket 故障、响应丢失后的原 key 重试、总期限、取消、拒绝和一次性 ticket 不重放 |
+| `test/client-retry.test.mjs` | 保留 keep-alive 的真实 socket 故障、响应丢失后的原 key 重试、总期限、取消、拒绝和一次性 ticket 不重放；底层 cause、真实 ECONNREFUSED、嵌套错误码和响应正文中断诊断 |
+| `test/harness-pi.test.mjs` | pi 参数序列与资源隔离开关、路径原样传递、中立派生事件、旧导出兼容与中立类型依赖边界 |
 | `test/e2e.test.mjs`、`notice-fork.test.mjs` | 真实主 pi 派活、通知叫醒取结果；fork 不确认父通知、同摘要乱序完成仍可定位 |
 | `test/notify-faults.test.mjs` | P0 五个真实强杀故障时点、无提前确认、恢复后同 key 一条 |
 | `test/driver.test.mjs`、`driver-faults.test.mjs` | 写锁、忽略 abort、shell 后代、覆盖范围、UI、崩溃恢复、故障保锁和停止重试 |
