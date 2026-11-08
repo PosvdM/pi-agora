@@ -210,6 +210,11 @@ export class Store {
   change(kind: string, objectId: string, tombstone = false): void {
     this.run("INSERT INTO changes(epoch,object_type,object_id,tombstone,created_at) VALUES((SELECT value FROM settings WHERE key='epoch'),?,?,?,?)", kind, objectId, tombstone ? 1 : 0, now());
   }
+  // 挂载关系或历史会话数量迁移须在写入事务内使全部树投影失效。
+  changeTreeStructure(): void {
+    if (!this.db.isTransaction) throw new Error("树结构失效必须与迁移处于同一事务");
+    this.change("tree", "all");
+  }
   transition(task: TaskRow, status: string, resultText?: string, runId?: string, usage?: unknown, quota?: { resumeAt: string | null }): TaskRow {
     return this.transaction(() => {
       const at = now();

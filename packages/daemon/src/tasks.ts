@@ -727,6 +727,7 @@ export class TaskManager {
           this.store.run("UPDATE requests SET target_id=? WHERE target_id=?", child, oldSession.principal_id);
           this.store.run("UPDATE requests SET asker_id=? WHERE asker_id=? AND state IN ('open','escalated')", child, oldSession.principal_id);
           this.store.run("UPDATE outbox SET recipient_id=? WHERE recipient_id=? AND acked_at IS NULL", child, oldSession.principal_id);
+          this.store.changeTreeStructure();
         });
         task = this.store.task(taskId);
         const last = this.store.get<{ result_text: string | null }>("SELECT result_text FROM task_generations WHERE task_id=? AND generation=?", taskId, task.generation);
