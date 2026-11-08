@@ -3,6 +3,10 @@ import type { Page, PermissionProfile, SessionKind } from "@pi-agora/protocol";
 
 export type { SessionEntry, Page };
 export type ArchiveState = "ok" | "partial" | "suspect" | "missing";
+export type SessionParent =
+  | { kind: "task"; taskId: string; sessionId: string }
+  | { kind: "main"; piSessionId: string }
+  | { kind: "user" };
 
 export interface ArchivedSessionSummary {
   agoraSessionId: string;
@@ -11,6 +15,8 @@ export interface ArchivedSessionSummary {
   model: string;
   profile: PermissionProfile;
   convenerId: string;
+  parent?: SessionParent;
+  parentDiagnostics?: { kind: string; message: string }[];
   parentPiSessionId?: string;
   taskId?: string;
   meetingId?: string;

@@ -15,17 +15,20 @@ import { projectUserViewAsync } from "./projection.js";
 
 interface SessionRow {
   id: string; kind: SessionKind; title: string; model: string; profile: PermissionProfile;
-  convener_id: string | null; parent_pi_session_id: string | null; task_id: string | null;
+  convener_id: string | null; convener_type: string | null; parent_pi_session_id: string | null;
+  parent_task_id: string | null; parent_task_session_id: string | null; task_id: string | null;
   meeting_id: string | null; status: string; archive_state: ArchiveState | "live"; inherits_from: string | null;
   created_at: string; ended_at: string | null; session_file: string; pi_session_id: string | null;
   thinking: string; cwd: string;
 }
 
 const SELECT_SESSION = `SELECT s.id,s.kind,COALESCE(t.title,'') AS title,s.model,s.profile,
-  s.convener_id,p.pi_session_id AS parent_pi_session_id,s.task_id,s.meeting_id,s.status,
+  s.convener_id,p.type AS convener_type,p.pi_session_id AS parent_pi_session_id,
+  t.parent_task_id,pt.agora_session_id AS parent_task_session_id,s.task_id,s.meeting_id,s.status,
   s.archive_state,s.inherits_from,s.created_at,s.ended_at,s.session_file,s.pi_session_id,s.thinking,s.cwd
   FROM agora_sessions s LEFT JOIN tasks t ON t.id=s.task_id
-  LEFT JOIN principals p ON p.id=COALESCE(s.parent_principal_id,s.convener_id)`;
+  LEFT JOIN tasks pt ON pt.id=t.parent_task_id
+  LEFT JOIN principals p ON p.id=s.convener_id`;
 
 function limitOf(value?: number): number {
   if (value === undefined) return 50;
@@ -45,6 +48,22 @@ function messageKey(message: Record<string, unknown>): string {
 function record(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
+function parentOf(row: SessionRow): Pick<ArchivedSessionSummary, "parent" | "parentDiagnostics"> {
+  const diagnostic = (kind: string, message: string) => ({ parentDiagnostics: [{ kind, message }] });
+  if (row.parent_task_id) {
+    return row.parent_task_session_id ? {
+      parent: { kind: "task", taskId: row.parent_task_id, sessionId: row.parent_task_session_id },
+    } : diagnostic("parent_task_missing", "父任务缺少当前会话，无法确定会话父关系");
+  }
+  if (row.convener_type && ["user", "host:cli", "host:pane"].includes(row.convener_type)) {
+    return { parent: { kind: "user" } };
+  }
+  if (row.convener_type === "agent:main") {
+    return row.parent_pi_session_id ? { parent: { kind: "main", piSessionId: row.parent_pi_session_id } } :
+      diagnostic("main_session_id_missing", "主 Agent 召集人的 pi 会话标识缺失");
+  }
+  return diagnostic("session_parent_unknown", "召集人或父任务关联缺失，无法确定会话父关系");
+}
 function summary(row: SessionRow, missing: boolean): ArchivedSessionSummary {
   return {
     agoraSessionId: row.id, kind: row.kind, title: row.title, model: row.model,
@@ -52,7 +71,8 @@ function summary(row: SessionRow, missing: boolean): ArchivedSessionSummary {
     archiveState: missing ? "missing" : row.archive_state === "live" ? "partial" :
       ["ok", "partial", "suspect", "missing"].includes(row.archive_state) ? row.archive_state : "suspect",
     createdAt: row.created_at,
-    ...(row.parent_pi_session_id ? { parentPiSessionId: row.parent_pi_session_id } : {}),
+    ...parentOf(row),
+    ...(row.convener_type === "agent:main" && row.parent_pi_session_id ? { parentPiSessionId: row.parent_pi_session_id } : {}),
     ...(row.task_id ? { taskId: row.task_id } : {}),
     ...(row.meeting_id ? { meetingId: row.meeting_id } : {}),
     ...(row.inherits_from ? { inheritsFrom: row.inherits_from } : {}),

@@ -30,16 +30,16 @@ async function fixture(t, version = 4) {
   await mkdir(home);
   const db = new DatabaseSync(path.join(home, "agora.db"));
   db.exec(`CREATE TABLE schema_version(version INTEGER); INSERT INTO schema_version VALUES(${version});
-    CREATE TABLE principals(id TEXT PRIMARY KEY,pi_session_id TEXT);
-    CREATE TABLE tasks(id TEXT PRIMARY KEY,title TEXT);
+    CREATE TABLE principals(id TEXT PRIMARY KEY,pi_session_id TEXT,type TEXT);
+    CREATE TABLE tasks(id TEXT PRIMARY KEY,title TEXT,parent_task_id TEXT,agora_session_id TEXT);
     CREATE TABLE agora_sessions(
       id TEXT PRIMARY KEY,kind TEXT,title TEXT,model TEXT,profile TEXT,convener_id TEXT,
       parent_principal_id TEXT,task_id TEXT,meeting_id TEXT,status TEXT,archive_state TEXT,
       inherits_from TEXT,created_at TEXT,ended_at TEXT,session_file TEXT,pi_session_id TEXT,
       thinking TEXT,cwd TEXT);
     CREATE TABLE process_runs(id TEXT PRIMARY KEY,agora_session_id TEXT,diagnostics_path TEXT);
-    INSERT INTO principals VALUES('convener','pi-parent');
-    INSERT INTO tasks VALUES('task-1','存档任务');`);
+    INSERT INTO principals VALUES('convener','pi-parent','agent:main');
+    INSERT INTO tasks VALUES('task-1','存档任务',NULL,'as-1');`);
   let reader;
   t.after(async () => { reader?.close(); db.close(); await rm(root, { recursive: true, force: true }); });
   const add = (id = "as-1", extra = {}) => {
@@ -82,6 +82,7 @@ for (const version of [4, 5, 6]) {
     const page = await reader.listSessions();
     assert.equal(page.items[0].title, "存档任务");
     assert.equal(page.items[0].parentPiSessionId, "pi-parent");
+    assert.deepEqual(page.items[0].parent, { kind: "main", piSessionId: "pi-parent" });
     assert.equal(page.items[0].archiveState, "partial");
     assert.equal(page.items[0].messageCount, undefined);
     const detail = await reader.getSession("as-1");
@@ -112,6 +113,65 @@ test("会话分页默认 50、上限 200，游标绑定筛选且无重复", asyn
   await assert.rejects(reader.listSessions({ cursor: one.nextCursor }), { code: "invalid_cursor" });
   for (const limit of [0, -1, 1.5, NaN, Infinity]) await assert.rejects(reader.listSessions({ limit }), { code: "invalid_limit" });
   await assert.rejects(reader.listSessions({ cursor: "not-json" }), { code: "invalid_cursor" });
+});
+
+test("中立 parent 使用父任务当前会话、主 pi 会话或用户，不包含查看器节点标识", async t => {
+  const f = await fixture(t);
+  f.db.exec(`INSERT INTO principals VALUES
+    ('child-convener','pi-child','agent:child'),('user-convener',NULL,'user'),
+    ('pane-convener','pane:internal-node','host:pane'),('cli-convener',NULL,'host:cli');
+    INSERT INTO tasks VALUES('parent-task','父任务',NULL,'parent-current'),
+      ('child-task','子任务','parent-task','child-session');`);
+  f.add("parent-old", { task: "parent-task" });
+  f.add("parent-current", { task: "parent-task" });
+  f.add("child-session", { task: "child-task", convener: "child-convener" });
+  f.add("main-session");
+  f.add("user-session", { convener: "user-convener" });
+  f.add("pane-session", { convener: "pane-convener" });
+  f.add("cli-session", { convener: "cli-convener" });
+  const reader = await f.open();
+  assert.deepEqual((await reader.getSession("child-session")).parent,
+    { kind: "task", taskId: "parent-task", sessionId: "parent-current" });
+  assert.deepEqual((await reader.getSession("main-session")).parent, { kind: "main", piSessionId: "pi-parent" });
+  for (const id of ["user-session", "pane-session", "cli-session"]) {
+    const session = await reader.getSession(id);
+    assert.deepEqual(session.parent, { kind: "user" });
+    assert.equal(session.parentPiSessionId, undefined);
+    assert.equal(session.parentDiagnostics, undefined);
+  }
+  f.add("parent-next", { task: "parent-task" });
+  f.db.exec("UPDATE tasks SET agora_session_id='parent-next' WHERE id='parent-task'");
+  const list = await reader.listSessions();
+  const child = list.items.find(item => item.agoraSessionId === "child-session");
+  assert.deepEqual(child.parent, { kind: "task", taskId: "parent-task", sessionId: "parent-next" });
+  for (const item of list.items) {
+    const detail = await reader.getSession(item.agoraSessionId);
+    assert.deepEqual(item.parent, detail.parent);
+    assert.equal(item.usage, undefined);
+    assert.ok(!JSON.stringify(item.parent).includes("pane:"));
+  }
+});
+
+test("缺失主 pi 标识或父任务关联时省略 parent 并提供诊断", async t => {
+  const f = await fixture(t);
+  f.db.exec(`INSERT INTO principals VALUES('main-no-pi',NULL,'agent:main');
+    INSERT INTO tasks VALUES('orphan-task','缺父任务','parent-not-found','orphan-session');`);
+  f.add("missing-main", { convener: "main-no-pi" });
+  f.add("orphan-session", { task: "orphan-task" });
+  f.add("unknown-convener", { convener: "not-found" });
+  const reader = await f.open();
+  const kinds = new Map([
+    ["missing-main", "main_session_id_missing"], ["orphan-session", "parent_task_missing"],
+    ["unknown-convener", "session_parent_unknown"],
+  ]);
+  for (const item of (await reader.listSessions()).items) {
+    const detail = await reader.getSession(item.agoraSessionId);
+    assert.equal(item.parent, undefined);
+    assert.equal(detail.parent, undefined);
+    assert.equal(item.parentDiagnostics[0].kind, kinds.get(item.agoraSessionId));
+    assert.deepEqual(item.parentDiagnostics, detail.parentDiagnostics);
+    assert.equal(typeof item.parentDiagnostics[0].message, "string");
+  }
 });
 
 test("不存在的 home 或数据库不会建目录；未知版本和未支持功能明确失败", async t => {
@@ -299,6 +359,18 @@ test("校验追加前缀、消息数和末条消息，真正损坏判 suspect", 
   await f.write(file, first.replace("根", "改"));
   assert.equal((await verifySessionFile(file, { previous: { hash: initial.hash, bytes: initial.bytes } })).state, "suspect");
   await appendFile(file, "{bad json}\n");
+  assert.equal((await verifySessionFile(file)).state, "suspect");
+});
+
+test("解析器 empty 状态保守返回 partial，invalid 状态返回 suspect", needsParser, async t => {
+  const f = await fixture(t);
+  const file = f.add();
+  await f.write(file, "");
+  const empty = await verifySessionFile(file);
+  assert.equal(empty.state, "partial");
+  assert.equal(empty.messageCount, 0);
+  assert.ok(empty.diagnostics.some(diagnostic => diagnostic.kind === "empty_session"));
+  await f.write(file, jsonl([{ type: "session", version: 999, id: "unsupported", timestamp: at, cwd: "/fixture" }]));
   assert.equal((await verifySessionFile(file)).state, "suspect");
 });
 

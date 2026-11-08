@@ -21,8 +21,10 @@ export async function verifySessionFile(file: string, expected: VerifyExpected =
     const parsed = await parseSessionFile(file);
     const diagnostics: unknown[] = [...parsed.diagnostics];
     const incomplete = (kind: string) => /truncat|incomplete|partial|unterminated|截断|不完整/i.test(kind);
-    let suspect = parsed.diagnostics.some(d => !incomplete(d.kind));
-    let partial = !!expected.hasUnfinishedPartials || parsed.diagnostics.some(d => incomplete(d.kind));
+    let suspect = parsed.status === "invalid" || parsed.diagnostics.some(d => !incomplete(d.kind));
+    const partial = parsed.status === "empty" || !!expected.hasUnfinishedPartials ||
+      parsed.diagnostics.some(d => incomplete(d.kind));
+    if (parsed.status === "empty") diagnostics.push({ kind: "empty_session", message: "会话文件为空，尚无可读取条目" });
     let messageCount = 0;
     let foundLast = expected.lastMessage === undefined;
     for (let i = 0; i < parsed.entries.length; i++) {
