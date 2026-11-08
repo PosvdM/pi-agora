@@ -2,15 +2,15 @@ import { appendFile, lstat, mkdir, open, realpath, rename, unlink } from "node:f
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { openArchive, projectUserView, verifySessionFile } from "@pi-agora/archive";
+import { openArchive, projectPartials, projectUserView, verifySessionFile } from "@pi-agora/archive";
+import type { InFlightState, SessionStreamEvent } from "@pi-agora/protocol";
 import { parseSessionFile, type SessionEntry } from "@pi-agora/harness-pi";
 import type { DriverHandle } from "./driver.js";
 import type { Store } from "./store.js";
 import { AgoraError } from "./errors.js";
 import { entriesFromResponse, PiArchiveEvents, sameMessage, type ArchiveFragment, type PartialRow } from "./harness/pi/archive-events.js";
 
-interface Cursor { epoch: string; seq: number }
-interface ViewEvent { cursor: Cursor; type: string; [key: string]: unknown }
+type ViewEvent = SessionStreamEvent;
 interface DiskView { entries: SessionEntry[]; leafId: string | null; completeIds: Set<string>; idsStable: boolean }
 interface Issue { t: string; kind: string; message: string }
 interface Client { response: ServerResponse; close(): void }
@@ -74,7 +74,6 @@ export class SessionViews {
     const issue = { t: new Date().toISOString(), kind, message: error instanceof Error ? error.message : String(error) };
     state.issues.push(issue);
     if (state.issues.length > 200) state.issues.shift();
-    this.publish(state, "diagnostic", { diagnostic: issue });
   }
   private serial<T>(state: ViewState, operation: () => Promise<T>): Promise<T> {
     const result = state.work.then(operation);
@@ -163,6 +162,7 @@ export class SessionViews {
     const old = this.states.get(sessionId);
     if (old?.runId === runId && old.handle === handle) { await old.ready; return; }
     if (old) {
+      this.publish(old, "agora_run", { runId, phase: "started" });
       this.resync(old);
       if (old.handle && !old.ended) await this.ended(sessionId, old.runId);
     }
@@ -174,12 +174,16 @@ export class SessionViews {
       if (state.closing) return;
       const result = state.events.receive(event);
       state.pending.push(...result.rows);
-      for (const change of result.changes) this.publish(state, change.type, { change });
+      // 驱动合成的诊断事件不属于 pi 会话事件；其余事件保留原始形状。
+      if (typeof event.type === "string" && event.type !== "usage_record" && event.type !== "quota_exhausted" && !event.type.startsWith("driver_")) {
+        this.publish(state, event.type, { ...event });
+      }
       if (result.rows.length) this.scheduleWrite(state);
       if (result.refresh) void this.serial(state, () => this.refresh(state)).catch(() => {});
     }), handle.onExit(exit => {
       void this.ended(sessionId, runId, exit.reason).catch(() => {});
     }));
+    this.publish(state, "agora_run", { runId, phase: "started" });
     state.ready = this.serial(state, async () => {
       await this.refresh(state, true);
       await this.verifyState(state);
@@ -212,11 +216,23 @@ export class SessionViews {
     const ids = new Set(next.entries.map(entry => entry.id));
     const removedIds = state.entries.filter(entry => !ids.has(entry.id)).map(entry => entry.id);
     const leafChanged = next.leafId !== state.leafId;
+    const byId = new Map(next.entries.map(entry => [entry.id, entry]));
+    const ancestors = new Set<string>();
+    let ancestor = next.leafId;
+    while (ancestor && !ancestors.has(ancestor)) {
+      ancestors.add(ancestor); ancestor = byId.get(ancestor)?.parentId ?? null;
+    }
+    const branchChanged = state.leafId !== null && !ancestors.has(state.leafId);
     // 这里到 publish 之间没有 await；快照水位与内存投影具有同一切点。
     state.entries = clone(next.entries);
     state.leafId = next.leafId;
     state.diskEntries = clone(disk.entries.filter(entry => disk.completeIds.has(entry.id)));
-    if (changed.length || removedIds.length || leafChanged) this.publish(state, "entries", { entries: clone(changed), removedIds, leafId: state.leafId });
+    if (branchChanged) {
+      // 推进水位并丢弃旧分支回放；断线客户端也必须重新取得快照。
+      state.seq++; state.ring = []; this.resync(state);
+    } else if (changed.length || removedIds.length || leafChanged) {
+      this.publish(state, "agora_entries", { entries: clone(changed), leafId: state.leafId });
+    }
     for (const item of state.events.messages.values()) {
       if (!item.ended || !disk.idsStable) continue;
       // v1 临时 ID 仅供本次读取；即使消息匹配，也不能写入持久 closed 引用。
@@ -226,7 +242,6 @@ export class SessionViews {
       state.pending.push({ runId: state.runId, t: new Date().toISOString(), messageSeq: item.messageSeq, closed: true, entryId: entry.id });
       state.events.close(item.messageSeq);
       this.scheduleWrite(state);
-      this.publish(state, "partial_closed", { messageSeq: item.messageSeq, entryId: entry.id });
     }
   }
   private scheduleWrite(state: ViewState): void {
@@ -271,7 +286,6 @@ export class SessionViews {
     });
     state.verification = clone(result);
     if (!state.baseline && result.hash !== null) state.baseline = { hash: result.hash, bytes: result.bytes };
-    if (result.state === "suspect" || result.state === "missing") this.publish(state, "verification", { verification: clone(result) });
     return result;
   }
   private async saveDiagnostics(state: ViewState): Promise<void> {
@@ -319,15 +333,20 @@ export class SessionViews {
     try {
       await this.serial(state, async () => {
         if (!state.ended) {
-          await this.refresh(state);
-          await this.writePending(state);
-          await this.verifyState(state);
-          state.ended = true;
+          try {
+            await this.refresh(state);
+            await this.writePending(state);
+            await this.verifyState(state);
+          } finally { state.ended = true; }
         }
         await this.saveDiagnostics(state);
-        this.publish(state, "end", { reason: state.endReason ?? null });
       });
-    } finally { for (const client of [...state.clients]) client.close(); }
+    } finally {
+      // 进程已经退出，归档失败也不能继续暴露活动工具或 assistant。
+      this.publish(state, "agora_run", { runId: state.runId, phase: "exited", ...(state.endReason !== undefined ? { reason: state.endReason } : {}) });
+      this.status(sessionId);
+      for (const client of [...state.clients]) client.close();
+    }
   }
   private async ensure(sessionId: string): Promise<ViewState> {
     // 重同步后的快照等待运行切换，不能在旧运行收尾期间再次取得旧 epoch。
@@ -345,10 +364,14 @@ export class SessionViews {
     if (this.states.get(sessionId) !== state) return this.ensure(sessionId);
     return state;
   }
-  private taskStatus(sessionId: string): { status: string; statusDetail: string | null } {
+  private taskStatus(sessionId: string): { status: string; statusDetail: string | null; phase: InFlightState["phase"]; revision: number } {
     const session = this.store.session(sessionId);
     const task = session.task_id ? this.store.get<{ status_detail: string | null }>("SELECT status_detail FROM tasks WHERE id=?", session.task_id) : undefined;
-    return { status: session.status, statusDetail: session.control_state ?? task?.status_detail ?? null };
+    const state = this.states.get(sessionId);
+    const phase = state?.handle && !state.ended ? state.events.activePhase : "idle";
+    return { status: session.status, statusDetail: session.control_state ?? task?.status_detail ?? null,
+      phase: state?.handle && !state.ended && (state.closing || session.control_state === "stopping") ? "stopping" : phase,
+      revision: (session as unknown as { revision?: number }).revision ?? 0 };
   }
   private historySlice(state: ViewState, before: string | undefined, limit: number) {
     const entries = projectUserView(state.entries, state.leafId);
@@ -361,11 +384,12 @@ export class SessionViews {
     const count = pageLimit(limit, 100);
     const state = await this.ensure(sessionId);
     // 所有可变字段和游标在同一同步段内复制，绝不跨 await 读取流状态。
+    const status = this.taskStatus(sessionId);
     return {
       cursor: { epoch: state.epoch, seq: state.seq }, ...this.historySlice(state, undefined, count),
-      inFlight: state.events.inFlight(state.entries),
-      unfinishedPartials: clone([...state.archivedPartials, ...state.events.unfinished(state.diskEntries)]),
-      ...this.taskStatus(sessionId),
+      inFlight: { ...state.events.inFlight(state.entries, !!state.handle && !state.ended), phase: status.phase },
+      unfinishedPartials: projectPartials(clone([...state.archivedPartials, ...state.events.unfinished(state.diskEntries)])),
+      status: status.status, statusDetail: status.statusDetail,
     };
   }
   async history(sessionId: string, q: { before?: string; limit?: number } = {}) {
@@ -395,10 +419,10 @@ export class SessionViews {
   }
   status(sessionId: string): void {
     const state = this.states.get(sessionId);
-    if (state) this.publish(state, "status", this.taskStatus(sessionId));
+    if (state) this.publish(state, "agora_status", this.taskStatus(sessionId));
   }
   private publish(state: ViewState, type: string, data: Record<string, unknown>): void {
-    const event = clone({ cursor: { epoch: state.epoch, seq: ++state.seq }, type, ...data });
+    const event: ViewEvent = clone({ cursor: { epoch: state.epoch, seq: ++state.seq }, sessionId: state.sessionId, event: { ...data, type } });
     state.ring.push(event);
     if (state.ring.length > MAX_EVENTS) state.ring.shift();
     for (const client of [...state.clients]) this.send(client, event);
@@ -407,12 +431,12 @@ export class SessionViews {
     const response = client.response;
     try {
       if (response.destroyed || response.writableEnded || response.writableLength > MAX_CLIENT_BUFFER ||
-          !response.write(`event: ${event.type}\nid: ${JSON.stringify(event.cursor)}\ndata: ${JSON.stringify(event)}\n\n`)) client.close();
+          !response.write(`event: ${event.event.type === "resync" ? "resync" : "session"}\nid: ${event.cursor.epoch}:${event.cursor.seq}\ndata: ${JSON.stringify(event)}\n\n`)) client.close();
     } catch { client.close(); }
   }
   private resync(state: ViewState): void {
     for (const client of [...state.clients]) {
-      this.send(client, { cursor: { epoch: state.epoch, seq: state.seq }, type: "resync" });
+      this.send(client, { cursor: { epoch: state.epoch, seq: state.seq }, sessionId: state.sessionId, event: { type: "resync" } });
       client.close();
     }
   }
@@ -438,7 +462,7 @@ export class SessionViews {
     const after = q.afterSeq;
     const earliest = state?.ring[0]?.cursor.seq ?? (state?.seq ?? 0) + 1;
     if (this.closed || this.transitions.has(sessionId) || !state || q.epoch !== state.epoch || !Number.isSafeInteger(after) || after! < earliest - 1 || after! > state.seq || after! < 0) {
-      this.send(client, { cursor: { epoch: state?.epoch ?? `${this.instanceId}:archive`, seq: state?.seq ?? 0 }, type: "resync" });
+      this.send(client, { cursor: { epoch: state?.epoch ?? `${this.instanceId}:archive`, seq: state?.seq ?? 0 }, sessionId, event: { type: "resync" } });
       client.close(); return;
     }
     // 回放与注册在同一同步段中完成，不存在 snapshot 到 stream 之间的丢事件窗口。

@@ -46,6 +46,28 @@ export function projectUserView(entries, leafId) {
   }
   return result.reverse();
 }
+export function projectPartials(fragments) {
+  const messages = new Map();
+  for (const fragment of fragments) {
+    const key = fragment.runId + ':' + fragment.messageSeq;
+    if (!messages.has(key)) messages.set(key, { runId: fragment.runId, at: fragment.t, blocks: [] });
+    const partial = messages.get(key);
+    let block = partial.blocks.find(value => value.contentIndex === fragment.contentIndex);
+    if (!block) {
+      block = fragment.blockType === 'toolCall'
+        ? { type: 'toolCall', contentIndex: fragment.contentIndex, id: '', toolName: '', argsText: '', done: false }
+        : { type: fragment.blockType, contentIndex: fragment.contentIndex, text: '', done: false };
+      partial.blocks.push(block);
+    }
+    const field = block.type === 'toolCall' ? 'argsText' : 'text';
+    block[field] = fragment.replace ? fragment.delta : block[field] + fragment.delta;
+    if (fragment.done !== undefined) block.done = fragment.done;
+    if (fragment.toolCallId !== undefined) block.id = fragment.toolCallId;
+    if (fragment.toolName !== undefined) block.toolName = fragment.toolName;
+    if (fragment.args !== undefined) block.args = fragment.args;
+  }
+  return [...messages.values()].map(value => ({ ...value, blocks: value.blocks.sort((a, b) => a.contentIndex - b.contentIndex) }));
+}
 export async function verifySessionFile(file, expected = {}) {
   const fixture = [...fixtures.values()].find(value => value.file === file);
   fixture?.verifications.push(structuredClone(expected));
@@ -149,9 +171,9 @@ async function setup(t, entries = []) {
 }
 function emitText(driver, text = '回复', timestamp = 2, end = true) {
   const value = message(text, timestamp);
-  driver.emit({ type: 'message_start', message: message('', timestamp) });
-  driver.emit({ type: 'message_update', message: value, assistantMessageEvent: { type: 'text_start', contentIndex: 0, partial: value } });
-  driver.emit({ type: 'message_update', message: value, assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: text, partial: value } });
+  driver.emit({ type: 'message_start', message: { role: 'assistant', timestamp, content: [] } });
+  driver.emit({ type: 'message_update', assistantMessageEvent: { type: 'text_start', contentIndex: 0 } });
+  driver.emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: text } });
   if (end) driver.emit({ type: 'message_end', message: value });
   return value;
 }
@@ -203,16 +225,16 @@ test('会话视图：首次和后续异步刷新期间仍捕获新 inFlight，�
   const first = emitText(f.driver, '首次刷新期间', 2, false);
   release({ success: true, data: { entries: [], leafId: null } });
   await begin;
-  assert.equal((await f.views.snapshot('s1')).inFlight[0].message.content[0].text, first.content[0].text);
+  assert.equal((await f.views.snapshot('s1')).inFlight.assistant.blocks[0].text, first.content[0].text);
   f.driver.sendHook = undefined;
   const cut = await f.views.snapshot('s1');
   const second = emitText(f.driver, '水位之后', 3, false);
   const { response } = stream(f.views, cut.cursor);
   const replay = response.values();
-  assert.ok(replay.some(event => event.type === 'fragment' && event.change.fragment.delta === second.content[0].text));
+  assert.ok(replay.some(value => value.event.type === 'message_update' && value.event.assistantMessageEvent.delta === second.content[0].text));
   assert.ok(replay.every(event => event.cursor.seq > cut.cursor.seq));
   const later = await f.views.snapshot('s1');
-  assert.equal(later.inFlight.length, 2);
+  assert.equal(later.inFlight.assistant.blocks[0].text, '水位之后');
   assert.ok(later.cursor.seq > cut.cursor.seq);
 });
 
@@ -222,18 +244,31 @@ test('会话视图：后续 get_entries 阻塞时快照立即返回，旧刷新�
   let release, entered;
   const started = new Promise(resolve => { entered = resolve; });
   f.driver.sendHook = async () => { entered(); return new Promise(resolve => { release = resolve; }); };
-  emitText(f.driver, '旧回复', 2);
+  const older = emitText(f.driver, '旧回复', 2);
   await started;
+  const before = await f.views.snapshot('s1');
+  const replay = stream(f.views, before.cursor);
   emitText(f.driver, '较新回复', 3, false);
   const snapshot = await Promise.race([
     f.views.snapshot('s1'),
     new Promise((_, reject) => { const timer = setTimeout(() => reject(new Error('快照被异步刷新阻塞')), 1000); timer.unref(); }),
   ]);
-  assert.equal(snapshot.inFlight.at(-1).message.content[0].text, '较新回复');
-  release({ success: true, data: { entries: [], leafId: null } });
+  assert.equal(snapshot.inFlight.assistant.blocks[0].text, '较新回复');
+  assert.equal(snapshot.inFlight.completed[0].content[0].text, '旧回复');
+  assert.deepEqual(snapshot.entries, []);
+  assert.equal(snapshot.cursor.seq, before.cursor.seq + 3);
+  const final = entry('older', null, older);
+  release({ success: true, data: { entries: [final], leafId: final.id } });
   f.driver.sendHook = undefined;
   await f.views.flush();
-  assert.equal((await f.views.snapshot('s1')).inFlight.at(-1).message.content[0].text, '较新回复');
+  const after = await f.views.snapshot('s1');
+  assert.equal(after.inFlight.assistant.blocks[0].text, '较新回复');
+  assert.equal(after.inFlight.completed, undefined);
+  assert.deepEqual(after.entries, [final]);
+  assert.deepEqual(before.entries, []);
+  assert.equal(after.cursor.seq, snapshot.cursor.seq + 1);
+  assert.deepEqual(replay.response.values().map(value => value.event.type), ['message_start', 'message_update', 'message_update', 'agora_entries']);
+  assert.deepEqual(replay.response.values().map(value => value.cursor.seq), [1, 2, 3, 4].map(offset => before.cursor.seq + offset));
 });
 
 test('会话视图：message_end 不闭片段，RPC 和磁盘完整行均匹配才写 closed', async t => {
@@ -254,7 +289,7 @@ test('会话视图：message_end 不闭片段，RPC 和磁盘完整行均匹配�
   assert.equal(rows.find(row => row.closed).entryId, 'final');
   assert.ok(rows.some(row => row.ended && row.message.content[0].text === '回复'));
   assert.deepEqual((await f.views.snapshot('s1')).unfinishedPartials, []);
-  assert.deepEqual((await f.views.snapshot('s1')).inFlight, []);
+  assert.deepEqual((await f.views.snapshot('s1')).inFlight, { phase: 'streaming', tools: [], queue: { steering: [], followUp: [] } });
 });
 
 test('会话视图：只有磁盘消息无 RPC entryId 时保留 ended 匹配行，不冒写 closed', async t => {
@@ -356,7 +391,7 @@ test('会话视图：过期、不连续、未来及旧 epoch 游标仅返回 res
   const current = (await f.views.snapshot('s1')).cursor;
   for (const cursor of [{ ...current, seq: 0 }, { ...current, seq: current.seq + 1 }, { ...current, seq: -1 }, { ...current, seq: 1.5 }, { ...current, epoch: 'other' }]) {
     const { response } = stream(f.views, cursor);
-    assert.deepEqual(response.values().map(event => event.type), ['resync']);
+    assert.deepEqual(response.values().map(value => value.event.type), ['resync']);
     assert.equal(response.writableEnded, true);
     assert.equal(response.listenerCount('close'), 0);
   }
@@ -368,7 +403,8 @@ test('会话视图：新运行通知旧 stream resync，旧退出不能修改新
   const { response } = stream(f.views, (await f.views.snapshot('s1')).cursor);
   const next = handle();
   await f.views.begin('s1', 'r2', next);
-  assert.deepEqual(response.values().map(value => value.type), ['resync']);
+  assert.deepEqual(response.values().map(value => value.event.type), ['agora_run', 'resync']);
+  assert.deepEqual(response.values()[0].event, { type: 'agora_run', runId: 'r2', phase: 'started' });
   assert.equal(response.writableEnded, true);
   await f.views.ended('s1', 'r1', '旧退出');
   assert.equal((await f.views.snapshot('s1')).cursor.epoch, 'daemon:r2');
@@ -391,7 +427,7 @@ test('会话视图：旧运行收尾期间的重同步快照等待新 epoch，�
   await started;
   const pending = f.views.snapshot('s1');
   const { response } = stream(f.views, previous);
-  assert.deepEqual(response.values().map(event => event.type), ['resync']);
+  assert.deepEqual(response.values().map(value => value.event.type), ['resync']);
   release();
   await switching;
   assert.equal((await pending).cursor.epoch, 'daemon:r2');
@@ -497,7 +533,8 @@ test('会话视图：离线快照读取归档未闭片段，reader 使用后关�
   const before = await readFile(f.file);
   f.archivedPartials.push({ runId: 'older', delta: '残留', messageSeq: 1, contentIndex: 0, blockType: 'text', t: '测试' });
   const snapshot = await f.views.snapshot('s1');
-  assert.equal(snapshot.unfinishedPartials[0].delta, '残留');
+  assert.equal(snapshot.unfinishedPartials[0].blocks[0].text, '残留');
+  assert.deepEqual(snapshot.inFlight, { phase: 'idle', tools: [], queue: { steering: [], followUp: [] } });
   assert.equal(fixtures.get(f.home).readerCloses, 1);
   assert.deepEqual(await readFile(f.file), before);
   assert.deepEqual(await readdir(f.directory), ['session.jsonl']);
@@ -508,7 +545,7 @@ test('会话视图：在线快照保留历史运行未闭片段，并排除当�
   f.archivedPartials.push({ runId: 'older', delta: '历史中断', messageSeq: 1, contentIndex: 0, blockType: 'text', t: '测试' });
   f.archivedPartials.push({ runId: 'r1', delta: '当前副本', messageSeq: 1, contentIndex: 0, blockType: 'text', t: '测试' });
   await f.views.begin('s1', 'r1', f.driver);
-  assert.deepEqual((await f.views.snapshot('s1')).unfinishedPartials.map(row => row.delta), ['历史中断']);
+  assert.deepEqual((await f.views.snapshot('s1')).unfinishedPartials.map(row => row.blocks[0].text), ['历史中断']);
 });
 
 test('会话视图：归档写入失败的退出仍关闭 SSE，缺少会话文件不创建假会话', async t => {
@@ -521,6 +558,9 @@ test('会话视图：归档写入失败的退出仍关闭 SSE，缺少会话文�
   await assert.rejects(f.views.ended('s1', 'r1', 'stopped'));
   assert.equal(response.writableEnded, true);
   assert.equal(f.driver.events.size, 0);
+  assert.deepEqual(response.values().slice(-2).map(value => value.event.type), ['agora_run', 'agora_status']);
+  assert.equal(response.values().at(-1).event.phase, 'idle');
+  assert.deepEqual((await f.views.snapshot('s1')).inFlight, { phase: 'idle', tools: [], queue: { steering: [], followUp: [] } });
   await assert.rejects(readFile(f.file), error => error.code === 'ENOENT');
 });
 
@@ -532,22 +572,259 @@ test('pi 归档事件：thinking、text 和 toolCall 块保留增量与工具开
   events.receive({ type: 'message_start', message: value });
   const fragments = [];
   for (const [index, type, delta] of [[0, 'thinking', '思考'], [1, 'text', '文字'], [2, 'toolcall', '{"path":"a"}']]) {
-    fragments.push(...events.receive({ type: 'message_update', message: value, assistantMessageEvent: { type: `${type}_start`, contentIndex: index } }).rows);
-    fragments.push(...events.receive({ type: 'message_update', message: value, assistantMessageEvent: { type: `${type}_delta`, contentIndex: index, delta } }).rows);
+    fragments.push(...events.receive({ type: 'message_update', assistantMessageEvent: { type: `${type}_start`, contentIndex: index,
+      ...(type === 'toolcall' ? { id: 'call1', toolName: 'read' } : {}) } }).rows);
+    fragments.push(...events.receive({ type: 'message_update', assistantMessageEvent: { type: `${type}_delta`, contentIndex: index, delta } }).rows);
   }
   assert.deepEqual(fragments.filter(row => row.delta).map(row => row.blockType), ['thinking', 'text', 'toolCall']);
   assert.equal(fragments.find(row => row.blockType === 'toolCall').toolCallId, 'call1');
   assert.equal(fragments.find(row => row.blockType === 'toolCall').toolName, 'read');
   const end = events.receive({ type: 'message_end', message: value });
-  assert.equal(end.rows[0].ended, true);
+  assert.equal(end.rows.at(-1).ended, true);
   assert.equal(end.rows.some(row => row.closed), false);
   assert.throws(() => entriesFromResponse({ success: false, error: '测试' }));
+});
+
+test('会话视图：delta-only 块按索引重建，块结束和最终消息覆盖拼接内容并落旁车', async t => {
+  const f = await setup(t);
+  await f.views.begin('s1', 'r1', f.driver);
+  const update = (assistantMessageEvent, usage) => f.driver.emit({ type: 'message_update', assistantMessageEvent,
+    ...(usage === undefined ? {} : { usage }) });
+  f.driver.emit({ type: 'message_start', message: { role: 'assistant', timestamp: 8, content: [] } });
+  update({ type: 'toolcall_start', contentIndex: 2, id: 'c1', toolName: 'read' });
+  update({ type: 'toolcall_delta', contentIndex: 2, delta: '{"path":"wrong' });
+  update({ type: 'text_delta', contentIndex: 1, delta: '拼接文字' }, { output: 9 });
+  update({ type: 'thinking_start', contentIndex: 0 });
+  update({ type: 'thinking_delta', contentIndex: 0, delta: '拼接思考' });
+  const live = (await f.views.snapshot('s1')).inFlight.assistant;
+  assert.deepEqual(live.blocks.map(block => block.contentIndex), [0, 1, 2]);
+  assert.deepEqual(live.blocks[2], { type: 'toolCall', contentIndex: 2, id: 'c1', toolName: 'read', argsText: '{"path":"wrong', done: false });
+  assert.deepEqual(live.usage, { output: 9 });
+  update({ type: 'text_end', contentIndex: 1, content: '权威文字' });
+  update({ type: 'thinking_end', contentIndex: 0, content: '权威思考' });
+  update({ type: 'toolcall_end', contentIndex: 2, toolCall: { type: 'toolCall', id: 'c1', name: 'read', arguments: { path: 'right' } } });
+  const ended = (await f.views.snapshot('s1')).inFlight.assistant.blocks;
+  assert.deepEqual(ended.map(block => block.done), [true, true, true]);
+  assert.deepEqual(ended.map(block => block.text ?? block.argsText), ['权威思考', '权威文字', '{"path":"right"}']);
+  assert.deepEqual(ended[2].args, { path: 'right' });
+  const final = { role: 'assistant', timestamp: 8, content: [
+    { type: 'thinking', thinking: '最终思考' }, { type: 'text', text: '最终文字' },
+    { type: 'toolCall', id: 'c1', name: 'read', arguments: { path: 'final' } },
+  ], usage: { output: 10 } };
+  f.driver.emit({ type: 'message_end', message: final });
+  await f.views.flush();
+  const snapshot = await f.views.snapshot('s1');
+  assert.equal(snapshot.inFlight.assistant, undefined);
+  assert.deepEqual(snapshot.inFlight.completed, [final]);
+  assert.deepEqual(snapshot.unfinishedPartials[0].blocks.map(block => block.text ?? block.argsText), ['最终思考', '最终文字', '{"path":"final"}']);
+  const rows = await f.partialRows();
+  assert.ok(rows.some(row => row.blockType === 'toolCall' && row.toolCallId === 'c1' && row.toolName === 'read' && row.delta === ''));
+  assert.ok(rows.some(row => row.replace && row.done && row.delta === '权威文字'));
+  assert.ok(rows.some(row => row.replace && row.done && row.args?.path === 'final'));
+  assert.ok(rows.some(row => row.ended && row.message.usage.output === 10));
+  assert.equal(rows.some(row => row.closed), false);
+});
+
+test('会话视图：用户和工具消息不作为 assistant，队列、活动工具、重试和压缩维护中立状态', async t => {
+  const f = await setup(t);
+  await f.views.begin('s1', 'r1', f.driver);
+  for (const role of ['user', 'toolResult']) {
+    const value = message('非助手消息', 1, role);
+    f.driver.emit({ type: 'message_start', message: value });
+    assert.equal((await f.views.snapshot('s1')).inFlight.assistant, undefined);
+    f.driver.emit({ type: 'message_end', message: value });
+  }
+  f.driver.emit({ type: 'queue_update', steering: ['s1', 's2'], followUp: ['f1'] });
+  f.driver.emit({ type: 'queue_update', steering: ['s2'], followUp: [] });
+  f.driver.emit({ type: 'tool_execution_start', toolCallId: 't1', toolName: 'read', args: { path: 'a' } });
+  f.driver.emit({ type: 'tool_execution_start', toolCallId: 't2', toolName: 'bash', args: { command: 'pwd' } });
+  f.driver.emit({ type: 'tool_execution_update', toolCallId: 't1', toolName: 'read', args: { path: 'a' }, partialResult: { content: '旧结果' } });
+  f.driver.emit({ type: 'tool_execution_update', toolCallId: 't1', toolName: 'read', args: { path: 'a' }, partialResult: { content: '最新结果' } });
+  let state = (await f.views.snapshot('s1')).inFlight;
+  assert.equal(state.phase, 'tools');
+  assert.deepEqual(state.queue, { steering: ['s2'], followUp: [] });
+  assert.equal(state.tools.length, 2);
+  assert.equal(state.tools[0].toolCallId, 't1');
+  assert.deepEqual(state.tools[0].args, { path: 'a' });
+  assert.deepEqual(state.tools[0].partialResult, { content: '最新结果' });
+  assert.equal(typeof state.tools[0].startedAt, 'number');
+  state.queue.steering.push('不应写回'); state.tools[0].args.path = '不应写回';
+  f.driver.emit({ type: 'tool_execution_end', toolCallId: 't1', toolName: 'read', result: {}, isError: false });
+  assert.deepEqual((await f.views.snapshot('s1')).inFlight.tools.map(tool => tool.toolCallId), ['t2']);
+  f.driver.emit({ type: 'tool_execution_end', toolCallId: 't2', toolName: 'bash', result: {}, isError: false });
+  const retry = { attempt: 1, maxAttempts: 3, delayMs: 2000, errorMessage: 'overloaded' };
+  f.driver.emit({ type: 'auto_retry_start', ...retry });
+  state = (await f.views.snapshot('s1')).inFlight;
+  assert.equal(state.phase, 'retrying'); assert.deepEqual(state.retry, retry);
+  f.driver.emit({ type: 'auto_retry_end', success: true, attempt: 2 });
+  state = (await f.views.snapshot('s1')).inFlight;
+  assert.equal(state.phase, 'streaming'); assert.equal(state.retry, undefined);
+  f.driver.emit({ type: 'compaction_start', reason: 'manual' });
+  assert.equal((await f.views.snapshot('s1')).inFlight.phase, 'compacting');
+  f.driver.emit({ type: 'compaction_end', reason: 'manual', aborted: false, willRetry: true });
+  assert.equal((await f.views.snapshot('s1')).inFlight.phase, 'retrying');
+  f.driver.emit({ type: 'agent_settled', aborted: false });
+  state = (await f.views.snapshot('s1')).inFlight;
+  assert.equal(state.phase, 'idle'); assert.equal(state.assistant, undefined);
+  assert.deepEqual(state.tools, []); assert.deepEqual(state.queue, { steering: [], followUp: [] });
+  f.row.control_state = 'stopping';
+  assert.equal((await f.views.snapshot('s1')).inFlight.phase, 'stopping');
+  await f.views.ended('s1', 'r1', 'stopped');
+  assert.deepEqual((await f.views.snapshot('s1')).inFlight, { phase: 'idle', tools: [], queue: { steering: [], followUp: [] } });
+});
+
+test('会话视图：SSE 使用完整 envelope 和 epoch:seq id，原始事件不改形且诊断不入流', async t => {
+  const f = await setup(t);
+  await f.views.begin('s1', 'r1', f.driver);
+  const cut = (await f.views.snapshot('s1')).cursor;
+  const { response } = stream(f.views, cut);
+  const originals = [
+    { type: 'agent_start' },
+    { type: 'message_update', usage: { output: 1 }, assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'wire' } },
+    { type: 'queue_update', steering: ['s'], followUp: ['f'] },
+    { type: 'extension_ui_request', id: 'ui1', method: 'notify', message: '提示', notifyType: 'info' },
+    { type: 'bash_execution_update', id: 'bash1', delta: 'output' },
+    { type: 'thinking_level_changed', level: 'high' },
+  ];
+  for (const event of originals) f.driver.emit(event);
+  for (const type of ['usage_record', 'quota_exhausted', 'driver_diagnostic']) f.driver.emit({ type, diagnostic: '内部事件' });
+  const values = response.values();
+  assert.equal(values.length, originals.length);
+  assert.deepEqual(values.map(value => value.event), originals);
+  assert.deepEqual(values.map(value => value.cursor.seq), originals.map((_, i) => cut.seq + i + 1));
+  assert.ok(values.every(value => value.sessionId === 's1' && value.type === undefined));
+  const frames = response.chunks.join('').trimEnd().split('\n\n');
+  frames.forEach((frame, i) => assert.equal(frame, `event: session\nid: daemon:r1:${cut.seq + i + 1}\ndata: ${JSON.stringify(values[i])}`));
+  f.driver.fail = true;
+  await f.views.settled('s1');
+  const diagnostic = (await f.views.diagnostics('s1'))[0];
+  assert.ok(diagnostic.diagnostics.some(issue => issue.kind === 'get_entries_fallback'));
+  assert.deepEqual(response.values().slice(values.length).map(value => value.event.type), ['agora_status']);
+  assert.deepEqual(response.values().at(-1).event, { type: 'agora_status', status: 'running', statusDetail: '模型生成中', phase: 'streaming', revision: 0 });
+});
+
+test('会话视图：entry_appended、compaction_end、turn_end 先发原始事件再刷新条目', async t => {
+  const f = await setup(t);
+  await f.views.begin('s1', 'r1', f.driver);
+  let parentId = null;
+  for (const type of ['entry_appended', 'compaction_end', 'turn_end']) {
+    const cut = (await f.views.snapshot('s1')).cursor;
+    const { response } = stream(f.views, cut);
+    const appended = { type: 'custom', id: type, parentId, customType: '扩展' };
+    f.driver.entries.push(appended); f.driver.leafId = appended.id;
+    const raw = type === 'entry_appended' ? { type, entry: appended }
+      : type === 'compaction_end' ? { type, reason: 'manual', result: { summary: '摘要' }, aborted: false, willRetry: false }
+      : { type, message: message('结束'), toolResults: [] };
+    f.driver.emit(raw);
+    assert.deepEqual(response.values().map(value => value.event), [raw]);
+    await f.views.flush();
+    const values = response.values();
+    assert.deepEqual(values.map(value => value.event.type), [type, 'agora_entries']);
+    assert.deepEqual(values[1].event, { type: 'agora_entries', entries: [appended], leafId: appended.id });
+    assert.deepEqual(values.map(value => value.cursor.seq), [cut.seq + 1, cut.seq + 2]);
+    const snapshot = await f.views.snapshot('s1');
+    assert.equal(snapshot.cursor.seq, values[1].cursor.seq);
+    assert.equal(snapshot.leafId, appended.id);
+    assert.deepEqual(snapshot.entries.at(-1), appended);
+    assert.equal(f.driver.commands.filter(command => command === 'get_entries').length, 2 + ['entry_appended', 'compaction_end', 'turn_end'].indexOf(type));
+    parentId = appended.id;
+  }
+});
+
+test('会话视图：分支切换通知在线与断线客户端 resync，后继追加可连续回放', async t => {
+  const a = entry('a', null), b = entry('b', 'a'), c = entry('c', 'a');
+  const f = await setup(t, [a, b]);
+  await f.views.begin('s1', 'r1', f.driver);
+  const cut = (await f.views.snapshot('s1')).cursor;
+  const { response } = stream(f.views, cut);
+  f.driver.entries = [a, b, c]; f.driver.leafId = 'c';
+  f.driver.emit({ type: 'entry_appended', entry: c });
+  await f.views.flush();
+  assert.deepEqual(response.values().map(value => value.event.type), ['entry_appended', 'resync']);
+  assert.equal(response.writableEnded, true);
+  assert.match(response.chunks.at(-1), /^event: resync\n/);
+  const switched = await f.views.snapshot('s1');
+  assert.equal(switched.cursor.epoch, cut.epoch);
+  assert.deepEqual(switched.entries.map(value => value.id), ['a', 'c']);
+  assert.deepEqual(stream(f.views, cut).response.values().map(value => value.event.type), ['resync']);
+  const next = stream(f.views, switched.cursor);
+  const d = entry('d', 'c');
+  f.driver.entries.push(d); f.driver.leafId = 'd';
+  f.driver.emit({ type: 'turn_end', message: d.message, toolResults: [] });
+  await f.views.flush();
+  assert.deepEqual(next.response.values().map(value => value.event.type), ['turn_end', 'agora_entries']);
+  assert.equal(next.response.writableEnded, false);
+});
+
+test('会话视图：退出归档屏障期间标记 stopping，完成后恢复离线 idle', async t => {
+  const f = await setup(t);
+  await f.views.begin('s1', 'r1', f.driver);
+  emitText(f.driver, '待退出', 2, false);
+  const original = f.views.disk.bind(f.views);
+  let release, entered;
+  const started = new Promise(resolve => { entered = resolve; });
+  const barrier = new Promise(resolve => { release = resolve; });
+  f.views.disk = async state => { entered(); await barrier; return original(state); };
+  const ending = f.views.ended('s1', 'r1', 'stopped');
+  await started;
+  try { assert.equal((await f.views.snapshot('s1')).inFlight.phase, 'stopping'); }
+  finally { release(); }
+  await ending;
+  assert.equal((await f.views.snapshot('s1')).inFlight.phase, 'idle');
+});
+
+test('会话视图：退出按运行和消息分组历史与当前片段，保留块终态且退出状态离线', async t => {
+  const f = await setup(t);
+  f.archivedPartials.push(
+    { runId: 'older', t: '2026-11-08T00:00:00Z', messageSeq: 1, contentIndex: 0, blockType: 'text', delta: '旧' },
+    { runId: 'older', t: '2026-11-08T00:00:01Z', messageSeq: 1, contentIndex: 0, blockType: 'text', delta: '运行' },
+  );
+  await f.views.begin('s1', 'r1', f.driver);
+  emitText(f.driver, '第一条', 2);
+  emitText(f.driver, '过时拼接', 3, false);
+  f.driver.emit({ type: 'message_update', assistantMessageEvent: { type: 'text_end', contentIndex: 0, content: '第二条权威文字' } });
+  f.driver.emit({ type: 'message_update', assistantMessageEvent: { type: 'toolcall_start', contentIndex: 1, id: 'tool1', toolName: 'read' } });
+  f.driver.emit({ type: 'message_update', assistantMessageEvent: { type: 'toolcall_delta', contentIndex: 1, delta: '{"path":' } });
+  f.driver.emit({ type: 'message_update', assistantMessageEvent: { type: 'toolcall_end', contentIndex: 1,
+    toolCall: { type: 'toolCall', id: 'tool1', name: 'read', arguments: { path: 'a' } } } });
+  f.driver.emit({ type: 'tool_execution_start', toolCallId: 'tool1', toolName: 'read', args: { path: 'a' } });
+  const cut = (await f.views.snapshot('s1')).cursor;
+  const { response } = stream(f.views, cut);
+  await f.views.ended('s1', 'r1', 'stopped');
+  const snapshot = await f.views.snapshot('s1');
+  assert.equal(snapshot.cursor.epoch, cut.epoch);
+  assert.deepEqual(snapshot.inFlight, { phase: 'idle', tools: [], queue: { steering: [], followUp: [] } });
+  assert.deepEqual(snapshot.unfinishedPartials.map(value => [value.runId, value.blocks[0].text]), [['older', '旧运行'], ['r1', '第一条'], ['r1', '第二条权威文字']]);
+  assert.deepEqual(snapshot.unfinishedPartials[2].blocks[1], { type: 'toolCall', contentIndex: 1, id: 'tool1', toolName: 'read', argsText: '{"path":"a"}', args: { path: 'a' }, done: true });
+  assert.equal(snapshot.unfinishedPartials[2].blocks[0].done, true);
+  assert.ok(snapshot.unfinishedPartials.every(value => typeof value.at === 'string' && value.delta === undefined));
+  assert.deepEqual(response.values().map(value => value.event.type), ['agora_run', 'agora_status']);
+  assert.deepEqual(response.values()[0].event, { type: 'agora_run', runId: 'r1', phase: 'exited', reason: 'stopped' });
+  assert.equal(response.values()[1].event.phase, 'idle');
+  const rows = await f.partialRows();
+  assert.ok(rows.some(row => row.done && row.replace && row.toolName === 'read' && row.args?.path === 'a'));
 });
 
 test('会话视图：按并行接口声明执行严格类型检查，不依赖尚未合入的包', async () => {
   const root = fileURLToPath(new URL('../', import.meta.url));
   const parserTypes = path.join(temporary, 'parser.d.ts');
   const archiveTypes = path.join(temporary, 'archive.d.ts');
+  const protocolTypes = path.join(temporary, 'protocol.d.ts');
+  await writeFile(protocolTypes, `
+export * from '${path.join(root, 'packages/protocol/src/index.ts').replaceAll('\\', '/')}';
+export type InFlightBlock =
+  | { type: 'text' | 'thinking'; contentIndex: number; text: string; done: boolean }
+  | { type: 'toolCall'; contentIndex: number; id: string; toolName: string; argsText: string; args?: unknown; done: boolean };
+export interface InFlightState {
+  phase: 'idle' | 'streaming' | 'tools' | 'compacting' | 'retrying' | 'waitingUi' | 'stopping';
+  assistant?: { startedAt: number; blocks: InFlightBlock[]; usage?: unknown }; completed?: unknown[];
+  tools: { toolCallId: string; toolName: string; args: unknown; partialResult?: unknown; startedAt: number }[];
+  queue: { steering: string[]; followUp: string[] };
+  retry?: { attempt: number; maxAttempts: number; delayMs: number; errorMessage: string };
+}
+export interface UnfinishedPartial { runId: string; at: string; blocks: InFlightBlock[] }
+export interface SessionStreamEvent { cursor: { epoch: string; seq: number }; sessionId: string; event: { type: string; [key: string]: unknown } }
+`);
   await writeFile(parserTypes, `
 export interface SessionEntry { type: string; id: string; parentId: string | null; [key: string]: unknown }
 export interface ParsedSession { entries: SessionEntry[]; leafId: string | null; version: number | null;
@@ -564,7 +841,8 @@ export function verifySessionFile(file: string, expected?: { messageEndCount?: n
   hash: string | null; bytes: number; messageCount: number; diagnostics: unknown[] }>;
 export interface Fragment { runId: string; t: string; messageSeq: number; contentIndex: number;
   blockType: 'thinking' | 'text' | 'toolCall'; delta: string; toolCallId?: string; toolName?: string;
-  messageRole?: string; messageTimestamp?: unknown; [key: string]: unknown }
+  replace?: boolean; done?: boolean; args?: unknown; messageRole?: string; messageTimestamp?: unknown }
+export function projectPartials(fragments: Fragment[]): import('@pi-agora/protocol').UnfinishedPartial[];
 export function openArchive(options: { home?: string; apiVersion: 1 }): Promise<{
   readPartials(id: string): Promise<Fragment[]>; readDiagnostics(id: string): Promise<unknown[]>; close(): void }>;
 `);
@@ -572,7 +850,7 @@ export function openArchive(options: { home?: string; apiVersion: 1 }): Promise<
   await writeFile(config, JSON.stringify({ compilerOptions: {
     target: 'ES2023', module: 'NodeNext', moduleResolution: 'NodeNext', strict: true, skipLibCheck: true,
     noEmit: true, types: ['node'], typeRoots: [path.join(root, 'node_modules', '@types')],
-    paths: { '@pi-agora/harness-pi': [parserTypes], '@pi-agora/archive': [archiveTypes] },
+    paths: { '@pi-agora/harness-pi': [parserTypes], '@pi-agora/archive': [archiveTypes], '@pi-agora/protocol': [protocolTypes] },
   }, files: [path.join(root, 'packages/daemon/src/sessions.ts'), path.join(root, 'packages/daemon/src/harness/pi/archive-events.ts')] }));
   execFileSync(process.execPath, [path.join(root, 'node_modules/typescript/bin/tsc'), '--project', config], {
     cwd: root, timeout: 60_000, encoding: 'utf8', stdio: 'pipe',
