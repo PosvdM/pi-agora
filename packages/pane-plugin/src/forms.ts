@@ -1,40 +1,71 @@
 import type { FormSpec, FormSubmission, FormSubmitResult, PanePlugin, RequestOrigin, FormRemovedReason } from "@pi-pane/plugin-api";
 import { encoded, message, type ApiReply, type PluginRuntime } from "./contracts.js";
 import { confirmationOf, type Security } from "./security.js";
+import { createFormCache, displayRecord, MAX_FORM_CACHE_BYTES, MAX_FORM_CACHE_ITEMS, type FormRecord } from "./form-cache.js";
 
-interface FormRecord { form: FormSpec; kind: string; id: string; object: any }
+function businessId(kind: string, object: any): unknown {
+  return kind === "confirmation" ? object.confirmationId ?? object.id : kind === "device" ? object.deviceId : kind === "decision" ? object.taskId : object.id;
+}
 function ok(reply: ApiReply): boolean { return reply.status >= 200 && reply.status < 300 && reply.status !== 202; }
 export function createForms(runtime: PluginRuntime, security: Security) {
   const current = new Map<string, FormRecord>();
   let refresh: Promise<FormSpec[]> | undefined;
   let disposed = false;
-  function record(kind: string, id: string, object: any, options: Partial<FormSpec>): FormRecord {
-    return { kind, id, object, form: { id: `agora:${kind}:${id}`, source: "agora", revision: object.revision ?? 1,
-      title: "待处理事项", createdAt: object.createdAt, ...options } };
+  function active() { if (disposed) throw new Error("agora 插件已停用"); }
+  const cache = createFormCache(runtime.context.dataDir, active);
+  let initial: Promise<void> | undefined;
+  function initialize(): Promise<void> {
+    if (!initial) initial = cache.load().then(items => {
+      active();
+      for (const [id, item] of items) current.set(id, item);
+    });
+    return initial;
   }
-  async function pages(path: string): Promise<any[]> {
+  function sorted(): FormSpec[] {
+    return structuredClone([...current.values()].map(item => item.form).sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id)));
+  }
+  function record(kind: string, id: string, object: any, options: Partial<FormSpec>): FormRecord {
+    return displayRecord({ kind, id, form: { id: `agora:${kind}:${id}`, source: "agora", revision: object.revision ?? 1,
+      title: "待处理事项", createdAt: object.createdAt, ...options } });
+  }
+  async function pages(path: string, budget: { items: number; bytes: number; pages: number }): Promise<any[]> {
     const items: any[] = [];
     let cursor: string | undefined;
     const seen = new Set<string>();
     do {
+      active();
+      if (++budget.pages > MAX_FORM_CACHE_ITEMS) throw new Error("待处理事项分页超过读取限制");
       const response = await runtime.api.request("GET", `${path}${path.includes("?") ? "&" : "?"}limit=200${cursor ? `&cursor=${encoded(cursor)}` : ""}`);
+      active();
       if (response.status !== 200 || !Array.isArray(response.body?.items)) throw new Error("无法读取 agora 待处理事项");
-      items.push(...response.body.items);
+      budget.items += response.body.items.length;
+      if (budget.items > MAX_FORM_CACHE_ITEMS) throw new Error("待处理事项超过单次读取限制");
+      for (const item of response.body.items) {
+        budget.bytes += Buffer.byteLength(JSON.stringify(item) ?? "null");
+        if (budget.bytes > MAX_FORM_CACHE_BYTES) throw new Error("待处理事项超过 8 MiB 读取限制");
+        if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("agora 待处理事项字段无效");
+        items.push(item);
+      }
+      if (response.body.nextCursor != null && typeof response.body.nextCursor !== "string") throw new Error("agora 列表分页游标无效");
       cursor = response.body.nextCursor || undefined;
       if (cursor && seen.has(cursor)) throw new Error("agora 列表分页游标没有前进");
       if (cursor) seen.add(cursor);
-      if (items.length > 100_000) throw new Error("待处理事项超过单次读取限制");
     } while (cursor);
     return items;
   }
   async function load(): Promise<FormSpec[]> {
-    if (!runtime.online()) return [...current.values()].map(item => item.form).sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
-    const [requests, confirmations, devices, decisions] = await Promise.all([
-      pages("/v1/requests?state=open&state=escalated"), pages("/v1/confirmations"), pages("/v1/devices"), pages("/v1/tasks?scope=mine&status=interrupted"),
-    ]);
+    active();
+    await initialize();
+    active();
+    if (!runtime.online()) return sorted();
+    const budget = { items: 0, bytes: 0, pages: 0 };
+    const requests = await pages("/v1/requests?state=open&state=escalated", budget);
+    const confirmations = await pages("/v1/confirmations", budget);
+    const devices = await pages("/v1/devices", budget);
+    const decisions = await pages("/v1/tasks?scope=mine&status=interrupted", budget);
     const next = new Map<string, FormRecord>();
     const add = (item: FormRecord) => {
-      if (typeof item.id !== "string" || !item.id || typeof item.form.createdAt !== "string" || !Number.isFinite(Date.parse(item.form.createdAt)) || !Number.isSafeInteger(item.form.revision) || item.form.revision < 1) throw new Error("agora 待处理事项字段无效");
+      if (next.has(item.form.id)) throw new Error("agora 待处理事项标识重复");
       next.set(item.form.id, item);
     };
     for (const request of requests) if (request.targetId === "user" && ["open", "escalated"].includes(request.state)) {
@@ -53,36 +84,52 @@ export function createForms(runtime: PluginRuntime, security: Security) {
         fields: [{ id: "mode", label: "处理方式", type: "select", required: true, options: ["resume", "reopen", "replace", "abandon"] },
           { id: "model", label: "换人时的模型", type: "text" }, { id: "profile", label: "换人时的权限档位", type: "select", options: ["explore", "review", "implement"] }] }));
     }
-    if (disposed) return [];
+    active();
     const removals: { id: string; reason: FormRemovedReason }[] = [];
     for (const [id, previous] of current) if (!next.has(id)) {
       let reason: FormRemovedReason = "handled";
-      let object = previous.kind === "request" ? requests.find(item => item.id === previous.id) : previous.kind === "confirmation" ? confirmations.find(item => (item.confirmationId ?? item.id) === previous.id) : undefined;
-      if (previous.kind === "request" && !object) {
-        const detail = await runtime.api.request("GET", `/v1/requests/${encoded(previous.id)}`);
-        if (detail.status === 200) object = detail.body;
+      const source = previous.kind === "request" ? requests : previous.kind === "confirmation" ? confirmations : previous.kind === "device" ? devices : decisions;
+      let object = source.find(item => businessId(previous.kind, item) === previous.id);
+      if (!object) {
+        active();
+        const endpoint = previous.kind === "request" ? "requests" : previous.kind === "confirmation" ? "confirmations" : previous.kind === "device" ? "devices" : "tasks";
+        const detail = await runtime.api.request("GET", `/v1/${endpoint}/${encoded(previous.id)}`);
+        active();
+        if (detail.status === 200 && detail.body && typeof detail.body === "object" && businessId(previous.kind, detail.body) === previous.id) object = detail.body;
         else if (detail.status === 404) reason = "withdrawn";
-        else throw new Error("暂时无法核实提问的终态，保留待处理表单");
+        else throw new Error("暂时无法核实事项的终态，保留待处理表单");
       }
-      if (disposed) return [];
-      if (object?.state === "cancelled") reason = "cancelled";
-      else if (object?.state === "expired") reason = "expired";
+      active();
+      if (object) {
+        const state = previous.kind === "decision" ? object.status : object.state;
+        const stillPending = previous.kind === "request" ? ["open", "escalated"].includes(state) && object.targetId === "user"
+          : previous.kind === "decision" ? state === "interrupted" : state === "pending";
+        if (typeof state !== "string" || !state || stillPending) throw new Error("暂时无法核实事项的终态，保留待处理表单");
+        if (state === "cancelled" || state === "rejected") reason = "cancelled";
+        else if (state === "expired") reason = "expired";
+        else if (state === "withdrawn" || state === "revoked") reason = "withdrawn";
+      }
       removals.push({ id, reason });
     }
-    if (disposed) return [];
+    active();
+    await cache.save(next.values());
+    active();
     for (const item of next.values()) {
       const previous = current.get(item.form.id);
-      if (!previous || item.form.revision > previous.form.revision) runtime.context.formAdded(item.form);
+      active();
+      if (!previous || item.form.revision > previous.form.revision) runtime.context.formAdded(structuredClone(item.form));
     }
-    for (const { id, reason } of removals) runtime.context.formRemoved(id, reason);
+    for (const { id, reason } of removals) { active(); runtime.context.formRemoved(id, reason); }
     current.clear(); for (const [id, item] of next) current.set(id, item);
-    return [...current.values()].map(item => item.form).sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+    return sorted();
   }
   function pending(): Promise<FormSpec[]> {
+    if (disposed) return Promise.reject(new Error("agora 插件已停用"));
     if (!refresh) refresh = load().finally(() => { refresh = undefined; });
     return refresh;
   }
   async function mapped(response: ApiReply, req: FormSubmission): Promise<FormSubmitResult> {
+    active();
     if (response.status === 202) return { status: "pending", message: "操作等待确认或仍在处理" };
     if (ok(response)) return { status: "accepted" };
     const code = response.body?.error?.code;
@@ -115,6 +162,8 @@ export function createForms(runtime: PluginRuntime, security: Security) {
           if (cancelled) result = await runtime.api.request("POST", `/v1/confirmations/${encoded(id)}/cancel`, {}, { idempotencyKey: req.idempotencyKey });
           else {
             const response = await runtime.api.request("GET", `/v1/confirmations/${encoded(id)}`);
+            active();
+            if (!runtime.online()) return { status: "failed", message: "agora 未运行，待处理事项仍然保留" };
             if (response.status !== 200) return mapped(response, req);
             if (response.body.state !== "pending") return { status: "alreadyHandled" };
             if ((response.body.revision ?? 1) !== req.revision) {
