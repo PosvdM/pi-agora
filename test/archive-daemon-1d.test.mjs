@@ -10,6 +10,7 @@ import { startDaemon } from '../packages/daemon/dist/index.js';
 import { connectHost } from '../packages/protocol/dist/client.js';
 import { runArchiveCli, readSse } from '../packages/cli/dist/archive.js';
 import { SessionViews } from '../packages/daemon/dist/sessions.js';
+import { openArchive } from '../packages/archive/dist/index.js';
 import { assertIsolatedTestHome } from './fixtures/test-home.mjs';
 
 async function until(read, timeout = 5000) {
@@ -303,6 +304,34 @@ test('真实 HTTP 暂停读者的实时队列有界，主动取消移除 drain �
     assert.equal(serverResponse.listenerCount('error'), 0);
     incoming.destroy(); request.destroy();
   }
+
+});
+
+test('被接管子任务以 user 为会话父节点，在线离线 get/list 使用同形元数据', { timeout: 20_000 }, async t => {
+  const f = await setup(t);
+  await writeEntries(f, [entry('taken-message', null)]);
+  const ordinary = await f.client.request('GET', f.base);
+  assert.equal(ordinary.takenOver, false);
+  const parent = await f.client.request('POST', '/v1/tasks', { profile: 'explore', model: 'test/model', prompt: '父任务', cwd: f.home }, { idempotencyKey: randomUUID() });
+  f.daemon.store.run("UPDATE tasks SET parent_task_id=?,taken_over_from='original-agent',convener_id='user' WHERE id=?", parent.taskId, f.task.taskId);
+  f.daemon.store.run("UPDATE agora_sessions SET convener_id='user' WHERE id=?", f.task.agoraSessionId);
+  const detail = await f.client.request('GET', f.base);
+  const list = await f.client.request('GET', '/v1/sessions');
+  const online = list.items.find(item => item.agoraSessionId === f.task.agoraSessionId);
+  assert.deepEqual(detail.parent, { kind: 'user' });
+  assert.equal(detail.takenOver, true);
+  assert.equal(detail.isCurrent, true);
+  assert.equal(f.daemon.store.task(f.task.taskId).parent_task_id, parent.taskId);
+  const reader = await openArchive({ home: f.home, apiVersion: 1 });
+  try {
+    const offline = await reader.getSession(f.task.agoraSessionId);
+    const offlineList = (await reader.listSessions()).items.find(item => item.agoraSessionId === f.task.agoraSessionId);
+    for (const key of ['parent', 'parentDiagnostics', 'parentPiSessionId', 'inheritsFrom', 'inheritReason', 'isCurrent', 'takenOver', 'usage']) {
+      for (const item of [online, offline, offlineList]) assert.deepEqual(item[key], detail[key], key);
+    }
+    const parentDetail = await reader.getSession(parent.agoraSessionId);
+    assert.equal(parentDetail.takenOver, false);
+  } finally { reader.close(); }
 });
 
 test('会话尾行截断的全量校验只读，并保留完整行', { timeout: 20_000 }, async t => {

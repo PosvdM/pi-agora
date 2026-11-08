@@ -86,8 +86,10 @@ for (const version of [4, 5, 6]) {
     assert.deepEqual(page.items[0].parent, { kind: "main", piSessionId: "pi-parent" });
     assert.equal(page.items[0].archiveState, "partial");
     assert.equal(page.items[0].messageCount, undefined);
+    assert.equal(Object.hasOwn(page.items[0], "takenOver"), false);
     const detail = await reader.getSession("as-1");
     assert.equal(detail.availability, "available");
+    assert.equal(Object.hasOwn(detail, "takenOver"), false);
     assert.equal(detail.sessionFile, await realpath(file));
     assert.equal(await reader.getSession("不存在"), undefined);
     assert.throws(() => reader.db.exec("DELETE FROM agora_sessions"), /readonly|read.only/i);
@@ -98,6 +100,31 @@ for (const version of [4, 5, 6]) {
     assert.equal(digest(await readFile(file)), beforeFile);
   });
 }
+
+test("v5 接管列按任务返回布尔值，非任务会话省略接管标记", async t => {
+  const f = await fixture(t, 5);
+  f.db.exec(`ALTER TABLE tasks ADD COLUMN taken_over_from TEXT;
+    INSERT INTO principals VALUES('user',NULL,'user');
+    INSERT INTO tasks VALUES('parent-task','父任务',NULL,'parent-session',NULL),
+      ('taken-task','被接管任务','parent-task','taken-session','original-agent');`);
+  f.add();
+  f.add("taken-session", { task: "taken-task", convener: "user" });
+  f.add("seat-session", { task: "not-a-task", convener: "user" });
+  f.db.exec("UPDATE agora_sessions SET task_id=NULL,kind='meeting-seat' WHERE id='seat-session'");
+  const reader = await f.open();
+  for (const item of (await reader.listSessions()).items) {
+    const detail = await reader.getSession(item.agoraSessionId);
+    if (item.agoraSessionId === "seat-session") {
+      assert.equal(Object.hasOwn(item, "takenOver"), false);
+      assert.equal(Object.hasOwn(detail, "takenOver"), false);
+    } else {
+      assert.equal(item.takenOver, item.agoraSessionId === "taken-session");
+      assert.equal(detail.takenOver, item.takenOver);
+    }
+  }
+  assert.deepEqual((await reader.getSession("taken-session")).parent, { kind: "user" });
+  assert.equal(f.db.prepare("SELECT parent_task_id FROM tasks WHERE id='taken-task'").get().parent_task_id, "parent-task");
+});
 
 test("会话分页默认 50、上限 200，游标绑定筛选且无重复", async t => {
   const f = await fixture(t);
@@ -330,6 +357,55 @@ test("v1 内容不变时同一 reader 保留派生键并可连续 before 分页"
   const changed = await reader.readUserView("as-1", { limit: 1 });
   assert.equal(changed.entries[0].message.content, "内容指纹改变");
 });
+
+test("v1 raw 游标绑定同 reader 的解析代际，内容恢复也不复用旧游标", needsParser, async t => {
+  const f = await fixture(t);
+  const file = f.add();
+  const entries = Array.from({ length: 5 }, (_, i) => ({ type: "message", timestamp: at,
+    message: { role: "user", content: `消息-${i}`, timestamp: i } }));
+  const original = jsonl([header(1), ...entries]);
+  await f.write(file, original);
+  const reader = await f.open();
+  const first = await reader.readRawEntries("as-1", { limit: 2 });
+  const second = await reader.readRawEntries("as-1", { cursor: first.nextCursor, limit: 2 });
+  const third = await reader.readRawEntries("as-1", { cursor: second.nextCursor, limit: 2 });
+  const all = [...first.items, ...second.items, ...third.items];
+  assert.equal(all.length, 5);
+  for (let i = 1; i < all.length; i++) assert.equal(all[i].parentId, all[i - 1].id);
+  assert.equal(third.nextCursor, undefined);
+  const fresh = await openArchive({ home: f.home, apiVersion: 1 });
+  try {
+    await assert.rejects(fresh.readRawEntries("as-1", { cursor: first.nextCursor }), { code: "invalid_cursor" });
+    assert.notEqual((await fresh.readRawEntries("as-1", { limit: 1 })).items[0].id, first.items[0].id);
+  } finally { fresh.close(); }
+  await appendFile(file, jsonl([entries[0]]));
+  await assert.rejects(reader.readRawEntries("as-1", { cursor: first.nextCursor }), { code: "invalid_cursor" });
+  const changed = await reader.readRawEntries("as-1", { limit: 2 });
+  await f.write(file, original);
+  await assert.rejects(reader.readRawEntries("as-1", { cursor: first.nextCursor }), { code: "invalid_cursor" });
+  await assert.rejects(reader.readRawEntries("as-1", { cursor: changed.nextCursor }), { code: "invalid_cursor" });
+  const restored = await reader.readRawEntries("as-1", { limit: 2 });
+  const rest = await reader.readRawEntries("as-1", { cursor: restored.nextCursor });
+  assert.equal(rest.items[0].parentId, restored.items.at(-1).id);
+  assert.equal(digest(await readFile(file)), digest(original));
+});
+
+for (const version of [2, 3]) {
+  test(`v${version} raw 稳定标识允许追加后和新 reader 连续分页`, needsParser, async t => {
+    const f = await fixture(t);
+    const file = f.add();
+    await f.write(file, jsonl([header(version), message("a", null, "一"), message("b", "a", "二")]));
+    const reader = await f.open();
+    const first = await reader.readRawEntries("as-1", { limit: 1 });
+    await appendFile(file, jsonl([message("c", "b", "三")]));
+    const rest = await reader.readRawEntries("as-1", { cursor: first.nextCursor });
+    assert.deepEqual(rest.items.map(item => item.id), ["b", "c"]);
+    const fresh = await openArchive({ home: f.home, apiVersion: 1 });
+    try {
+      assert.deepEqual(await fresh.readRawEntries("as-1", { cursor: first.nextCursor }), rest);
+    } finally { fresh.close(); }
+  });
+}
 
 test("ended 完整消息匹配避免重复展示，角色时间相同但内容不同仍保留", needsParser, async t => {
   const f = await fixture(t);

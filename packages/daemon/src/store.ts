@@ -4,7 +4,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { AgoraError } from "./errors.js";
 import { archiveSchemaV6 } from "./archive-schema.js";
-import type { SessionParent } from "@pi-agora/protocol";
+import type { SessionMetadata, SessionParent } from "@pi-agora/protocol";
 
 export const SCHEMA_VERSION = 6;
 export const schemaMigrations: readonly string[] = [String.raw`
@@ -280,14 +280,34 @@ export class Store {
     return totals;
   }
   sessionParent(sessionId: string): SessionParent | undefined {
-    const row = this.get<{ parent_task_id: string | null; parent_session_id: string | null; owner: string | null; pi_session_id: string | null }>(`SELECT t.parent_task_id, parent.agora_session_id AS parent_session_id,
-      s.convener_id AS owner,p.pi_session_id FROM agora_sessions s
+    const row = this.get<{ parent_task_id: string | null; parent_session_id: string | null; owner: string | null; type: string | null; pi_session_id: string | null }>(`SELECT t.parent_task_id, parent.agora_session_id AS parent_session_id,
+      s.convener_id AS owner,p.type,p.pi_session_id FROM agora_sessions s
       LEFT JOIN tasks t ON t.id=s.task_id LEFT JOIN tasks parent ON parent.id=t.parent_task_id
       LEFT JOIN principals p ON p.id=s.convener_id WHERE s.id=? LIMIT 1`, sessionId);
-    if (row?.parent_task_id && row.parent_session_id) return { kind: "task", taskId: row.parent_task_id, sessionId: row.parent_session_id };
-    if (row?.owner === "user") return { kind: "user" };
-    if (row?.pi_session_id) return { kind: "main", piSessionId: row.pi_session_id };
+    if (row?.owner === "user" || row?.type === "user") return { kind: "user" };
+    if (row?.parent_task_id) return row.parent_session_id ? { kind: "task", taskId: row.parent_task_id, sessionId: row.parent_session_id } : undefined;
+    if (row?.type === "host:cli" || row?.type === "host:pane") return { kind: "user" };
+    if (row?.type === "agent:main" && row.pi_session_id) return { kind: "main", piSessionId: row.pi_session_id };
     return undefined;
+  }
+  sessionMetadata(sessionId: string): SessionMetadata {
+    const session = this.session(sessionId);
+    const task = session.task_id ? this.get<{ agora_session_id: string; taken_over_from: string | null; parent_task_id: string | null }>(
+      "SELECT agora_session_id,taken_over_from,parent_task_id FROM tasks WHERE id=?", session.task_id) : undefined;
+    const principal = session.convener_id ? this.principal(session.convener_id) : undefined;
+    const parent = this.sessionParent(sessionId);
+    const diagnostic = task?.parent_task_id ? { kind: "parent_task_missing", message: "父任务缺少当前会话，无法确定会话父关系" } :
+      principal?.type === "agent:main" ? { kind: "main_session_id_missing", message: "主 Agent 召集人的 pi 会话标识缺失" } :
+        { kind: "session_parent_unknown", message: "召集人或父任务关联缺失，无法确定会话父关系" };
+    return {
+      ...(parent ? { parent } : { parentDiagnostics: [diagnostic] }),
+      ...(principal?.type === "agent:main" && principal.pi_session_id ? { parentPiSessionId: principal.pi_session_id } : {}),
+      ...(session.inherits_from ? { inheritsFrom: session.inherits_from } : {}),
+      ...(session.inherit_reason ? { inheritReason: session.inherit_reason } : {}),
+      ...(session.task_id ? { isCurrent: task?.agora_session_id === session.id } : {}),
+      ...(task ? { takenOver: task.taken_over_from !== null } : {}),
+      usage: this.sessionUsage(sessionId),
+    };
   }
   sessionUsage(sessionId: string): UsageSummary | undefined {
     const totals = this.get<UsageSummary>(`SELECT COUNT(*) AS requests,

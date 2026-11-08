@@ -1,4 +1,16 @@
-import type { UsageSummary } from "./index.js";
+import type { SessionParent, UsageSummary } from "./index.js";
+
+export interface SessionMetadata {
+  parent?: SessionParent;
+  parentDiagnostics?: { kind: string; message: string }[];
+  parentPiSessionId?: string;
+  inheritsFrom?: string;
+  inheritReason?: string;
+  isCurrent?: boolean;
+  /** 仅任务且数据库提供接管来源列时返回；普通任务为 false。 */
+  takenOver?: boolean;
+  usage?: UsageSummary;
+}
 
 export interface SessionEntry {
   type: string;

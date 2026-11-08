@@ -1,27 +1,20 @@
-import type { SessionEntry, Page, PermissionProfile, SessionKind, SessionParent, UsageSummary } from "@pi-agora/protocol";
+import type { SessionEntry, Page, PermissionProfile, SessionKind, SessionParent, SessionMetadata } from "@pi-agora/protocol";
 
-export type { SessionEntry, Page, SessionParent };
+export type { SessionEntry, Page, SessionParent, SessionMetadata };
 export type ArchiveState = "ok" | "partial" | "suspect" | "missing";
 
-export interface ArchivedSessionSummary {
+export interface ArchivedSessionSummary extends SessionMetadata {
   agoraSessionId: string;
   kind: SessionKind;
   title: string;
   model: string;
   profile: PermissionProfile;
   convenerId: string;
-  parent?: SessionParent;
-  parentDiagnostics?: { kind: string; message: string }[];
-  parentPiSessionId?: string;
   taskId?: string;
   meetingId?: string;
   status: string;
   archiveState: ArchiveState;
   messageCount?: number;
-  inheritsFrom?: string;
-  inheritReason?: string;
-  isCurrent?: boolean;
-  usage?: UsageSummary;
   createdAt: string;
   endedAt?: string;
 }
