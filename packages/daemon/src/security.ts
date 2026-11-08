@@ -24,7 +24,7 @@ export interface Device {
 }
 interface DeviceRow { id: string; public_key: string; label: string; state: "pending" | "paired"; created_at: string }
 interface ConfirmationRow {
-  id: string; action: string; target: string; params: string; challenge: string; nonce: string;
+  id: string; action: string; target: string; params: string; challenge: string; nonce: string; cursor?: number;
   expires_at: string; requested_by: string; state: string; consumed_at: string | null;
   confirmed_by: string | null; result: string | null; failure_reason: string | null; created_at: string;
 }
@@ -274,7 +274,7 @@ export class Security {
       expiresAt: row.expires_at, createdAt: row.created_at, confirmedBy: row.confirmed_by,
       result: row.result === null ? null : JSON.parse(row.result), failureReason: row.failure_reason };
   }
-  listConfirmations(limit = 50, cursor = 0, requestedBy?: string) { this.expire(); return this.store.all<ConfirmationRow>("SELECT rowid AS cursor,* FROM pending_confirmations WHERE rowid>? AND (? IS NULL OR requested_by=?) ORDER BY rowid LIMIT ?", cursor, requestedBy ?? null, requestedBy ?? null, limit).map(row => this.view(row)); }
+  listConfirmations(limit = 50, cursor = 0, requestedBy?: string) { this.expire(); return this.store.all<ConfirmationRow>("SELECT rowid AS cursor,* FROM pending_confirmations WHERE rowid>? AND (? IS NULL OR requested_by=?) ORDER BY rowid LIMIT ?", cursor, requestedBy ?? null, requestedBy ?? null, limit).map(row => ({ ...this.view(row), cursor: row.cursor! })); }
   confirmation(confirmationId: string) {
     this.expire(); const row = this.store.get<ConfirmationRow>("SELECT * FROM pending_confirmations WHERE id=?", confirmationId);
     if (!row) fail("not_found", "待确认不存在", 404);

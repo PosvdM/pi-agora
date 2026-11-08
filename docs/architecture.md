@@ -1,6 +1,6 @@
 # 总体架构
 
-> 本文同时说明已实现的任务核心与后续架构目标。切片 1b 提供多层任务、三个档位、提问和逐级转交；用户级安全、可选扩展 / MCP、存档及其他领域功能按 [roadmap.md](roadmap.md) 推进。当前配置、源码和测试见 [development.md](development.md)。
+> 本文同时说明已实现的任务核心与后续架构目标。切片 1c 提供多层任务、三个档位、提问和逐级转交、任务树软预算、资源访问控制与用户签名安全；可选扩展 / MCP、存档及其他领域功能按 [roadmap.md](roadmap.md) 推进。当前配置、源码和测试见 [development.md](development.md)。
 
 pi-agora 是 pi 的协作引擎：一个每用户单实例的后台进程（daemon）负责拉起和监管所有协作会话（子代理、参会者、书记），并持久保存任务、提问、共享桌面（board）、会议和全部对话。主代理通过 pi 扩展调用它，用户通过 CLI 或 pi-pane 插件调用它。
 
@@ -283,7 +283,7 @@ pi 专有的 skill 解析与启动参数位于 `packages/daemon/src/harness/pi/d
 | `changes` | seq、epoch、object_type、object_id、tombstone、created_at（供 `/v1/changes`，见 [integration.md](integration.md#变更流)） |
 | `pending_confirmations` | id、action、target、params、params_hash、nonce、requested_by、expires_at、state、result |
 | `devices` | device_id、public_key、alg、label、state（pending / paired / revoked）、paired_at、approved_by |
-| `audit_log` | 见 [security.md](security.md#审计) |
+| `security_audit` | 用户级操作、设备、安全配置、离线修改和拒绝尝试；字段见 [security.md](security.md#审计) |
 | `settings` | key、value（如 `userConfirmation`、`everPaired`、`reTofuArmed`、`meetingLimitDefaults`、`agentLimitCap`、daemon 记下的设备记录指纹） |
 | `security_alerts` | alert_id、kind（devices-reset / protection-off）、revision、details、state（open / acknowledged / resolved）、acknowledged_by、updated_at |
 | `schema_version` | version、migrated_at |

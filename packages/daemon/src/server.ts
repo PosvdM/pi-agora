@@ -230,7 +230,12 @@ async function route(context: ServerContext, method: string, url: URL, conn: Con
   if (!conn) throw new AgoraError(404, "not_found", "接口不存在");
   if (pathname === "/v1/security/state" && method === "GET") { auth.requireMain(conn); return ok(security.state()); }
   if (pathname === "/v1/security/alerts" && method === "GET") { auth.requireMain(conn); return ok({ items: security.state().alerts }); }
-  if (pathname === "/v1/confirmations" && method === "GET") { auth.requireMain(conn); return ok({ items: security.listConfirmations(positive(url.searchParams.get("limit"), 50, 200), positive(url.searchParams.get("cursor"), 0, Number.MAX_SAFE_INTEGER, true), conn.type.startsWith("host:") ? undefined : conn.principalId) }); }
+  if (pathname === "/v1/confirmations" && method === "GET") {
+    auth.requireMain(conn);
+    const limit = positive(url.searchParams.get("limit"), 50, 200), cursor = positive(url.searchParams.get("cursor"), 0, Number.MAX_SAFE_INTEGER, true);
+    const rows = security.listConfirmations(limit + 1, cursor, conn.type.startsWith("host:") ? undefined : conn.principalId);
+    return ok({ items: rows.slice(0, limit), nextCursor: rows.length > limit ? String(rows[limit - 1]!.cursor) : null });
+  }
   const confirmation = pathname.match(/^\/v1\/confirmations\/([^/]+)(?:\/(sign|cancel))?$/);
   if (confirmation) {
     auth.requireMain(conn);
@@ -252,7 +257,12 @@ async function route(context: ServerContext, method: string, url: URL, conn: Con
   if (pathname === "/v1/devices/reset" && method === "POST") { hostClient(auth, conn); return confirmationReply(security.request(conn, "agora.device.reset", "devices", {})); }
   const alert = pathname.match(/^\/v1\/security\/alerts\/([^/]+)\/acknowledge$/);
   if (alert && method === "POST") { hostClient(auth, conn); return confirmationReply(security.request(conn, "agora.security.acknowledge", alert[1]!, body)); }
-  if (pathname === "/v1/audit" && method === "GET") { hostClient(auth, conn); return ok({ items: security.audit(positive(url.searchParams.get("limit"), 50, 200), positive(url.searchParams.get("cursor"), 0, Number.MAX_SAFE_INTEGER, true), url.searchParams.get("target") ?? undefined) }); }
+  if (pathname === "/v1/audit" && method === "GET") {
+    hostClient(auth, conn);
+    const limit = positive(url.searchParams.get("limit"), 50, 200), cursor = positive(url.searchParams.get("cursor"), 0, Number.MAX_SAFE_INTEGER, true);
+    const rows = security.audit(limit + 1, cursor, url.searchParams.get("target") ?? undefined) as { seq: number }[];
+    return ok({ items: rows.slice(0, limit), nextCursor: rows.length > limit ? String(rows[limit - 1]!.seq) : null });
+  }
   if (pathname === "/v1/settings" && method === "GET") { hostClient(auth, conn); return ok(security.state().config); }
   const setting = pathname.match(/^\/v1\/settings\/([^/]+)$/);
   if (setting && ["POST", "PUT"].includes(method)) {
