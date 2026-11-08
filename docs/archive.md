@@ -35,7 +35,7 @@ agora 拉起的每个会话（子代理、参会者、书记）的完整对话�
 
 daemon 从 RPC 事件流里收到 `message_update` 增量（依据：`docs/json.md`，RPC 线上的 `message_update` 只带增量），按 `contentIndex` 缓存当前正在生成的消息：
 
-- 每秒最多一次，把缓存追加写入 `partials/<runId>.jsonl`，每行保留块类型：
+- 每秒最多提交一次，把缓存追加到 `partials/<runId>.jsonl` 的逻辑末尾，每行保留块类型：
 
   ```json
   { "runId": "pr_51d0", "t": "2026-11-05T08:41:03Z", "messageSeq": 7, "contentIndex": 1, "blockType": "toolCall", "toolCallId": "call_abc", "toolName": "bash", "delta": "{\"command\":\"npm te" }
@@ -45,7 +45,8 @@ daemon 从 RPC 事件流里收到 `message_update` 增量（依据：`docs/json.
 - **只在最终消息确认已写入会话文件后才关闭片段**：收到 `message_end` 时不关闭（pi 先发 `message_end` 再写文件，依据：`dist/core/agent-session.js:760–779`）；daemon 用 `get_entries` 取到这条消息对应的 entryId，并在会话文件里读到该 entryId 的完整一行后，才追加一行 `{ "messageSeq": n, "closed": true, "entryId": "…" }`。`get_entries` 返回的条目不一定已写入文件（新会话在第一条对话消息之前只在内存里），所以不能只看它。最终内容以 pi JSONL 为准，片段只用于还原没写完的部分。
 - `message_end` 写入 `{ messageSeq, ended: true, message }` 匹配行。块结束的权威内容用 `replace: true` 行替换增量，并保存 `done`、工具参数及元数据。读取时只在完整最终消息与会话条目逐字段相符时去重；同角色、同时间戳但正文不同的消息不能互相替代。
 - 进程退出后，未关闭且没有对应磁盘最终消息的片段按运行、消息和 `contentIndex` 重建，在对话末尾显示为“中断时正在生成的内容”。`projectPartials` 返回与会话快照相同的块结构；活跃助手和等待条目确认的完整消息由 `inFlight` 展示，不重复列为中断片段。未确认停止时继续接收迟到流，确认退出后才退订。
-- 写入失败的批次保留在原 run 的 `pending` 中。切换 run 或关闭服务前重试旧片段、校验与诊断持久化；失败时报告错误，不能丢弃旧状态或宣称屏障完成。普通 `flush` 只持久化，不表示运行退出；服务 `close` 另行取消订阅。
+- 片段批次通过同目录独占 `.tmp` 文件复制已提交内容、追加完整批次、同步句柄，再以 rename 替换目标。读者只见旧文件或完整新批次，部分写入失败不会污染可见 JSONL 或重复增量。失败批次保留在原 run 的 `pending`，诊断另以待保存标记重试；切换 run、关闭或删除前都须完成片段、校验和诊断屏障，恢复磁盘后可以重试。普通 `flush` 不表示运行退出，服务 `close` 另行取消订阅。
+- 每批提交复制当前 run 的整个片段文件，累计 I/O 随文件增长；崩溃遗留的 `.tmp` 被 reader 忽略，不自动回收。提交点前仅在内存中的片段不承诺跨 daemon 崩溃保存，未做真实断电耐久性验收。
 
 ### 退出诊断
 

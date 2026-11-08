@@ -231,7 +231,7 @@ HTTP 签名入口的同步动作（包括 task takeover、limits、提问答复�
 
 - `epoch`：不透明字符串，按 pane 协议的规则在事件流无法保证连续时更换。daemon 取 `<instanceId>:<runId>`：每次会话运行开始（拉起或重建进程，包括恢复、回收后重新拉起）都换一个新 epoch；daemon 重启后 instanceId 也变。会话没有进程时取 `<当前 instanceId>:<最后一次运行的 runId>`，所以 daemon 重启后同样会变。
 - `seq`：同一 epoch 内从 1 递增，0 表示该 epoch 还没有事件。daemon 在内存里保留每个会话当前 epoch 最近 2000 个事件。
-- **运行变化触发重同步**：daemon 发出 `agora_run`（进程拉起或退出）后，拉起时换 epoch，旧连接收到 `resync`，重新取快照时等待运行切换完成。确认退出时 epoch 不变，订阅者收到 `agora_run` 的 `exited` 和最终状态，待发送事件排空后结束。停止未确认时保持订阅，继续归档迟到流，快照显示 `stopping`。历史会话必须检查全部 run：没有 run，或全部为 `exited`、具有 `exited_at` 且没有 `cleanup_error`，才允许历史回放后 EOF；不能只看会话终态或最新 run，不明 cleanup 保持 `stopping`。
+- **运行变化触发重同步**：daemon 发出 `agora_run`（进程拉起或退出）后，拉起时换 epoch，旧连接收到 `resync`，重新取快照时等待运行切换完成。确认退出时 epoch 不变，订阅者收到 `agora_run` 的 `exited` 和最终状态，待发送事件排空后结束。停止未确认时保持订阅，继续归档迟到流，快照显示 `stopping`。历史会话必须处于终态且无控制操作，并检查全部 run：没有 run，或全部为 `exited`、具有 `exited_at` 且没有 `cleanup_error`，才允许历史回放后 EOF；非终态的排队或待恢复会话继续等待启动，不能只看最新 run。清理证据不明时保持 `stopping`。
 
 客户端带来的 `epoch` 与当前不同、`afterSeq` 之后的事件已不在缓冲区内、或 `afterSeq` 大于当前 head 时，daemon 只发一条 `event: resync`，客户端必须重新取快照。
 

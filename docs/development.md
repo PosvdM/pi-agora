@@ -127,7 +127,8 @@ shutdown 默认排空，超时后保留 daemon；force 中断并清理运行。�
 - **会话元数据与 ACL**：在线和离线共用 `SessionMetadata` 形状；任务有接管来源列时返回 `takenOver`，普通任务为 `false`，缺列旧库及非任务省略。`convenerId = user` 优先展示用户父节点，保留预算的 `parent_task_id`。host 全读，主 Agent 只读自己的会话与任务树且不跨接管边界，child 没有 full-view 权限；列表、详情、快照、历史、诊断、SSE、verify 使用同一 ACL。
 - **显式删除**：在线仅接受 `expectedRevision`，强制设备签名，经任务控制队列排空归档并设置视图删除屏障。在线与离线都核验终态、全部 run 已退出且 cleanup 无误、写锁释放与真实路径；部分文件删除失败记录 suspect / archive_delete_failed。离线还持有实例锁，不停止未知写者，不自动清理。
 - **流与校验**：`message_end` 只记录匹配证据，取得 RPC entryId 且磁盘完整换行和内容相等才关闭片段。停止未确认时继续归档迟到流；I/O 失败保留旧 run 的 pending，切换 run 和服务 close 前重试持久化，失败不能宣称 flush 成功。可疑或缺失结果不覆盖可信前缀基线，在线与离线校验复用相同证据。
-- **SSE 生命周期**：实时队列上限 1 MiB，等待 drain 解除背压，历史逐帧惰性序列化；普通 ended / resync 排空后结束，显式服务 close 可取消回放。历史会话须核对全部 run 的退出与 cleanup，不能只看终态或最新 run；证据不明时保持 stopping。
+- **SSE 生命周期**：实时队列上限 1 MiB，等待 drain 解除背压，历史逐帧惰性序列化；普通 ended / resync 排空后结束，显式服务 close 可取消回放。历史 EOF 要求终态、无控制操作且全部 run 确认退出；created 等待启动时保持订阅，证据不明时保持 stopping。
+- **旁车提交**：片段与诊断分别保留重试职责。片段批次先复制已提交文件到同目录独占临时文件，在固定句柄中追加完整批次并 sync，最后 rename；部分写入失败不能污染可见 JSONL，重试不能重复增量。复制每批旧文件有累计 I/O 成本，reader 忽略崩溃遗留 `.tmp`，不自动回收。
 - **恢复**：旧 run 未确认退出不能拉起写者；resume 代数不变，reopen / replace 新建继承会话并增加代数，历史 result 指向所属代数的会话。连续 resume 失败两次后需重开、换人或放弃，不自动重放副作用。
 
 ### 通知事件身份
@@ -156,6 +157,7 @@ shutdown 默认排空，超时后保留 daemon；force 中断并清理运行。�
 | `test/session-views-1d.test.mjs`、`archive-daemon-1d.test.mjs` | 快照切点、历史、RPC 追加游标、完整 SSE envelope / 重同步、迟到流、闭片段双证据、I/O 错误、认证和相关 HTTP 端点 |
 | `test/archive-verification-1d.test.mjs`、`archive-e2e-1d.test.mjs` | 可信前缀不被重复校验洗白、观察消息数与末消息、在线离线同证据、真实强杀三类块和规范诊断、正常最终内容去重、真实已释放写锁离线删除 |
 | `test/cli-archive-1d.test.mjs`、`test-home-1d.test.mjs` | 在线 / 离线 CLI、tail / resync / 正常 EOF 与续期、在线删除确认及显式离线维护、删除锁与路径拒绝、四用户目录隔离正负控 |
+| `test/session-persistence-1d.test.mjs` | 真实单槽队列 tail 等待与启动重同步、ENOSPC/EIO 部分写入重试、新 reader 精确一次、提交中子进程退出与临时文件隔离 |
 | `test/archive-security-1d.test.mjs` | 在线强制签名删除、版本与执行前复核、异步确认、任务控制和归档屏障、会话 ACL 与批量 verify 分页 |
 | `test/security-core.test.mjs` | JCS 与 P-256 验签、挑战绑定、重放拒绝、同步事务与回滚、异步 nonce 消费及重启 failed、TOFU / reTOFU、设备撤销与重置、离线锁、持久警告、严格设置与审计脱敏、v4→v5 WAL 一致性备份和 DDL 回滚 |
 | `test/security-http-1c.test.mjs` | 真实 daemon / HTTP / CLI 的设备签名答复、host.key 与伪造身份不能冒充用户、幂等结果随确认更新、参数和 revision 变化拒绝、租约接管、在线签名关闭与终端离线关闭 / 重启 / 直接答复 / 重新开启的闭环；不依赖浏览器界面 |
