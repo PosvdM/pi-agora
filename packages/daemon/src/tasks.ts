@@ -974,6 +974,7 @@ export class TaskManager {
     while (this.controls.size) await Promise.allSettled([...this.controls.values()]);
   }
   startQueue(): void {
+    this.reconcileBudgets();
     let pausedCursor = "";
     while (true) {
       const paused = this.store.all<TaskRow>("SELECT * FROM tasks WHERE status='quota_paused' AND quota_notified_at IS NULL AND id>? ORDER BY id LIMIT 200", pausedCursor);
@@ -995,6 +996,14 @@ export class TaskManager {
     }
     this.queueStarted = true;
     this.pump();
+  }
+  reconcileBudgets(): void {
+    let cursor = "";
+    while (true) {
+      const rows = this.store.all<TaskRow>("SELECT * FROM tasks WHERE id>? AND status NOT IN ('completed','failed','stopped','interrupted') ORDER BY id LIMIT 200", cursor);
+      if (!rows.length) return;
+      for (const row of rows) { cursor = row.id; this.enforceBudgets(row); }
+    }
   }
   activeCount(): number { return this.occupied; }
   async shutdown(force: boolean, timeoutMs: number): Promise<void> {

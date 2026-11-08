@@ -50,7 +50,7 @@ npm test
 
 ## 启动与配置
 
-默认数据目录为 `~/.pi/agora`，可用 `AGORA_HOME` 或 CLI 的 `--home` 指定。daemon 仅监听 127.0.0.1 的随机端口，原子发布 `run/daemon.json`；除 health 和认证入口外均要求连接 token 和 `Agora-Protocol: 1`。
+默认数据目录为 `~/.pi/agora`，可用 `AGORA_HOME` 或 CLI 的 `--home` 指定。daemon 仅监听 127.0.0.1 的随机端口，避开 Fetch 禁止端口，最多重选 10 次后失败关闭；端口列表和客户端诊断在 protocol 包共用。原子发布 `run/daemon.json`；除 health 和认证入口外均要求连接 token 和 `Agora-Protocol: 1`。
 
 daemon 启动时读取 `<AGORA_HOME>/config.json`。未配置时使用默认值，未知字段或非法类型拒绝启动；修改后需排空并重启。
 
@@ -68,11 +68,14 @@ daemon 启动时读取 `<AGORA_HOME>/config.json`。未配置时使用默认值�
 | `powershell` | false | 仅 Windows 的 implement 档位可选；其他平台不提供 |
 | `skillDirectories` | 用户 skill 目录及用户 settings 的 skills 路径 | 指定绝对路径数组后替换默认查找范围，详见 [security.md](security.md#skill-白名单) |
 | `defaultSkills` | {} | 按 explore / review / implement 配置默认 skill 名单；未配置档位为空，spawn 的显式名单覆盖默认值，下级只能取上级名单的子集 |
+| `taskLimitDefaults.maxTokens` | 50000000 | 根任务默认 token 软预算；正的安全整数 |
+| `agentLimitCap.perTaskFactor` | 2 | 主 Agent 的未签名单树上限相对根默认预算的倍数 |
+| `agentLimitCap.dailyTokens` | 2500000000 | 所有 principal 共用的本地日历日未签名授权额封顶 |
 | `quotaRecovery` | `"notify"` | 额度重置后通知直接上级；`"auto"` 仅续跑到期任务，不递归恢复下级 |
 
 spawn 的 `maxDepth` 表示以新任务为第一层的子树层数，`maxChildren` 表示该任务及其下级继承的同时下级数限制。指定值不能超过配置或父任务剩余限制；下级可以继续收紧。模型没有额外层级限制。
 
-安全与预算设置通过数据库 `settings` 管理，与上述启动配置分开。`GET /v1/settings` 返回扁平有效配置，CLI 使用 `config get|set`。任务相关键为 `taskLimitDefaults`（`maxTokens`）、`agentLimitCap`（`perTaskFactor`、`dailyTokens`，可选 `perMeetingFactor`）及 `tokenAccounting`（`all` / `uncached`）；默认值待最终确认。调高默认值或封顶、改变计数口径需要签名，完整字段内的调低可直接设置。严格字段、会议预留设置和强制签名规则见 [security.md](security.md#任务预算与设置)。
+安全与预算的有效设置保存在数据库 `settings`。上表三个预算字段允许在启动配置中覆盖，文件值按字段变化导入，不在每次重启时覆盖在线设置；文件未变时保留在线值，删除曾覆盖的字段恢复出厂默认，任意放宽产生常驻警告和离线审计。见 [磁盘预算配置](security.md#磁盘预算配置)。`GET /v1/settings` 返回扁平有效配置，CLI 使用 `config get|set`。任务相关键为 `taskLimitDefaults`（`maxTokens`）、`agentLimitCap`（`perTaskFactor`、`dailyTokens`，可选 `perMeetingFactor`）及 `tokenAccounting`（`all` / `uncached`）；出厂默认是 50,000,000 / 2 / 2,500,000,000，计数为 `all`（含 cacheRead）。调高默认值或封顶、改变计数口径需要签名，完整字段内的调低可直接设置。严格字段、会议预留设置和强制签名规则见 [security.md](security.md#任务预算与设置)。
 
 ```sh
 node packages/cli/dist/main.js daemon start --home <目录>

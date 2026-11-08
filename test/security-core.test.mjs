@@ -408,7 +408,7 @@ test('v4→v5 先一致性备份 WAL，保留原数据并预留预算、答复�
   try {
     assert.equal(SCHEMA_VERSION, 5); assert.equal(migrated.get('SELECT version FROM schema_version').version, 5);
     assert.equal(migrated.principal('main').type, 'agent:main'); assert.deepEqual(migrated.all('PRAGMA foreign_key_check'), []);
-    assert.equal(migrated.all('PRAGMA table_info(tasks)').find(column => column.name === 'max_tokens').dflt_value, '2000000');
+    assert.equal(migrated.all('PRAGMA table_info(tasks)').find(column => column.name === 'max_tokens').dflt_value, '50000000');
     assert.equal(migrated.all('PRAGMA table_info(requests)').find(column => column.name === 'answer_proof').notnull, 0);
     assert.deepEqual(migrated.all('PRAGMA table_info(budget_grants)').map(column => column.name), ['id', 'resource_id', 'principal_id', 'day', 'tokens', 'confirmed_by', 'created_at']);
   } finally { migrated.close(); original.close(); }

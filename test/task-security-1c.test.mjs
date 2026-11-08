@@ -509,6 +509,20 @@ test('1c 尚未启动的预算暂停任务恢复仍发送原任务书', async t 
   assert.match(c.commands.find(c => c.type === 'prompt').message, /私有任务书/);
 });
 
+test('1c 计数口径变更后立即复核运行中预算，不等待下一条 usage', async t => {
+  const f = await setup(t, { tokenAccounting: 'uncached' }), m = await f.main();
+  const task = await f.spawn(m, { maxTokens: 25 }), h = await f.handle(task);
+  h.emit(usage('accounting-switch'));
+  assert.equal(f.store.task(task.taskId).status, 'running');
+  assert.equal(f.tasks.status(m, task.taskId).budget.usedTokens, 17);
+  f.store.run("INSERT INTO settings(key,value) VALUES('tokenAccounting','\"all\"')");
+  f.tasks.reconcileBudgets();
+  assert.equal(f.store.task(task.taskId).status, 'budget_paused');
+  await f.tasks.flush();
+  assert.equal(h.stopped, true);
+  assert.equal(f.tasks.status(m, task.taskId).budget.usedTokens, 37);
+});
+
 test('1c 重启读取持久日账本，日键使用本地日历日', async t => {
   const home = await mkdtemp(join(tmpdir(), 'agora-budget-restart-'));
   t.after(() => rm(home, { recursive: true, force: true }));

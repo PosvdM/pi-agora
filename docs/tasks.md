@@ -89,17 +89,19 @@ agora 对任务只提供“取消（含队列）”这一种停止。协作会�
 
 ### 任务树软预算
 
-每个任务的 `maxTokens` 限制该任务及全部后代的累计用量，跨 generation、会话替换和 daemon 重启保留。HTTP `POST /v1/tasks` 可指定 `maxTokens`；根任务省略时取数据库 `settings` 中的 `taskLimitDefaults.maxTokens`，子任务省略时继承父任务上限。下级不能超过任何祖先的预算，不单独预留或重复占用每日授予。默认值待最终确认。
+每个任务的 `maxTokens` 限制该任务及全部后代的累计用量，跨 generation、会话替换和 daemon 重启保留。HTTP `POST /v1/tasks` 可指定 `maxTokens`；根任务省略时取数据库 `settings` 中的 `taskLimitDefaults.maxTokens`，子任务省略时继承父任务上限。下级不能超过任何祖先的预算，不单独预留或重复占用每日授予。根任务默认上限为 50,000,000 token，可在派活时显式收紧。
 
-根任务的未签名授予受两项限制：主 Agent 的单树上限为 `taskLimitDefaults.maxTokens × agentLimitCap.perTaskFactor`，host 的单树上限为 `taskLimitDefaults.maxTokens`；所有 principal 共用同一数据目录的 `agentLimitCap.dailyTokens`。单树因子和每日上限的默认值待最终确认。超出任一限制均需设备签名；`userConfirmation = off` 产生的 `confirmedBy: "none"` 仍属于未签名授予，不能绕过封顶。
+根任务的未签名授予受两项限制：主 Agent 的单树上限为 `taskLimitDefaults.maxTokens × agentLimitCap.perTaskFactor`，host 的单树上限为 `taskLimitDefaults.maxTokens`；所有 principal 共用同一数据目录的 `agentLimitCap.dailyTokens`。`perTaskFactor` 默认为 2，主 Agent 在封顶内可将单树提高到 100,000,000 token；`dailyTokens` 默认为 2,500,000,000 token，按授权额计算。超出任一限制均需设备签名；`userConfirmation = off` 产生的 `confirmedBy: "none"` 仍属于未签名授予，不能绕过封顶。
 
 `budget_grants` 按本地日历日记录根任务的预算授予，创建时记全额，提高时只记新旧上限的正差额；调低、停止或清理均不退还当日授予。设备签名授予保留在账本中，但不占未签名日封顶。授予检查、账本与任务写入共用事务，不能通过并发创建或更换 principal 绕过。
 
-预算计数使用逐请求去重后的 `treeUsage`。`tokenAccounting: "all"` 计入 `inputTokens + cacheReadTokens + cacheWriteTokens + outputTokens`；`"uncached"` 排除 `cacheReadTokens`。`reasoningTokens` 单独展示，不额外叠加到预算计数中；计数口径的默认值待最终确认。`spawn`、`status`、`result` 和调整上限的响应包含 `budget`：`maxTokens`、`usedTokens`、`remainingTokens`、`tokenAccounting` 与 `ancestors`；`ancestors` 列出每个祖先的上限、用量和暂停标志，剩余值最低为 0，用量不截断。
+预算计数使用逐请求去重后的 `treeUsage`。`tokenAccounting: "all"` 计入 `inputTokens + cacheReadTokens + cacheWriteTokens + outputTokens`；`"uncached"` 排除 `cacheReadTokens`。`reasoningTokens` 单独展示，不额外叠加到预算计数中；默认口径为 `"all"`，包含 cacheRead，不按缓存价格折扣。`spawn`、`status`、`result` 和调整上限的响应包含 `budget`：`maxTokens`、`usedTokens`、`remainingTokens`、`tokenAccounting` 与 `ancestors`；`ancestors` 列出每个祖先的上限、用量和暂停标志，剩余值最低为 0，用量不截断。
 
 任一任务或祖先累计用量达到上限时，daemon 将耗尽预算的任务及其子树内所有非终态任务置为 `budget_paused`，持久化 `task:budget_paused` 通知，然后按任务控制队列执行 `clear_queue`、`abort` 和进程停止，释放名额并保存停止报告与诊断。已结束任务保留终态；停止期间的合法尾量仍按原任务、原代、原会话去重入账，可能超过上限。这是请求结束后执行的软预算，不能保证恰好在指定 token 数停止。
 
 调度、spawn 下级、steer、通知唤醒、额度自动恢复和 recover 都检查当前任务及祖先预算。预算不足返回 `409 budget_exhausted`，下级上限超过祖先返回 `403 budget_limit_exceeded`。增额不会改变暂停状态；调用方须先补足相关预算，再显式 `recover`、`mode: "resume"`，且旧运行必须已确认退出。恢复父任务不会恢复任何下级；下级仍须由其直接召集人逐一决定。未曾启动的任务恢复时保留原任务书。
+
+默认值按历史实现树与返工的请求用量校准：普通实现树约 2,900–3,200 万 token，较大实现树可超过 1 亿；每日封顶按创建和增额的授权额计算，不能以当天实际消耗替代。小任务应在派活时收紧预算。
 
 上限可由 `POST /v1/tasks/:id/limits`、`{ "maxTokens": <正整数> }` 或 `agora task limits <任务 ID> --max-tokens <数量>` 调整；召集人为 `user` 的任务增额走用户确认。预算配置、签名要求和接管边界见 [security.md](security.md#任务预算与设置)。
 

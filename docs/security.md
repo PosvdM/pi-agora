@@ -226,13 +226,14 @@ daemon 启动时、以及在线检测到状态变化时，检查以下情况，�
 | 警告 | 判定 | 清除方式 |
 | --- | --- | --- |
 | `devices-reset` | `everPaired = true`，且设备记录与 daemon 记下的指纹不一致（离线重置、手动删除或修改记录）。daemon 在线执行的、经签名的设备变更会同时更新记下的指纹，不触发 | 用户级确认知悉（见下文） |
+| `budget-config-changed` | 启动导入磁盘预算配置后，根默认、单树因子或日封顶比当前生效值更宽松；移除字段恢复默认导致放宽也触发 | 用户级签名确认知悉；再次放宽增加 revision |
 | `protection-off` | `userConfirmation = off` | 只能通过重新开启保护清除，不能“确认知悉” |
 
 - 每条警告有 `alertId` 和 `revision`。同一情况再次被检测到新的差异（如又一次离线修改）时，`revision` 加 1，警告内容更新。
 - 警告产生和更新都写审计（`action: "security.state_alert"`，附检测到的差异）。
 - pane 插件以持久横幅显示，见 [integration.md](integration.md#安全状态横幅)；`agora status` 和 CLI 每次执行用户级相关命令时显示同样的警告。
 
-**确认知悉**（只适用于 `devices-reset`）：
+**确认知悉**（适用于 `devices-reset` 和 `budget-config-changed`，即使保护关闭也必须设备签名）：
 
 1. pane 插件调用 `POST /v1/security/alerts/:alertId/acknowledge`，带用户看到的 `revision`；daemon 生成待确认和挑战（`action: "agora.security.acknowledge"`、`target: alertId`，`paramsHash` 覆盖 `revision`），返回 `202`。
 2. 浏览器签名后，插件走通用的 `POST /v1/confirmations/:id/sign`。签名设备必须是已配对设备（离线重置后重新配对的设备也算）。
@@ -334,14 +335,14 @@ daemon 启动时、以及在线检测到状态变化时，检查以下情况，�
 | 批准、撤销设备；在线重置配对 | 确认 | ✘ | ✘ |
 | 关闭 `userConfirmation`；调高预算默认值或封顶；改变 `tokenAccounting` | 确认 | ✘ | ✘ |
 | 开启 `userConfirmation`；调低预算默认值或封顶 | ✔ | ✘ | ✘ |
-| 确认知悉 `devices-reset` 警告 | 确认 | ✘ | ✘ |
+| 确认知悉 `devices-reset`、`budget-config-changed` 警告 | 确认 | ✘ | ✘ |
 | 离线重置、离线关闭保护 | 只能在 daemon 停止时用离线命令 | — | — |
 
 ## 任务预算与设置
 
 任务软预算的授予、计数、暂停和恢复以 [tasks.md](tasks.md#任务树软预算) 为准。预算检查在 daemon 内执行；子代理携带请求体中的 proof 或用户字段不能提高权限，`none` 证明不能免除未签名单树及每日封顶。
 
-安全设置保存在数据库 `settings`，不写入 `config.json`。`GET /v1/settings` 返回扁平的有效配置，`agora config get` 查询同一结果；通过 `POST /v1/settings/:key`（或 `PUT`）及 `agora config set` 写入。任务相关字段严格按下表校验，不接受未知字段或不完整对象：
+有效安全设置保存在数据库 `settings`；在线修改不回写 `config.json`。`GET /v1/settings` 返回扁平的有效配置，`agora config get` 查询同一结果；通过 `POST /v1/settings/:key`（或 `PUT`）及 `agora config set` 写入。任务相关字段严格按下表校验，不接受未知字段或不完整对象：
 
 | 配置键 | 字段与约束 |
 | --- | --- |
@@ -350,7 +351,20 @@ daemon 启动时、以及在线检测到状态变化时，检查以下情况，�
 | `tokenAccounting` | `"all"` 或 `"uncached"` |
 | `meetingLimitDefaults` | `maxTokens`、`maxModelCalls`、`maxDurationMinutes`、`maxCycles`、`diagnosticReserveTokens` 五项；前四项为正的安全整数，预留可为 0，但不得超过 `maxTokens`。会议端点尚未开放 |
 
-根任务默认预算、单树因子、每日未签名封顶与计数口径的默认值待最终确认。调高任何预算默认值或封顶、增加维度或移除限制均不能作为调低处理，须设备签名；完整保留原字段且各项不增加时可直接设置。改变计数口径须签名，同值写入无需签名。关闭保护不能绕过这些强制签名规则。修改配置不重写已有任务的 `max_tokens`，授予和用量计算读取有效设置。
+出厂默认值为根任务 50,000,000 token、`perTaskFactor: 2`、`dailyTokens: 2,500,000,000`、`tokenAccounting: "all"`。调高任何预算默认值或封顶、增加维度或移除限制均不能作为调低处理，须设备签名；完整保留原字段且各项不增加时可直接设置。改变计数口径须签名，同值写入无需签名。关闭保护不能绕过这些强制签名规则。修改配置不重写已有任务的 `max_tokens`，授予和用量计算读取有效设置。
+
+### 磁盘预算配置
+
+`config.json` 可设置 `taskLimitDefaults.maxTokens`、`agentLimitCap.perTaskFactor` 和 `agentLimitCap.dailyTokens`，均为正的安全整数；允许只写需要覆盖的字段。daemon 取得独占锁后，按字段与 `settings.budgetFileSource` 记录的上次文件值比较：首次明确提供或文件值变化时导入；文件未变时保留在线设置；删除曾提供的字段则恢复出厂默认值。无关启动配置变化不会重置预算。文件不热读，重启后生效。
+
+导入的配置、来源快照、离线审计和警告在同一事务提交。只收紧时记录 `via: "offline"` 审计；任一值比当前生效值放宽时产生 `budget-config-changed` 常驻警告，包含前后值及 revision，只有设备签名知悉后才消失。后续收紧或重启不会静默清除这条警告；再次放宽增加 revision，旧确认不能清除新警告。`userConfirmation: "off"` 不能绕过警告签名。
+
+```json
+{
+  "taskLimitDefaults": { "maxTokens": 50000000 },
+  "agentLimitCap": { "perTaskFactor": 2, "dailyTokens": 2500000000 }
+}
+```
 
 ## 审计
 
@@ -457,6 +471,7 @@ CI 的 `git-minimum` job 在 Ubuntu 22.04 容器中安装发行版 Git 2.34.1 �
 - **抢先配对**：从未配对过时的首台设备（TOFU），以及离线重置之后的下一台设备（`reTofuArmed`），如果被 Agent 抢先完成配对，Agent 就能以用户身份操作。后者会触发常驻警告。
 - **磁盘凭证的主 Agent 级权限**：子代理能读到 `host.key`，可以用它以 `host:cli` 身份操作，或注册一个新的主会话 principal，获得主 Agent 级权限。任务预算的每日未签名授予按数据目录统一计账，覆盖根任务创建和增额，不因 principal 数量或保护关闭而放宽；设备签名授予单独记录。host 的未签名单树上限为任务默认值，主 Agent 的上限受 `perTaskFactor` 限制；更换身份不能绕过共用日账本。会议预算随会议切片提供。
 - **用户在不知情时确认**：用户确认能区分“用户点了确认”和“Agent 发起了请求”，不能防止用户确认一条 Agent 发起的待确认。待确认的表单写明真实的发起方。
+- **磁盘预算配置**：有 shell 权限的 Agent 可以停止 daemon、修改 `config.json` 后重启并放宽预算；正规导入路径一定写离线审计并留下 `budget-config-changed` 常驻警告，需设备签名知悉。Agent 仍能同时删除数据库、警告和审计，这属于同用户恶意程序的剩余风险。
 - **关闭保护**：`userConfirmation = off` 时无法区分用户与 Agent。
 - **工具层权限**：路径校验和工具白名单不是沙箱，见 [architecture.md](architecture.md#权限档位)。
 

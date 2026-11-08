@@ -247,7 +247,9 @@ async function route(context: ServerContext, method: string, url: URL, conn: Con
       const asynchronous = ["agora.task.spawn", "agora.task.recover"].includes(saved.challenge.action);
       // 安全服务统一校验签名字段，并记录包括缺失字段在内的拒绝尝试。
       const signature = body as unknown as SignatureBody;
-      return ok(asynchronous ? await security.signAsync(conn, confirmation[1]!, signature, execute) : security.sign(conn, confirmation[1]!, signature, execute));
+      const value = asynchronous ? await security.signAsync(conn, confirmation[1]!, signature, execute) : security.sign(conn, confirmation[1]!, signature, execute);
+      if (saved.challenge.action === "agora.settings.set") tasks.reconcileBudgets();
+      return ok(value);
     }
   }
   if (pathname === "/v1/devices" && method === "GET") { auth.requireMain(conn); return ok({ items: security.devices() }); }
@@ -267,7 +269,11 @@ async function route(context: ServerContext, method: string, url: URL, conn: Con
   const setting = pathname.match(/^\/v1\/settings\/([^/]+)$/);
   if (setting && ["POST", "PUT"].includes(method)) {
     hostClient(auth, conn);
-    try { return ok(security.apply(conn, "agora.settings.set", setting[1]!, body)); }
+    try {
+      const value = security.apply(conn, "agora.settings.set", setting[1]!, body);
+      tasks.reconcileBudgets();
+      return ok(value);
+    }
     catch (error) {
       if (!(error instanceof AgoraError) || error.code !== "confirmation_required") throw error;
       return confirmationReply(security.request(conn, "agora.settings.set", setting[1]!, body));

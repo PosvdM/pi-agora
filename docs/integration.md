@@ -98,7 +98,7 @@ cleanup 在有未提交改动且未指定 `discard` 时返回 `409 worktree_dirt
 
 ### 安全查询与确认执行
 
-`GET /v1/settings` 返回扁平的有效配置，不返回整个安全状态；安全状态通过 `GET /v1/security/state` 查询。`GET /v1/confirmations`、`GET /v1/devices` 与 `GET /v1/audit` 都返回 `{ items }`。待确认与审计支持 `limit`、`cursor`，默认 50 条，最多 200 条；待确认使用记录水位，审计使用 `seq` 水位。
+`GET /v1/settings` 返回扁平的有效配置，不返回整个安全状态；安全状态通过 `GET /v1/security/state` 查询。`GET /v1/confirmations`、`GET /v1/devices` 与 `GET /v1/audit` 都返回 `{ items }`。待确认与审计支持 `limit`、`cursor`，默认 50 条，最多 200 条；待确认使用记录水位，审计使用 `seq` 水位；两者返回 `nextCursor`，为 null 表示已到末尾。
 
 host 可读取全部待确认，主 Agent 只能读取 `requestedBy` 为自己的记录。host 可取消其他 host 或主 Agent 发起的待确认，用于浏览器拒绝 CLI 请求；主 Agent 只能取消自己发起的待确认。取消与过期不等于同意。
 
@@ -121,7 +121,7 @@ HTTP 签名入口的同步动作（包括 task takeover、limits、提问答复�
 
 ### 任务预算、额度与用量字段
 
-`POST /v1/tasks` 接受可选 `maxTokens`；`POST /v1/tasks/:id/limits` 使用 `{ maxTokens, expectedRevision? }` 调整子树软预算。`spawn`、详情、结果和 limits 响应的 `budget` 含当前上限、累计用量、剩余量、计数口径与祖先上限 / 用量 / 暂停标志。计数、共享日授予、默认值待定及 `budget_paused` 的显式恢复规则见 [tasks.md](tasks.md#任务树软预算)。
+`POST /v1/tasks` 接受可选 `maxTokens`；`POST /v1/tasks/:id/limits` 使用 `{ maxTokens, expectedRevision? }` 调整子树软预算。`spawn`、详情、结果和 limits 响应的 `budget` 含当前上限、累计用量、剩余量、计数口径与祖先上限 / 用量 / 暂停标志。计数、共享日授予、默认值及 `budget_paused` 的显式恢复规则见 [tasks.md](tasks.md#任务树软预算)。
 
 `POST /v1/tasks/:id/takeover` 是用户级显式接管，可接管召集人仍可达的任务；普通 host 不能直接 recover Agent 资源。原 Agent 的目标 / 子树管理返回 `403 task_taken_over`，相关控制执行中的接管返回 `409 task_busy`；接管不改变父子关系或用量归属。完整边界见 [tasks.md](tasks.md#用户接管)。
 
@@ -156,7 +156,7 @@ HTTP 签名入口的同步动作（包括 task takeover、limits、提问答复�
 | | `POST /v1/devices/reset` | 在线重置配对（`agora pair --reset`，用户级，已配对设备签名）：保留签名设备，清掉其余。没有可用浏览器时用离线命令，不经 API | CLI、pane 插件 |
 | 安全状态 | `GET /v1/security/state` | 保护设置、everPaired、reTofuArmed、设备概要与持久警告；status 同时返回 security | CLI、pane 插件 |
 | 安全警告 | `GET /v1/security/alerts` | 当前的安全警告（`alertId`、类型、`revision`、内容、状态） | CLI、pane 插件 |
-| | `POST /v1/security/alerts/:alertId/acknowledge` | 带 `revision` 发起确认知悉，返回 `202` 和待确认；签名走 `/v1/confirmations/:id/sign`。只适用于 `devices-reset` | pane 插件 |
+| | `POST /v1/security/alerts/:alertId/acknowledge` | 带 `revision` 发起确认知悉，返回 `202` 和待确认；签名走 `/v1/confirmations/:id/sign`。适用于 `devices-reset` 和 `budget-config-changed`，不适用于 `protection-off` | pane 插件 |
 | 配置 | `GET /v1/settings`、`POST /v1/settings/:key`（也接受 `PUT`） | 返回扁平有效配置；键包括 `userConfirmation`、`taskLimitDefaults`、`agentLimitCap`、`tokenAccounting`、`meetingLimitDefaults`。关闭保护、调高预算配置或改变计数口径须签名，开启保护、完整字段内调低可直接设置 | CLI |
 | 任务 | `POST /v1/tasks` | spawn；maxDepth / maxChildren 逐层收紧，按 principal 与任务树授权 | 主 / 子会话扩展、CLI、pane 插件 |
 | | `GET /v1/tasks`、`GET /v1/tasks/:id`、`GET /v1/tasks/:id/result?generation=` | 列表、当前详情、指定代结果 | 同上 |
