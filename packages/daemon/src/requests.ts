@@ -2,13 +2,15 @@ import { AgoraError, invalid, object, text } from './errors.js';
 import type { Auth, Connection } from './auth.js';
 import { Store, id, now } from './store.js';
 import type { TaskManager } from './tasks.js';
+import { AccessControl, isHost } from './acl.js';
+import type { UserExecutionProof } from './budgets.js';
 
 import type { RequestQuestion } from '@pi-agora/protocol';
 export interface RequestRow {
   id: string; asker_id: string; target_id: string; task_id: string | null;
   questions: string; context: string | null; state: string; route: string;
   answers: string | null; answered_by: string | null; expires_at: string | null;
-  revision: number; created_at: string; updated_at: string;
+  revision: number; created_at: string; updated_at: string; answer_proof: string | null;
 }
 function questionsOf(value: unknown): RequestQuestion[] {
   if (!Array.isArray(value) || value.length < 1 || value.length > 3) invalid('提问必须有 1 到 3 题');
@@ -65,7 +67,8 @@ function answersOf(questions: RequestQuestion[], value: unknown) {
 export class Requests {
   private timer?: ReturnType<typeof setTimeout>;
   private closed = false;
-  constructor(readonly store: Store, readonly auth: Auth, readonly tasks: TaskManager) { this.arm(); }
+  readonly acl: AccessControl;
+  constructor(readonly store: Store, readonly auth: Auth, readonly tasks: TaskManager) { this.acl = new AccessControl(store, auth); this.arm(); }
   close(): void { this.closed = true; if (this.timer) clearTimeout(this.timer); }
   private arm(): void {
     if (this.closed) return;
@@ -80,7 +83,7 @@ export class Requests {
       const rows = this.store.all<RequestRow>("SELECT * FROM requests WHERE state IN ('open','escalated') AND target_id!='user' AND expires_at<=? ORDER BY expires_at LIMIT 200", now());
       if (!rows.length) break;
       for (const row of rows) {
-        this.store.transaction(() => {
+        this.tasks.budgets.atomic(() => {
           this.store.run("UPDATE requests SET state='expired',revision=revision+1,updated_at=? WHERE id=? AND revision=?", now(), row.id, row.revision);
           this.store.notice(row.asker_id, `request:${row.id}:expired`, "request:expired", { requestId: row.id, taskId: row.task_id, state: "expired", summary: `提问 ${row.id} 已过期，未获答复不表示同意，请停在安全状态。` });
           this.store.change("request", row.id);
@@ -95,31 +98,31 @@ export class Requests {
     return row;
   }
   private actor(conn: Connection): string {
-    this.auth.requireAgent(conn);
-    return conn.type.startsWith('host:') ? 'user' : conn.principalId!;
+    return this.acl.actor(conn);
   }
   private view(row: RequestRow) {
     return { id: row.id, askerId: row.asker_id, targetId: row.target_id, taskId: row.task_id,
       questions: JSON.parse(row.questions), context: row.context, state: row.state,
       route: JSON.parse(row.route), answers: row.answers ? JSON.parse(row.answers) : undefined,
       answeredBy: row.answered_by, expiresAt: row.expires_at, revision: row.revision, createdAt: row.created_at, updatedAt: row.updated_at,
-      ...(row.answered_by === 'user' ? { answeredVia: { confirmedBy: 'none', requestedBy: 'host:cli' } } : {}) };
+      ...(row.answer_proof ? { answeredVia: JSON.parse(row.answer_proof) as UserExecutionProof } : {}) };
   }
   detail(conn: Connection, id: string) {
+    this.actor(conn);
     this.expire();
-    const actor = this.actor(conn), row = this.get(id);
-    if (actor !== 'user' && actor !== row.asker_id && actor !== row.target_id) throw new AgoraError(403, 'forbidden', '不能访问其他会话的提问');
+    const row = this.get(id);
+    this.acl.question(conn, row, 'read');
     return this.view(row);
   }
   list(conn: Connection, states: string[] = [], limit = 50, cursor = 0) {
-    this.expire();
     const actor = this.actor(conn);
-    const rows = this.store.all<RequestRow & { cursor: number }>(`SELECT rowid AS cursor,* FROM requests WHERE rowid>? AND (?='user' OR asker_id=? OR target_id=?) ${states.length ? `AND state IN (${states.map(() => '?').join(',')})` : ''} ORDER BY rowid LIMIT ?`, cursor, actor, actor, actor, ...states, limit + 1);
+    this.expire();
+    const rows = this.store.all<RequestRow & { cursor: number }>(`SELECT rowid AS cursor,* FROM requests WHERE rowid>? AND (?='user' OR asker_id=? OR target_id=?) ${states.length ? `AND state IN (${states.map(() => '?').join(',')})` : ''} ORDER BY rowid LIMIT ?`, cursor, isHost(conn) ? 'user' : actor, actor, actor, ...states, limit + 1);
     return { items: rows.slice(0, limit).map(row => this.view(row)), nextCursor: rows.length > limit ? String(rows[limit - 1]!.cursor) : null };
   }
   ask(conn: Connection, body: Record<string, unknown>) {
     const asker = this.actor(conn);
-    if (asker === 'user') throw new AgoraError(403, 'forbidden', '此端点仅供 Agent 提问');
+    if (isHost(conn)) throw new AgoraError(403, 'forbidden', '此端点仅供 Agent 提问');
     const questions = questionsOf(body.questions), context = body.context === undefined ? null : text(body.context, 'context', 32000);
     const session = this.store.get<{ task_id: string; convener_id: string }>('SELECT t.id AS task_id,t.convener_id FROM agora_sessions s JOIN tasks t ON t.id=s.task_id WHERE s.principal_id=?', asker);
     const target = session?.convener_id ?? 'user', requestId = id('rq'), at = now();
@@ -136,22 +139,29 @@ export class Requests {
     return this.view(this.get(requestId));
   }
   update(conn: Connection, requestId: string, action: string, body: Record<string, unknown>) {
+    return this.updateInternal(conn, requestId, action, body);
+  }
+  updateUser(conn: Connection, requestId: string, action: string, body: Record<string, unknown>, proof: UserExecutionProof) {
+    this.actor(conn);
+    if (!isHost(conn) || !proof || !['device', 'none'].includes(proof.confirmedBy)) throw new AgoraError(403, 'forbidden', '用户动作只接受可信主机确认入口');
+    return this.updateInternal(conn, requestId, action, body, proof);
+  }
+  private updateInternal(conn: Connection, requestId: string, action: string, body: Record<string, unknown>, proof?: UserExecutionProof) {
+    this.actor(conn);
     this.expire();
-    const actor = this.actor(conn), row = this.get(requestId);
+    const actor = proof ? 'user' : conn.principalId!, row = this.get(requestId);
     if (!['open', 'escalated'].includes(row.state)) throw new AgoraError(409, 'already_handled', '提问已经处理');
     if (body.expectedRevision !== undefined && body.expectedRevision !== row.revision) throw new AgoraError(409, 'conflict', '提问状态已变化');
-    if (actor !== 'user' && actor !== row.target_id && !(action === 'cancel' && actor === row.asker_id)) throw new AgoraError(403, 'forbidden', '只有当前接收方可以答复或转交');
-    if (actor === 'user' && conn.type !== 'host:cli') throw new AgoraError(403, 'forbidden', '切片 1b 只提供 CLI 答复通路');
+    if (action !== 'answer' && action !== 'escalate' && action !== 'cancel') invalid('提问动作无效');
+    this.acl.question(conn, row, action, body, proof, requestId);
     const answers = action === 'answer' ? answersOf(JSON.parse(row.questions), body.answers) : undefined;
-    if (!['answer', 'escalate', 'cancel'].includes(action)) invalid('提问动作无效');
     let target = row.target_id;
     if (action === 'escalate') {
-      if (actor === 'user') throw new AgoraError(403, 'forbidden', '提问已转给用户');
       target = this.store.get<{ convener_id: string }>('SELECT t.convener_id FROM agora_sessions s JOIN tasks t ON t.id=s.task_id WHERE s.principal_id=?', actor)?.convener_id ?? 'user';
     }
     const state = action === 'answer' ? 'answered' : action === 'cancel' ? 'cancelled' : 'escalated';
-    this.store.transaction(() => {
-      const changed = this.store.run('UPDATE requests SET state=?,target_id=?,route=?,answers=?,answered_by=?,revision=revision+1,updated_at=? WHERE id=? AND revision=?', state, target, action === 'escalate' ? JSON.stringify([...JSON.parse(row.route), actor]) : row.route, answers ? JSON.stringify(answers) : null, action === 'answer' ? actor : null, now(), requestId, row.revision);
+    this.tasks.budgets.atomic(() => {
+      const changed = this.store.run('UPDATE requests SET state=?,target_id=?,route=?,answers=?,answered_by=?,answer_proof=?,revision=revision+1,updated_at=? WHERE id=? AND revision=?', state, target, action === 'escalate' ? JSON.stringify([...JSON.parse(row.route), actor]) : row.route, answers ? JSON.stringify(answers) : null, action === 'answer' ? actor : null, proof ? JSON.stringify(proof) : null, now(), requestId, row.revision);
       if (!changed.changes) throw new AgoraError(409, 'already_handled', '提问已经处理');
       const recipient = action === 'escalate' ? target : row.asker_id;
       this.store.notice(recipient, `request:${requestId}:${action === 'escalate' ? `escalated:${row.revision}` : state}`, `request:${state}`, { requestId, taskId: row.task_id, state, questions: JSON.parse(row.questions), answers, summary: action === 'escalate' ? `提问 ${requestId} 已逐级转交，请答复或继续转交。` : action === 'cancel' ? `提问 ${requestId} 未获答复，取消不代表批准。请停在安全状态。` : `提问 ${requestId} 已答复：${JSON.stringify(answers)}` });
@@ -159,7 +169,9 @@ export class Requests {
       this.store.change('request', requestId);
     });
     this.arm();
-    this.tasks.wake(action === 'escalate' ? target : row.asker_id);
+    queueMicrotask(() => {
+      if (this.get(requestId).revision === row.revision + 1) this.tasks.wake(action === 'escalate' ? target : row.asker_id);
+    });
     return this.view(this.get(requestId));
   }
 }

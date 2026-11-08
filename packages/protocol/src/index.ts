@@ -7,7 +7,7 @@ export const EXPLORE_TOOLS = ["read", "grep", "find", "ls"] as const;
 
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export type PermissionProfile = "explore" | "review" | "implement";
-export type TaskStatus = "created" | "running" | "waiting_decision" | "waiting_children" | "quota_paused" | "completed" | "failed" | "stopped" | "interrupted";
+export type TaskStatus = "created" | "running" | "waiting_decision" | "waiting_children" | "quota_paused" | "budget_paused" | "completed" | "failed" | "stopped" | "interrupted";
 export type PrincipalType = "user" | "host:cli" | "host:pane" | "agent:main" | "agent:child";
 export type SessionKind = "task" | "meeting-seat" | "secretary";
 
@@ -32,6 +32,7 @@ export interface SpawnTaskParams {
   notify?: "wake" | "silent";
   maxDepth?: number;
   maxChildren?: number | null;
+  maxTokens?: number;
   skills?: string[];
 }
 export type AgoraTaskParams =
@@ -42,8 +43,13 @@ export type AgoraTaskParams =
   | { action: "list"; status?: TaskStatus[]; scope?: "mine" | "all" }
   | { action: "steer"; taskId: string; message: string; interrupt?: boolean }
   | { action: "cleanup"; taskId: string; discard?: boolean }
-  | { action: "recover"; taskId: string; mode: "resume" | "reopen" | "replace" | "abandon"; model?: string; profile?: PermissionProfile };
+  | { action: "limits"; taskId: string; maxTokens: number; expectedRevision?: number }
+  | { action: "recover"; taskId: string; expectedRevision?: number; mode: "resume" | "reopen" | "replace" | "abandon"; model?: string; profile?: PermissionProfile };
 
+export interface TaskBudget {
+  maxTokens: number; usedTokens: number; remainingTokens: number; tokenAccounting: "all" | "uncached";
+  ancestors: { taskId: string; maxTokens: number; usedTokens: number; paused: boolean }[];
+}
 export interface TaskSummary {
   taskId: string;
   agoraSessionId: string;
@@ -57,6 +63,7 @@ export interface TaskSummary {
   updatedAt: string;
   skills?: string[];
   quotaResumeAt?: string | null;
+  budget?: TaskBudget;
   usage?: UsageSummary;
   treeUsage?: UsageSummary;
 }
@@ -66,6 +73,7 @@ export interface TaskResult {
   generation: number;
   status: TaskStatus;
   resultText?: string | null;
+  budget?: TaskBudget;
   usage?: unknown;
   treeUsage?: UsageSummary;
   generationUsage?: UsageSummary;
