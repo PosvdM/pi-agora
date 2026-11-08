@@ -16,8 +16,7 @@ export const HELP = `agora：pi 协作引擎
   agora log <任务或会话 ID> [--limit <数量>] [--before <条目 ID>] [--home <目录>]
   agora tail <任务或会话 ID> [--limit <数量>] [--home <目录>]
   agora verify-archive [任务或会话 ID] [--offline] [--home <目录>]
-  agora archive delete <会话 ID> --offline [--home <目录>]
-  agora takeover <principalId>（需要用户签名，尚未开放）
+  agora archive delete <会话 ID> [--wait] [--timeout <秒>] [--offline] [--home <目录>]
   agora show <任务或会话 ID> [--home <目录>]
   agora pending [--home <目录>]
   agora answer <提问 ID> --answers <JSON 数组> [--revision <版本>] [--wait] [--home <目录>]

@@ -68,6 +68,7 @@ export class SessionViews {
   private readonly states = new Map<string, ViewState>();
   private readonly transitions = new Map<string, Promise<void>>();
   private closed = false;
+  private readonly deleting = new Set<string>();
   constructor(private readonly store: Store, private readonly instanceId: string) {}
 
   private state(sessionId: string, runId = "archive", handle?: DriverHandle): ViewState {
@@ -330,6 +331,27 @@ export class SessionViews {
     });
   }
 
+  /** 调用方须持有目标任务控制队列；排空后丢弃缓存与流，返回解除删除屏障的函数。 */
+  async prepareArchiveDeletion(sessionId: string): Promise<() => void> {
+    if (this.deleting.has(sessionId)) throw new AgoraError(409, "conflict", "会话存档正在删除");
+    this.deleting.add(sessionId);
+    try {
+      while (this.transitions.has(sessionId)) await this.transitions.get(sessionId);
+      const state = this.states.get(sessionId);
+      if (state) {
+        await state.ready;
+        await state.work;
+        if (!state.ended || state.cleanupPending) throw new AgoraError(409, "archive_busy", "会话归档尚未收尾");
+        if (state.failure) throw new AgoraError(409, "archive_io", "会话归档收尾失败，请检查诊断");
+        if (state.timer) { clearTimeout(state.timer); state.timer = undefined; }
+        for (const off of state.off.splice(0)) off();
+        for (const client of [...state.clients]) client.close();
+      }
+      // 移出全局 flush/close 的遍历集合，避免删除期间重新创建旁车目录。
+      this.states.delete(sessionId);
+      return () => { this.deleting.delete(sessionId); };
+    } catch (error) { this.deleting.delete(sessionId); throw error; }
+  }
   async settled(sessionId: string): Promise<void> {
     const state = await this.ensure(sessionId);
     await this.serial(state, async () => {
@@ -368,6 +390,7 @@ export class SessionViews {
     }
   }
   private async ensure(sessionId: string): Promise<ViewState> {
+    if (this.deleting.has(sessionId)) throw new AgoraError(409, "archive_busy", "会话存档正在删除");
     // 重同步后的快照等待运行切换，不能在旧运行收尾期间再次取得旧 epoch。
     while (this.transitions.has(sessionId)) await this.transitions.get(sessionId);
     if (this.closed) throw new AgoraError(503, "draining", "会话服务已关闭");
@@ -384,6 +407,7 @@ export class SessionViews {
       current.ready = this.serial(current, () => this.refresh(current));
     }
     await state.ready;
+    if (this.deleting.has(sessionId)) throw new AgoraError(409, "archive_busy", "会话存档正在删除");
     if (this.states.get(sessionId) !== state) return this.ensure(sessionId);
     return state;
   }
