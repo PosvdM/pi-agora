@@ -600,6 +600,32 @@ for (const finish of ['resume', 'close']) test(`会话视图：退出写入失�
   assert.ok((await f.partialRows()).some(row => row.delta === '旧运行必须保存的内容'));
   assert.equal(JSON.parse(await readFile(path.join(f.directory, 'runs', 'r1.json'), 'utf8')).runId, 'r1');
 });
+test('会话视图：删除准备重试旧运行片段，失败保留状态，删除后关闭不重建目录', async t => {
+  const f = await setup(t);
+  await f.views.begin('s1', 'r1', f.driver);
+  const blocked = path.join(f.directory, 'partials');
+  await writeFile(blocked, '阻挡片段目录');
+  emitText(f.driver, '删除前必须保存', 2, false);
+  await assert.rejects(f.views.ended('s1', 'r1', '测试退出'));
+  const previous = f.views.states.get('s1');
+  await assert.rejects(f.views.prepareArchiveDeletion('s1'));
+  assert.equal(f.views.states.get('s1'), previous);
+  assert.ok(previous.pending.length > 0);
+  assert.equal(f.views.deleting.has('s1'), false);
+  await rm(blocked);
+  const release = await f.views.prepareArchiveDeletion('s1');
+  try {
+    assert.equal(previous.pending.length, 0);
+    assert.ok((await f.partialRows()).some(row => row.delta === '删除前必须保存'));
+    assert.equal(f.views.states.has('s1'), false);
+    await assert.rejects(f.views.begin('s1', 'r2', handle()), error => error.code === 'archive_busy');
+    await assert.rejects(f.views.snapshot('s1'), error => error.code === 'archive_busy');
+    await rm(f.directory, { recursive: true });
+    await f.views.flush();
+    await f.views.close();
+    await assert.rejects(readdir(f.directory), error => error.code === 'ENOENT');
+  } finally { release(); }
+});
 test('会话视图：片段写入失败可见且不伪装为 flush 成功', async t => {
   const f = await setup(t);
   await f.views.begin('s1', 'r1', f.driver);
