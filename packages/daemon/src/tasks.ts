@@ -418,16 +418,20 @@ export class TaskManager {
         const latest = this.store.task(row.id);
         if (TERMINAL.includes(latest.status) || latest.status === 'budget_paused') continue;
         // 暂停与签名调用方共用事务，数据库门禁先于异步进程控制生效。
-        this.budgets.atomic(() => {
+        const event = this.budgets.atomic(() => {
           this.store.run("UPDATE tasks SET status='budget_paused',revision=revision+1,status_detail=NULL,updated_at=? WHERE id=?", now(), row.id);
           this.store.run("UPDATE agora_sessions SET status='budget_paused',revision=revision+1 WHERE id=?", row.agora_session_id);
           this.store.run("UPDATE task_generations SET status='budget_paused' WHERE task_id=? AND generation=?", row.id, row.generation);
           this.store.change('task', row.id);
-          this.store.notice(row.convener_id, `task:${row.id}:${row.generation}:budget:${exhausted.id}`, 'task:budget_paused', { taskId: row.id, generation: row.generation, status: 'budget_paused', budget: this.budgets.view(this.store.task(row.id)), summary: '任务或祖先预算已用完，请增额后明确恢复；下级不会自动恢复。' });
+          const paused = this.store.task(row.id);
+          const key = `task:${paused.id}:${paused.generation}:budget:${exhausted.id}:${paused.revision}`;
+          this.store.notice(paused.convener_id, key, 'task:budget_paused', { taskId: paused.id, generation: paused.generation, revision: paused.revision, exhaustedTaskId: exhausted.id, status: 'budget_paused', notify: 'wake', triggerTurn: true, budget: this.budgets.view(paused), summary: '任务或祖先预算已用完，请增额后明确恢复；下级不会自动恢复。' });
+          return { task: paused, noticeId: this.store.get<{ id: string }>('SELECT id FROM outbox WHERE recipient_id=? AND dedupe_key=?', paused.convener_id, key)!.id };
         });
         const pause = () => {
-          // 外层签名事务可能回滚，不能提前停止进程或修改内存运行状态。
-          if (this.store.task(row.id).status !== 'budget_paused') return;
+          // 同一 revision 在回滚重试中可能复用；随机通知 ID 必须属于本次提交。
+          const persisted = this.store.task(row.id);
+          if (persisted.status !== 'budget_paused' || persisted.generation !== event.task.generation || persisted.revision < event.task.revision || !this.store.get('SELECT id FROM outbox WHERE id=?', event.noticeId)) return;
           this.clearQuotaTimer(row.id);
           this.waking.delete(row.id);
           const runtime = this.runtimes.get(row.id);
@@ -440,6 +444,7 @@ export class TaskManager {
           void this.control(row.id, () => this.pauseBudgetRun(row.id, runtime)).catch(error => {
             this.store.run('UPDATE tasks SET status_detail=? WHERE id=?', JSON.stringify({ message: '预算暂停运行尚未确认退出', diagnostic: failureDiagnostic(error) }), row.id);
           });
+          this.notifyConvener(persisted, 'wake');
         };
         if (outerTransaction) queueMicrotask(pause);
         else pause();
