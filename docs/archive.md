@@ -45,6 +45,7 @@ daemon 从 RPC 事件流里收到 `message_update` 增量（依据：`docs/json.
 - **只在最终消息确认已写入会话文件后才关闭片段**：收到 `message_end` 时不关闭（pi 先发 `message_end` 再写文件，依据：`dist/core/agent-session.js:760–779`）；daemon 用 `get_entries` 取到这条消息对应的 entryId，并在会话文件里读到该 entryId 的完整一行后，才追加一行 `{ "messageSeq": n, "closed": true, "entryId": "…" }`。`get_entries` 返回的条目不一定已写入文件（新会话在第一条对话消息之前只在内存里），所以不能只看它。最终内容以 pi JSONL 为准，片段只用于还原没写完的部分。
 - `message_end` 写入 `{ messageSeq, ended: true, message }` 匹配行。块结束的权威内容用 `replace: true` 行替换增量，并保存 `done`、工具参数及元数据。读取时只在完整最终消息与会话条目逐字段相符时去重；同角色、同时间戳但正文不同的消息不能互相替代。
 - 进程退出后，未关闭且没有对应磁盘最终消息的片段按运行、消息和 `contentIndex` 重建，在对话末尾显示为“中断时正在生成的内容”。`projectPartials` 返回与会话快照相同的块结构；活跃助手和等待条目确认的完整消息由 `inFlight` 展示，不重复列为中断片段。未确认停止时继续接收迟到流，确认退出后才退订。
+- 写入失败的批次保留在原 run 的 `pending` 中。切换 run 或关闭服务前重试旧片段、校验与诊断持久化；失败时报告错误，不能丢弃旧状态或宣称屏障完成。普通 `flush` 只持久化，不表示运行退出；服务 `close` 另行取消订阅。
 
 ### 退出诊断
 
@@ -78,7 +79,7 @@ daemon 从 RPC 事件流里收到 `message_update` 增量（依据：`docs/json.
 | ② 用户聊天视图 | 从当前叶子沿 `parentId` 回到根的整条活动分支，包括压缩前的内容；压缩条目作为分隔标记保留 | 会话查看（CLI、pi-pane） |
 | ③ 模型当前上下文 | 压缩和 context edit 之后实际发给模型的消息 | 诊断 |
 
-`packages/archive` 的 `projectUserView(entries, leafId)` 输出从根到叶子的完整活动分支，保持迁移后的 pi 条目形状，包含压缩前的历史。在线使用 `get_entries` 的 `leafId`；只读文件按 pi 重新打开语义取最后一个非 session 条目。协作会话不支持分支导航，检测到叶子移到另一分支时发 `resync`。v1 的派生 ID 只能在同一未变内容快照内使用，跨读取器比较时按条目位置规范化，不能持久保存。接口见 [integration.md](integration.md#会话视图)。
+`packages/archive` 的 `projectUserView(entries, leafId)` 输出从根到叶子的完整活动分支，保持迁移后的 pi 条目形状，包含压缩前的历史。在线使用 `get_entries` 的 `leafId`；只读文件按 pi 重新打开语义取最后一个非 session 条目。协作会话不支持分支导航，检测到叶子移到另一分支时发 `resync`。v1 的派生 ID 只能在同一读取器的未变内容快照内使用，跨读取器比较时按条目位置规范化，不能持久保存；原始条目分页游标还绑定读取器与快照代次，规则见下文“只读 archive adapter”。接口见 [integration.md](integration.md#会话视图)。
 
 ## 继承关系
 
@@ -99,7 +100,7 @@ daemon 从 RPC 事件流里收到 `message_update` 增量（依据：`docs/json.
 
 - 每次 run 结束（含回收、停止、崩溃）；
 - 会话进入终态（任务 completed / failed / stopped，席位结束）；
-- 用户运行 `agora verify-archive [sessionId]`。
+- 用户运行 `agora verify-archive [sessionId]`。省略 ID 时 CLI 自动跟随 `nextCursor` 校验全部可见会话；在线端点每页默认 200 条、上限 200，接受 `limit` / `cursor`，完整协议见 [integration.md](integration.md#存档与会话字段)。
 
 校验内容：
 
@@ -124,8 +125,11 @@ daemon 从 RPC 事件流里收到 `message_update` 增量（依据：`docs/json.
 ## 保留策略
 
 - daemon 从不自动删除会话目录或会话文件。
-- 用户删除存档必须显式执行 `agora archive delete <sessionId> --offline`。在线删除属于用户级操作，在签名确认通路接入前拒绝执行，不能凭主机凭证绕过。离线维护同时持有 daemon 实例锁与会话写锁，要求终态、全部 run 明确退出、旧写者已释放，以及真实目录和普通文件检查全部通过；不会停止未知写者，也不使用 `assumeNoWriter`。
+- `agora archive delete <sessionId>` 默认请求在线设备签名确认；`--wait` 等待原确认，默认等待期限为 600 秒，可用 `--timeout <秒>` 调整。超时后查询原确认，不能把等待超时视为取消或重新发起删除。即使 `userConfirmation = off`，在线删除仍须设备签名，主机凭证不能绕过。
+- 在线端点为 `POST /v1/sessions/:id/archive/delete`，只接受可选 `expectedRevision`；省略时绑定当前会话 revision。签名挑战为 `agora.archive.delete`，验签后经异步确认通路执行。删除与任务控制串行，排空校验及归档工作、设置删除屏障并清除视图缓存，防止旁车文件被重新创建；执行前复查 ACL、版本、终态和全部 run 的退出与 cleanup 证据。没有任务关联时返回 `archive_offline_required`，保守要求离线维护。
+- 仅显式执行 `agora archive delete <sessionId> --offline` 才进入离线维护；在线连接或鉴权失败不会自动转入该通路。离线维护同时持有 daemon 实例锁与会话写锁。在线与离线均要求终态、全部 run 明确退出、旧写者已释放，以及真实目录和普通文件检查全部通过；不会停止未知写者，也不使用 `assumeNoWriter`。
 - 删除后 `archive_state = missing`，SQLite 元数据保留，树节点仍然列出，`availability` 为 `missing`，发布 `upsert`，不是 tombstone。文件缺失、锁证明不足或状态不明时保守拒绝删除。会话文件本身、实际会话目录及受保护的锁和数据库路径必须为普通路径，目录内部不能含链接或特殊文件；数据根目录的系统别名在检查前规范化。用户级目标见 [security.md](security.md#用户确认)，树映射见 [integration.md](integration.md#同步与按需加载)。
+- 文件系统删除与数据库更新分别提交；部分删除失败时记录 `suspect` 和 `archive_delete_failed` 并报错，不能报告成功。
 - 存档占用的磁盘空间在 `agora status` 里显示。
 
 ## 读取权限
@@ -133,11 +137,10 @@ daemon 从 RPC 事件流里收到 `message_update` 增量（依据：`docs/json.
 | 读者 | 能读什么 |
 | --- | --- |
 | CLI、pi-pane 插件（`host:cli`、`host:pane`） | 全部存档 |
-| 召集人（Agent） | 自己召集的任务和会议下所有会话；会议进行中的参会者对话除外，会议结束后可读 |
-| 参会者、书记 | 不能读其他会话的对话，只能读 board 公开条目 |
-| 子代理 | 不能读其他会话的对话 |
+| 主 Agent（`agent:main`） | 自己的会话及自己召集的任务树会话；拒绝跨越用户接管边界读取目标及其子树 |
+| 协作子代理（`agent:child`） | 不提供全量会话视图，包括自己的会话；任务结果仍按任务 ACL 读取 |
 
-MVP 中 Agent 读存档只通过 `agora_task result` 和会议纪要，不提供读取完整对话的工具（避免把大量历史塞回主代理上下文）。
+列表、详情、快照、历史、诊断、SSE 和完整性校验使用同一会话 ACL；异步读取完成后和流存续期间重新检查授权。host 可读全部存档不等于能免签删除。Agent 工具只提供 `agora_task result`，不提供读取完整对话的工具，避免把大量历史塞回主代理上下文。board 和会议权限属于后续切片，见 [security.md](security.md#资源级访问控制)。
 
 ## 只读 archive adapter
 
@@ -175,6 +178,7 @@ export interface ArchivedSessionSummary {
     | { kind: "main"; piSessionId: string } | { kind: "user" };
   parentDiagnostics?: { kind: string; message: string }[];
   isCurrent?: boolean;         // 当前任务所指向的会话
+  takenOver?: boolean;         // 普通任务为 false；无接管来源列的旧库或非任务省略
   usage?: UsageSummary;        // 本会话的累计请求与最近已知上下文
   parentPiSessionId?: string;   // 召集人是主会话时，对应 pi 的 sessionId
   taskId?: string;
@@ -195,8 +199,8 @@ export interface Page<T> { items: T[]; nextCursor?: string }
 
 - 用 `node:sqlite` 以只读方式打开 `agora.db`（`readOnly` 选项，Node 24；daemon 同时在写时依赖 WAL 的读写并发）。注意：以只读方式打开 WAL 数据库时同样会尝试创建或读写 `-wal` 和 `-shm` 文件，因此数据库所在目录（`AGORA_HOME`）必须可写，否则打开失败。
 - **会话文件只读解析**：`packages/harness-pi` 按 pi 的 JSONL 格式（`docs/session-format.md`）自行解析，旧版本格式在内存里迁移，绝不写回。不用 pi 导出的 `SessionManager.open()`：它在文件为空或需要从旧格式迁移时会调用 `_rewriteFile()` 重写文件（依据：`dist/core/session-manager.js:666–727`）。末尾未写完的截断行或中间补换行留下的不完整行直接跳过并记录，不当成损坏。解析结果的条目保持 pi `SessionEntry` 的原始形状。
-- **条目键与叶子节点**：v1 条目 ID 在读取时临时生成，不具备跨读取器的稳定性。同一 reader 仅在文件指纹不变时复用快照以支持分页；文件内容变化后旧水位无效，需要重新取快照。v2/v3 保留文件 ID，文件叶子取最后一个非 session 条目。
-- **关系与分页**：`parent` 只包含领域标识，子任务的 `sessionId` 指向父任务当前会话，不使用任何查看器节点格式；主会话标识缺失时省略并附诊断。会话列表按创建时间和 ID 倒序，游标绑定筛选条件；每页默认 50、上限 200。`getSession` 额外返回经真实路径检查的 `sessionFile`，列表不返回路径。
+- **条目键与叶子节点**：v1 条目 ID 在读取时临时生成，不具备跨读取器的稳定性。同一 reader 仅在文件指纹不变时复用快照以支持分页；`readRawEntries` 的 v1 游标绑定 reader 标识与快照 generation。追加、换用新 reader，或观察到内容从 A 变为 B 后再变回 A，都会使旧游标失效，须从第一页重读。v2/v3 保留文件 ID，文件叶子取最后一个非 session 条目。
+- **关系与分页**：在线与离线的关系、继承、当前会话、接管标记和用量字段遵守 protocol 的 `SessionMetadata` 同形约定。`parent` 只包含领域标识；`convenerId = user` 优先展示 `{ kind: "user" }`，即使保留了 `parent_task_id`，预算仍沿原祖先累计。其他子任务的 `sessionId` 指向父任务当前会话，不使用查看器节点格式；主会话标识缺失时省略并附诊断。支持接管来源列的任务返回 `takenOver`，普通任务为 `false`；缺该列的旧库和非任务会话省略。会话列表按创建时间和 ID 倒序，游标绑定筛选条件；每页默认 50、上限 200。`getSession` 额外返回经真实路径检查的 `sessionFile`，列表不返回路径。
 - 只接受 `AGORA_HOME` 下的真实路径：从数据库读出的 `session_file` 先解析真实路径，系统父目录别名指向同一数据目录时可以读取。缺失文件解析最近存在的祖先，悬空链接仍核对其目标；真实路径越界或祖先不是目录时拒绝。daemon 与 adapter 共用 `resolveArchivePath`，返回规范绝对路径与明确的缺失标志。
 - adapter 不暴露 SQLite 表结构。数据库迁移时同步更新 adapter；`apiVersion` 只在返回结构不兼容时递增，旧版本保留至少一个大版本。
 - 不读取、不返回密封草稿。

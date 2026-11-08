@@ -1,6 +1,6 @@
 # 安全模型
 
-> 切片 1c 提供任务与提问的资源访问控制、任务树软预算、待确认、设备签名、离线命令、安全状态与审计。浏览器确认界面在切片 2 接入；board、会议和存档的权限表仍是对应切片的约束，不表示端点已经开放。可选扩展 / MCP 与 saved 项目信任隔离推迟，见 [#10](https://github.com/PosvdM/pi-agora/issues/10)。
+> 切片 1c 提供任务与提问的资源访问控制、任务树软预算、待确认、设备签名、离线命令、安全状态与审计；1d 提供会话 ACL 与在线签名删除。浏览器确认界面在切片 2 接入；board 和会议的权限表仍是对应切片的约束，不表示端点已经开放。可选扩展 / MCP 与 saved 项目信任隔离推迟，见 [#10](https://github.com/PosvdM/pi-agora/issues/10)。
 
 本文定义 agora daemon 的身份、鉴权、用户确认、设备配对、资源访问控制、审计和剩余风险。进程与存储见 [architecture.md](architecture.md)，平台相关的实现（密钥目录权限、路径规范化）见 [pi-hostkit 设计文档](https://github.com/PosvdM/pi-hostkit/blob/main/docs/design.md)，HTTP 端点见 [integration.md](integration.md)。
 
@@ -30,7 +30,7 @@
 | 用户召集的会议的决定 | 用户召集的会议的 `decide`；召集人不可达时转给用户的会议决策和中断任务的处理（resume / reopen / replace / abandon） |
 | 以 `user` 为作者写 board 条目 | 包括会议插话；条目的权威来自作者身份，所以必须确认 |
 | 设备与安全设置 | 批准、撤销设备；在线重置配对；关闭 `userConfirmation`；调高 `taskLimitDefaults`、`meetingLimitDefaults`、`agentLimitCap` 或改变 `tokenAccounting`；`agora takeover` 强制转移主会话的控制租约；把任务的召集人改为 `user`（接管） |
-| 删除存档 | `agora archive delete` |
+| 删除存档 | `agora archive delete` 默认在线发起设备签名确认，即使保护关闭也须签名；离线维护须显式 `--offline` |
 
 主 Agent 管理自己召集的任务（返工、停止、处理中断、单树和每日未签名封顶以内的增额）不需要用户确认，但不能跨接管边界。会议裁决与预算规则随会议切片提供。
 
@@ -155,7 +155,7 @@ daemon 收到签名后依次检查，任何一步失败都拒绝并写审计：
 
 同步动作（提问答复与取消、任务 limits 与 takeover、租约接管、设备和安全设置）在同一事务内完成业务写入、nonce 消费、待确认的 `confirmed` 状态和审计；失败时共同回滚，拒绝审计另行保存。接管通知也在事务内写 outbox，提交后才唤醒。不能在事务回滚前触发停止等外部副作用。
 
-spawn 和 recover 涉及异步文件或进程操作，HTTP 签名入口使用 `signAsync`：先在短事务内验签、消费 nonce 并写 `executing`，再在事务外执行，最后持久化 `confirmed` 与结果或 `failed` 与受控失败原因。nonce 消费后，即使执行失败也不能重放；daemon 重启将遗留的 `executing` 标为 `failed`、`operation_interrupted`，不自动执行。同步动作使用 `sign`，不把异步回调放入 SQLite 事务。
+spawn、recover 和 archive delete 涉及异步文件或进程操作，HTTP 签名入口使用 `signAsync`：先在短事务内验签、消费 nonce 并写 `executing`，再在事务外执行，最后持久化 `confirmed` 与结果或 `failed` 与受控失败原因。nonce 消费后，即使执行失败也不能重放；daemon 重启将遗留的 `executing` 标为 `failed`、`operation_interrupted`，不自动执行。同步动作使用 `sign`，不把异步回调放入 SQLite 事务。
 
 ### 经 pi-pane 确认
 
@@ -252,14 +252,15 @@ daemon 启动时、以及在线检测到状态变化时，检查以下情况，�
 - 关闭（`off`）后，**daemon 无法区分用户与 Agent**：任何能运行 `agora` 命令的子代理都能以用户身份操作。
 - **在线关闭**：经 API 从 `device` 改为 `off` 是用户级操作，必须由已配对设备签名。
 - **离线关闭**：没有已配对浏览器（包括从未配对过、只用终端的用户）时，只能停掉 daemon 后运行 `agora offline set userConfirmation off`。离线命令的执行方式和审计同“撤销与重置”中的离线重置。
+- 在线删除存档仍强制设备签名，`off` 不能绕过；没有可用签名设备时，须停 daemon 并显式使用 `archive delete --offline`，见 [archive.md](archive.md#保留策略)。
 - 改回 `device` 随时可以，不需要确认。
 - 保护关闭期间，pi-pane 所有标签页常驻警告横幅，见“启动检查与安全警告”。
 
 ## 资源级访问控制
 
-统一入口按“动作 × 调用方级别 × 资源关系”授权：`packages/daemon/src/acl.ts` 处理任务/提问关系，任务与提问服务在读取、列表、状态迁移及异步操作后的复核中使用同一规则；HTTP 身份取自连接 token。下列任务、提问、设备与设置表对应已实现资源，board、会议和存档表对应后续切片的约束。
+统一入口按“动作 × 调用方级别 × 资源关系”授权：`packages/daemon/src/acl.ts` 处理任务、提问及会话关系，服务在读取、列表、状态迁移及异步操作后的复核中使用同一规则；HTTP 身份取自连接 token。下列任务、提问、存档、设备与设置表对应已实现资源，board 和会议表对应后续切片的约束。
 
-`user` 没有连接 token，用户级操作都经 CLI 或 pane 插件（`host:*`，即 `host:cli` 和 `host:pane`）发起、确认后以 `user` 身份执行。下表中：✔ 为允许；✘ 为拒绝；“确认”为用户级操作，需要用户确认（见“用户确认”）；“召集人”指资源的 convener；“成员”指 board 成员或会议席位。
+`user` 没有连接 token，用户级操作经获准的主 Agent 级连接发起，确认后执行。CLI 或 pane 插件使用 `host:*`（`host:cli` 和 `host:pane`）；主 Agent 可发起的确认仍受动作和资源 ACL 限制，签名不能使其越过接管边界。下表中：✔ 为允许；✘ 为拒绝；“确认”为用户级操作，需要用户确认（见“用户确认”）；“召集人”指资源的 convener；“成员”指 board 成员或会议席位。
 
 ### 任务
 
@@ -319,12 +320,14 @@ daemon 启动时、以及在线检测到状态变化时，检查以下情况，�
 | stop | ✔ | ✔ | ✘ | ✘ |
 | endorse | ✘ | ✘ | ✔（自己的席位） | ✘ |
 
-### 存档（后续切片）
+### 存档
 
-| 操作 | host:* | 召集人 | agent:child |
+| 操作 | host:* | agent:main | agent:child |
 | --- | --- | --- | --- |
-| 读协作会话对话 | ✔ | 见 [archive.md](archive.md#读取权限) | ✘ |
-| 删除存档 | 确认 | ✘ | ✘ |
+| 列表、详情、快照、历史、诊断、SSE、verify | ✔ 全部 | 自己的会话及自己召集的任务树，不跨接管边界 | ✘，包括自己的全量会话视图 |
+| 在线删除存档 | 强制设备签名确认 | 可见范围内发起强制设备签名确认 | ✘ |
+
+在线删除仅接受 `expectedRevision`，绑定会话、版本及挑战参数；执行前重新检查 ACL 与删除条件。删除与任务控制队列串行，无任务关联时返回 `archive_offline_required`，不绕过控制边界。锁、全部 run 退出、cleanup 与路径条件见 [archive.md](archive.md#保留策略)。保护关闭仍强制签名，离线维护必须显式 `--offline`；普通存档读取权限不等于免签删除权限。
 
 ### 设备与安全设置
 

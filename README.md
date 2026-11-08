@@ -44,7 +44,8 @@ node packages/cli/dist/main.js ls
 node packages/cli/dist/main.js show <任务或会话 ID>
 node packages/cli/dist/main.js log <任务或会话 ID> --limit 100
 node packages/cli/dist/main.js tail <任务或会话 ID>
-node packages/cli/dist/main.js verify-archive <会话 ID>
+node packages/cli/dist/main.js verify-archive [会话 ID]
+node packages/cli/dist/main.js archive delete <会话 ID> --wait
 node packages/cli/dist/main.js pending
 node packages/cli/dist/main.js answer <提问 ID> --answers '<答复 JSON 数组>'
 node packages/cli/dist/main.js confirmations
@@ -57,9 +58,11 @@ node packages/cli/dist/main.js shutdown
 
 可用 `npm link --workspace @pi-agora/cli` 注册 `agora` 命令。默认数据目录为 `~/.pi/agora`；设置 `AGORA_HOME` 或给 CLI 传 `--home <目录>` 可改用其他本地目录。关闭主会话不会停止 daemon 或正在运行的子代理；恢复原主会话后会补收尚未确认的通知。通知只有在主会话文件中找到完整记录后才确认。
 
-`show` 查看会话快照或任务详情，任务详情包含累计和任务树用量，会话快照包含本段用量与最近已知上下文。`log` 沿当前分支分页，保留压缩前的历史；`tail` 追踪流式事件，按 `Ctrl+C` 结束。`ls --tree` 按任务父关系显示树，继承出的会话仍保留各自元数据。存档查询不会启动 daemon，只在没有可用健康连接时读取离线存档；鉴权或协议错误不会降级。
+`show` 查看会话快照或任务详情，任务详情包含累计和任务树用量，会话快照包含本段用量与最近已知上下文。`log` 沿当前分支分页，保留压缩前的历史；`tail` 追踪流式事件，凭证到期前从最后游标续期重连，按 `Ctrl+C` 结束。`ls --tree` 使用中立父关系显示树；用户接管的任务归入用户节点，用量仍计入原祖先预算。继承出的会话保留各自元数据。存档查询不会启动 daemon，只在没有可用健康连接时读取离线存档；鉴权或协议错误不会降级。
 
-`verify-archive` 检查格式、消息证据及历史前缀，结果的 `state` 是完整性结论。daemon 离线或显式传 `--offline` 时只读计算、不更新数据库；`status` 的 `archiveBytes` 显示会话目录占用。存档不自动删除，删除需先关闭 daemon，再显式执行 `agora archive delete <会话 ID> --offline`；锁、进程退出或路径状态不明时拒绝，不强制清理。详细规则见 [docs/archive.md](docs/archive.md)。
+`verify-archive` 检查格式、消息证据及历史前缀，结果的 `state` 是完整性结论；省略 ID 时自动跟随分页校验全部可见会话，在线每页默认最多 200 条。daemon 离线或显式传 `--offline` 时只读计算、不更新数据库；`status` 的 `archiveBytes` 显示会话目录占用。
+
+存档不自动删除。`agora archive delete <会话 ID>` 默认向已运行的 daemon 请求设备签名确认，即使保护关闭也须签名；`--wait` 等待原确认结果。仅显式传 `--offline` 才执行离线维护，须先关闭 daemon；在线无任务关联的存档需改用离线维护。两条删除通路都要求终态、全部运行明确退出和写锁已释放；锁、进程退出或路径状态不明时拒绝，不强制清理。详细规则见 [docs/archive.md](docs/archive.md)。
 
 用户级命令默认只生成待确认，不因 CLI 读到了 `host.key` 就执行。`confirmations <确认 ID> --wait` 可等待结果；浏览器确认界面尚未接入时，仅用终端的用户可执行：
 
