@@ -121,7 +121,9 @@ export async function deleteArchiveOffline(options: { home: string; sessionId: s
     const version = Number((db.prepare("SELECT version FROM schema_version LIMIT 1").get() as { version?: number } | undefined)?.version);
     if (![4, 5, 6].includes(version)) refuse("数据库版本未通过维护接口核对");
     // 在不可逆文件操作前验证诊断字段和变更流所需的 SQL。
-    const metadata = db.prepare("UPDATE agora_sessions SET archive_state=?,archive_error=?,revision=revision+1 WHERE id=?");
+    const metadata = db.prepare(version >= 6
+      ? "UPDATE agora_sessions SET archive_state=?,archive_error=?,revision=revision+1 WHERE id=?"
+      : "UPDATE agora_sessions SET archive_state=?,revision=revision+1 WHERE id=?");
     const change = db.prepare("INSERT INTO changes(epoch,object_type,object_id,tombstone,created_at) VALUES(?,'session',?,0,?)");
     const session = db.prepare("SELECT session_file,status,control_state FROM agora_sessions WHERE id=? LIMIT 1").get(sessionId) as {
       session_file: string; status: string; control_state: string | null;
@@ -149,7 +151,9 @@ export async function deleteArchiveOffline(options: { home: string; sessionId: s
     // 文件系统与数据库分别提交；部分删除也要留下可诊断状态，不能报告成功。
     db.exec("BEGIN IMMEDIATE");
     try {
-      metadata.run(removalError ? "suspect" : "missing", removalError ? "archive_delete_failed" : null, sessionId);
+      const state = removalError ? "suspect" : "missing";
+      if (version >= 6) metadata.run(state, removalError ? "archive_delete_failed" : null, sessionId);
+      else metadata.run(state, sessionId);
       change.run(epoch.value, sessionId, new Date().toISOString());
       db.exec("COMMIT");
     } catch (error) { db.exec("ROLLBACK"); throw error; }

@@ -12,6 +12,7 @@ import { runCli } from "../packages/cli/dist/index.js";
 import { daemonAvailable, readSse, sessionTree } from "../packages/cli/dist/archive.js";
 import { AgoraConnectionError, AgoraHttpError } from "../packages/protocol/dist/client.js";
 import { deleteArchiveOffline } from "../packages/daemon/dist/archive-maintenance.js";
+import { schemaMigrations } from "../packages/daemon/dist/store.js";
 
 const compiled = await mkdtemp(path.join(tmpdir(), "agora-cli-1d-fixture-"));
 const environmentKeys = ["HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "AGORA_HOME"];
@@ -313,7 +314,7 @@ test("健康检查只在缺少发现或传输不可达时返回离线", async ()
   } finally { server.closeAllConnections(); if (server.listening) await new Promise(resolve => server.close(resolve)); await rm(home, { recursive: true, force: true }); }
 });
 
-async function maintenanceFixture() {
+async function maintenanceFixture(version = 6) {
   const home = await mkdtemp(path.join(tmpdir(), "agora-cli-delete-")), id = "as_safe", directory = path.join(home, "sessions", id);
   await mkdir(directory, { recursive: true }); await mkdir(path.join(home, "run"));
   const file = path.join(directory, "session.jsonl"); await writeFile(file, "{}\n");
@@ -328,8 +329,16 @@ async function maintenanceFixture() {
     throw error;
   }
   const db = new DatabaseSync(path.join(home, "agora.db"));
-  db.exec("CREATE TABLE schema_version(version INTEGER,migrated_at TEXT); INSERT INTO schema_version VALUES(6,'测试'); CREATE TABLE agora_sessions(id TEXT PRIMARY KEY,session_file TEXT,status TEXT,control_state TEXT,archive_state TEXT,revision INTEGER,archive_error TEXT); CREATE TABLE process_runs(id TEXT,agora_session_id TEXT,state TEXT,exited_at TEXT,cleanup_error TEXT); CREATE TABLE settings(key TEXT,value TEXT); INSERT INTO settings VALUES('epoch','test'); CREATE TABLE changes(seq INTEGER PRIMARY KEY,epoch TEXT,object_type TEXT,object_id TEXT,tombstone INTEGER,created_at TEXT);");
-  db.prepare("INSERT INTO agora_sessions VALUES(?,?,'completed',NULL,'ok',1,NULL)").run(id, file);
+  if (version < 6) {
+    db.exec("CREATE TABLE schema_version(version INTEGER,migrated_at TEXT)");
+    db.exec(schemaMigrations.slice(0, version).join("\n"));
+    db.prepare("INSERT INTO schema_version VALUES(?,'测试')").run(version);
+    db.prepare("INSERT INTO agora_sessions(id,principal_id,session_file,profile,model,thinking,cwd,status,archive_state,created_at) VALUES(?,'principal_fixture',?,'explore','test/model','off',?,'completed','ok','2026-01-01')").run(id, file, home);
+    db.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES('epoch','test')").run();
+  } else {
+    db.exec("CREATE TABLE schema_version(version INTEGER,migrated_at TEXT); INSERT INTO schema_version VALUES(6,'测试'); CREATE TABLE agora_sessions(id TEXT PRIMARY KEY,session_file TEXT,status TEXT,control_state TEXT,archive_state TEXT,revision INTEGER,archive_error TEXT); CREATE TABLE process_runs(id TEXT,agora_session_id TEXT,state TEXT,exited_at TEXT,cleanup_error TEXT); CREATE TABLE settings(key TEXT,value TEXT); INSERT INTO settings VALUES('epoch','test'); CREATE TABLE changes(seq INTEGER PRIMARY KEY,epoch TEXT,object_type TEXT,object_id TEXT,tombstone INTEGER,created_at TEXT);");
+    db.prepare("INSERT INTO agora_sessions VALUES(?,?,'completed',NULL,'ok',1,NULL)").run(id, file);
+  }
   return { home, id, directory, file, db, cleanup: async () => {
     try { db.close(); await rm(home, { recursive: true, force: true }); }
     finally { for (const [key, value] of savedEnvironment) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } }
@@ -339,6 +348,22 @@ async function releasedWriter(file) {
   const lock = await acquireSessionWriterLock(file, { app: "pi-agora", identity: currentProcessIdentity("cli-test") });
   assert.ok(isSessionWriterLock(lock)); assert.equal(await lock.recoverPreviousWriter(), "none"); await lock.release();
 }
+for (const version of [4, 5]) test(`离线删除真实 v${version} 旧库不依赖 v6 字段，不迁移数据库`, async () => {
+  const f = await maintenanceFixture(version);
+  try {
+    const columns = f.db.prepare("PRAGMA table_info(agora_sessions)").all().map(row => row.name);
+    assert.equal(columns.includes("archive_error"), false);
+    await releasedWriter(f.file);
+    const before = f.db.prepare("SELECT revision FROM agora_sessions WHERE id=?").get(f.id).revision;
+    assert.equal((await deleteArchiveOffline({ home: f.home, sessionId: f.id })).deleted, true);
+    await assert.rejects(access(f.directory));
+    const row = f.db.prepare("SELECT archive_state,revision FROM agora_sessions WHERE id=?").get(f.id);
+    assert.equal(row.archive_state, "missing"); assert.equal(row.revision, before + 1);
+    assert.equal(f.db.prepare("SELECT version FROM schema_version").get().version, version);
+    assert.equal(f.db.prepare("SELECT tombstone FROM changes ORDER BY seq DESC LIMIT 1").get().tombstone, 0);
+    assert.deepEqual(f.db.prepare("PRAGMA table_info(agora_sessions)").all().map(row => row.name), columns);
+  } finally { await f.cleanup(); }
+});
 test("离线删除持有两类锁、保留元数据并发布 upsert", async () => {
   const f = await maintenanceFixture();
   try {

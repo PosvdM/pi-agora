@@ -129,7 +129,7 @@ daemon 从 RPC 事件流里收到 `message_update` 增量（依据：`docs/json.
 - 在线端点为 `POST /v1/sessions/:id/archive/delete`，只接受可选 `expectedRevision`；省略时绑定当前会话 revision。签名挑战为 `agora.archive.delete`，验签后经异步确认通路执行。删除与任务控制串行，排空校验及归档工作、设置删除屏障并清除视图缓存，防止旁车文件被重新创建；执行前复查 ACL、版本、终态和全部 run 的退出与 cleanup 证据。没有任务关联时返回 `archive_offline_required`，保守要求离线维护。
 - 仅显式执行 `agora archive delete <sessionId> --offline` 才进入离线维护；在线连接或鉴权失败不会自动转入该通路。离线维护同时持有 daemon 实例锁与会话写锁。在线与离线均要求终态、全部 run 明确退出、旧写者已释放，以及真实目录和普通文件检查全部通过；不会停止未知写者，也不使用 `assumeNoWriter`。
 - 删除后 `archive_state = missing`，SQLite 元数据保留，树节点仍然列出，`availability` 为 `missing`，发布 `upsert`，不是 tombstone。文件缺失、锁证明不足或状态不明时保守拒绝删除。会话文件本身、实际会话目录及受保护的锁和数据库路径必须为普通路径，目录内部不能含链接或特殊文件；数据根目录的系统别名在检查前规范化。用户级目标见 [security.md](security.md#用户确认)，树映射见 [integration.md](integration.md#同步与按需加载)。
-- 文件系统删除与数据库更新分别提交；部分删除失败时记录 `suspect` 和 `archive_delete_failed` 并报错，不能报告成功。
+- 文件系统删除与数据库更新分别提交；部分删除失败时记录 `suspect` 并报错，不能报告成功。离线维护支持 v4、v5、v6，不执行 schema 迁移；v6 额外将 `archive_delete_failed` 写入 `archive_error`，旧库仅更新已有的状态、revision 和变更流字段。
 - 存档占用的磁盘空间在 `agora status` 里显示。
 
 ## 读取权限
