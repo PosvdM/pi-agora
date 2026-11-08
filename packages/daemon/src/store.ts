@@ -6,7 +6,7 @@ import { AgoraError } from "./errors.js";
 import { archiveSchemaV6 } from "./archive-schema.js";
 import type { SessionMetadata, SessionParent } from "@pi-agora/protocol";
 
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 export const schemaMigrations: readonly string[] = [String.raw`
 CREATE TABLE principals (
   id TEXT PRIMARY KEY, type TEXT NOT NULL, label TEXT NOT NULL DEFAULT '',
@@ -143,7 +143,9 @@ CREATE TABLE security_audit (
   confirmation_id TEXT, outcome TEXT NOT NULL, reason TEXT, via TEXT NOT NULL,
   details TEXT, created_at TEXT NOT NULL
 );
-`, archiveSchemaV6];
+`, archiveSchemaV6, String.raw`
+CREATE INDEX IF NOT EXISTS changes_object ON changes(object_type,object_id,seq);
+`];
 
 export interface PrincipalRow {
   id: string; type: string; label: string; pi_session_id: string | null;
@@ -382,7 +384,6 @@ export async function openStore(home: string): Promise<Store> {
       finally { db.exec("PRAGMA foreign_keys=ON"); }
     }
     db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;");
-    db.exec("CREATE INDEX IF NOT EXISTS changes_object ON changes(object_type,object_id,seq)");
     return new Store(db, home);
   } catch (error) { db.close(); throw error; }
 }
