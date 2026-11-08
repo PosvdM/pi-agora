@@ -463,6 +463,7 @@ daemon 的安全警告（规则见 [security.md](security.md#启动检查与安�
 | 横幅 id | 内容 | 动作 | 清除条件 |
 | --- | --- | --- | --- |
 | `agora:security:devices-reset` | 检测时间、来源（离线命令 / 未知修改）、当前配对设备的标签和指纹、警告 `revision` | “我已知悉”：调用 `POST /v1/security/alerts/:alertId/acknowledge`（带横幅显示的 `revision`），签名走通用确认流程 | 插件从 daemon 收到该警告变为已知悉的变更后清除；`revision` 更新时用新内容替换横幅 |
+| `agora:security:budget-config-changed` | 磁盘预算配置放宽的字段、前后值、检测时间和警告 `revision` | “我已知悉”：按当前 revision 发起签名确认；保护关闭也需签名 | daemon 确认知悉后清除；再次放宽的 revision 替换旧横幅 |
 | `agora:security:protection-off` | “用户确认已关闭，无法区分你和 Agent 的操作” | 无（不能确认知悉） | daemon 报告保护已重新开启后清除 |
 
 插件的规则：
