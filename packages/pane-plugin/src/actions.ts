@@ -115,7 +115,7 @@ function allowed(action: TaskAction, task?: TaskState): boolean {
   return [...active, "quota_paused", "budget_paused", "interrupted", "completed", "failed", "stopped"].includes(task.status);
 }
 function outcome(reply: ApiReply, action: TaskAction): ActionResult {
-  if (reply.status === 202 || reply.status >= 500) return { status: "pending", message: "操作尚未结束，请使用同一请求标识查询" };
+  if (reply.status === 202 || reply.status >= 500 && reply.body?.error?.code !== "draining") return { status: "pending", message: "操作尚未结束，请使用同一请求标识查询" };
   if (reply.status === 409 && reply.body?.error?.code === "idempotency_mismatch") return { status: "idempotencyConflict", message: message(reply) };
   if (reply.status >= 200 && reply.status < 300) {
     const session = reply.body?.agoraSessionId;
@@ -285,8 +285,8 @@ export function createActions(runtime: PluginRuntime, execute: ExecuteOperation)
     if (session.isCurrent === false) throw new Invalid("历史会话不能操作任务的当前运行");
     if (session.kind !== undefined && session.kind !== "task") throw new Invalid("此会话不属于任务");
     const parentKind = session.parent && typeof session.parent === "object" && !Array.isArray(session.parent) ? (session.parent as JsonRecord).kind : undefined;
-    const userOwned = parentKind === "user" || session.parentId === "agora:root:user-tasks";
-    if (!userOwned && parentKind !== "main" && parentKind !== "task") throw new Invalid("任务所有权未知，请重新读取任务");
+    if (session.parent != null && parentKind !== "user" && parentKind !== "main" && parentKind !== "task") throw new Invalid("任务归属格式无效，请重新读取任务");
+    const userOwned = parentKind === undefined ? session.parentId === "agora:root:user-tasks" : parentKind === "user";
     const taskId = text(session.taskId, "任务标识", 256);
     if (!/^tk_[A-Za-z0-9_-]+$/.test(taskId)) throw new Invalid("会话未关联合法任务");
     const task = await get(`/tasks/${encoded(taskId)}`);

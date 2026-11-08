@@ -63,6 +63,27 @@ function change(stream, seq, objectType = 'session', objectId = 's1', patch = {}
   stream.emit({ type: 'change', data: { cursor: { epoch: 'db', seq }, objectType, objectId, ...patch } });
 }
 
+test('Agent 管理的当前任务显示接管入口，接管后才开放输入和恢复', async t => {
+  let current = item('managed', { status: 'interrupted', parent: { kind: 'main', piSessionId: 'main' } });
+  const h = setup(t, ({ path, url }) => {
+    if (url.pathname === '/v1/sessions') return { status: 200, body: page([current]) };
+    if (path === '/v1/sessions/managed') return { status: 200, body: current };
+    if (path === '/v1/sessions/managed/snapshot') return { status: 200, body: { cursor: { epoch: 'db', seq: 0 }, leafId: null, entries: [], historyBefore: null, status: current.status } };
+  });
+  const req = { openNodeIds: ['agora:session:managed'], recentSince: '2026-01-01T00:00:00Z' };
+  const managed = (await h.views.tree.snapshot(req)).nodes.find(node => node.id === 'agora:session:managed');
+  assert.ok(managed.capabilities.includes('action:agora.task.takeover'));
+  assert.ok(!managed.capabilities.includes('action:agora.task.recover'));
+  assert.equal(managed.composer, undefined);
+  assert.match(managed.statusDetail, /由 Agent 管理，接管后可操作/);
+  assert.equal((await h.views.sessions.snapshot({ source: 'agora', id: 'managed' })).readonly, true);
+  current = { ...current, parent: { kind: 'user' }, takenOver: true, revision: 3 };
+  const owned = (await h.views.tree.snapshot(req)).nodes.find(node => node.id === 'agora:session:managed');
+  assert.ok(owned.capabilities.includes('action:agora.task.recover'));
+  assert.ok(!owned.capabilities.includes('action:agora.task.takeover'));
+  assert.equal(owned.statusDetail, '已由用户接管');
+});
+
 test('历史任务节点只读且不能通过 send 或 abort 操作当前任务', async t => {
   const historical = item('old', { status: 'completed', isCurrent: false });
   const h = setup(t, ({ path, url }) => {
@@ -85,9 +106,9 @@ test('历史任务节点只读且不能通过 send 或 abort 操作当前任务'
 test('树映射热快照、虚拟根、状态与子节点分页 epoch', async t => {
   const rows = [
     item('created', { status: 'created', parentId: null, parent: { kind: 'user' }, takenOver: true, statusDetail: '排队中' }),
-    item('paused', { status: 'quota_paused' }),
-    item('done', { status: 'completed', archiveState: 'missing' }),
-    item('interrupted', { status: 'interrupted' }),
+    item('paused', { status: 'quota_paused', parent: { kind: 'user' } }),
+    item('done', { status: 'completed', archiveState: 'missing', parent: { kind: 'user' } }),
+    item('interrupted', { status: 'interrupted', parent: { kind: 'user' } }),
     item('seat', { taskId: null, kind: 'secretary', status: 'completed', originToolCall: {
       sessionRef: { source: 'pane', id: 'main' }, toolCallId: 'call' } }),
   ];
@@ -191,7 +212,7 @@ test('会话视图透传条目与历史，仅映射 agora 协议事件', async t
     if (url.pathname.endsWith('/snapshot')) return { status: 200, body: { cursor: { epoch: 'run', seq: 5 },
       leafId: 'leaf', entries, historyBefore: 'before', inFlight, unfinishedPartials: [], status: 'waiting_children', controlRevision: 99 } };
     if (url.pathname.endsWith('/history')) return { status: 200, body: { entries, historyBefore: null } };
-    if (url.pathname === '/v1/sessions/s1') return { status: 200, body: item() };
+    if (url.pathname === '/v1/sessions/s1') return { status: 200, body: item('s1', { parent: { kind: 'user' } }) };
   });
   const ref = { source: 'agora', id: 's1' };
   const snapshot = await h.views.sessions.snapshot(ref);
@@ -223,7 +244,7 @@ test('会话视图透传条目与历史，仅映射 agora 协议事件', async t
 });
 
 test('会话席位只读，返工与停止不伪造控制修订号', async t => {
-  let current = item();
+  let current = item('s1', { parent: { kind: 'user' } });
   let steerStatus = 200, stopStatus = 200;
   const h = setup(t, ({ method, path }) => {
     if (method === 'GET' && path === '/v1/sessions/s1') return { status: 200, body: current };

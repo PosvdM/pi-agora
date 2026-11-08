@@ -207,6 +207,63 @@ async function detail(f, id) {
   return response.body;
 }
 
+test("真实 daemon 排空时拒绝创建，插件返回确定失败且原 key 保持终态", limits, async t => {
+  const f = await fixture(t), tab = await f.tab();
+  f.daemon.tasks.draining = true;
+  const form = await tab.plugin.actions.resolveForm('agora.task.spawn', globalTarget);
+  const invocation = { actionId: 'agora.task.spawn', target: globalTarget, formId: form.id, formRevision: form.revision,
+    input: { answers: [], fields: { model: 'test/model', profile: 'explore', prompt: '不能创建', cwd: f.home } }, idempotencyKey: randomUUID() };
+  const result = await tab.plugin.actions.invoke(invocation, tab.origin);
+  assert.equal(result.status, 'failed', JSON.stringify(result));
+  assert.match(result.message, /排空/);
+  assert.deepEqual(await tab.plugin.actions.invoke(invocation, tab.origin), result);
+  assert.equal(f.daemon.store.get('SELECT COUNT(*) AS n FROM tasks').n, 0);
+  assert.equal(post(f, '/v1/tasks').length, 1);
+});
+
+test("未归属任务的 Pane 接管动作展示后果并完成真实设备签名，之后才开放返工", limits, async t => {
+  const f = await fixture(t), tab = await f.tab();
+  assert.equal((await f.pair(tab)).status, "ok");
+  const owner = f.daemon.store.get("SELECT id FROM principals WHERE type='agent:main' LIMIT 1").id;
+  const taskId = `tk_${randomUUID()}`, sessionId = `as_${randomUUID()}`, principalId = `ch_${randomUUID()}`, at = new Date().toISOString();
+  f.daemon.store.transaction(() => {
+    f.daemon.store.run("INSERT INTO principals(id,type,created_at) VALUES(?,'agent:child',?)", principalId, at);
+    f.daemon.store.run("INSERT INTO agora_sessions(id,task_id,principal_id,convener_id,parent_principal_id,session_file,profile,model,thinking,cwd,status,created_at) VALUES(?,?,?,?,?,?,'explore','test/model','high',?,'completed',?)", sessionId, taskId, principalId, owner, owner, join(f.home, `${sessionId}.jsonl`), f.home, at);
+    f.daemon.store.run("INSERT INTO tasks(id,agora_session_id,convener_id,requested_by,title,prompt,model,thinking,profile,cwd,notify,status,created_at,updated_at,max_tokens) VALUES(?,?,?,?,?,'只读验证','test/model','high','explore',?,'silent','completed',?,?,1000)", taskId, sessionId, owner, owner, '接管界面验证', f.home, at, at);
+    f.daemon.store.run("INSERT INTO task_generations(task_id,generation,status,agora_session_id) VALUES(?,1,'completed',?)", taskId, sessionId);
+    f.daemon.store.run('UPDATE principals SET pi_session_id=NULL WHERE id=?', owner);
+    f.daemon.store.change('task', taskId);
+  });
+  const target = { type: 'node', nodeId: `agora:session:${sessionId}` };
+  const treeReq = { openNodeIds: [target.nodeId], recentSince: '2020-01-01T00:00:00Z' };
+  const before = (await tab.plugin.tree.snapshot(treeReq)).nodes.find(node => node.id === target.nodeId);
+  assert.equal(before.composer, undefined);
+  assert.equal(before.parentId, null, '无法确定 pi 父关系时保持未归属，不能猜成用户任务');
+  assert.ok(before.capabilities.includes('action:agora.task.takeover'));
+  assert.match(before.statusDetail, /由 Agent 管理，接管后可操作/);
+  assert.equal(await tab.plugin.actions.resolveForm('agora.task.steer', target), null);
+  const spec = tab.plugin.actions.list().find(action => action.id === 'agora.task.takeover');
+  assert.ok(spec.confirm && spec.hasForm && spec.danger);
+  const form = await tab.plugin.actions.resolveForm(spec.id, target);
+  assert.match(form.description, /原 Agent 将不能再管理该任务及子树/);
+  const invocation = { actionId: spec.id, target, formId: form.id, formRevision: form.revision, input: { answers: [], fields: {} }, idempotencyKey: randomUUID() };
+  const result = await tab.plugin.actions.invoke(invocation, tab.origin);
+  assert.equal(result.status, 'ok', JSON.stringify(result));
+  const confirmation = challengeFor(f, `/v1/tasks/${taskId}/takeover`);
+  assert.equal(confirmation.challenge.action, 'agora.task.takeover');
+  assert.ok(post(f, `/v1/confirmations/${confirmation.confirmationId}/sign`).some(call => call.status === 200));
+  assert.equal(f.daemon.store.task(taskId).convener_id, 'user');
+  const after = (await tab.plugin.tree.snapshot(treeReq)).nodes.find(node => node.id === target.nodeId);
+  assert.equal(after.parentId, 'agora:root:user-tasks');
+  assert.equal(after.composer.actionId, 'agora.task.steer');
+  assert.match(after.statusDetail, /已由用户接管/);
+  assert.ok(await tab.plugin.actions.resolveForm('agora.task.steer', target));
+  assert.equal(await tab.plugin.actions.resolveForm(spec.id, target), null);
+  const signatures = post(f, `/v1/confirmations/${confirmation.confirmationId}/sign`).length;
+  assert.deepEqual(await tab.plugin.actions.invoke(invocation, tab.origin), result);
+  assert.equal(post(f, `/v1/confirmations/${confirmation.confirmationId}/sign`).length, signatures);
+});
+
 test("首设备由发起浏览器真实自签配对，普通新设备保持 pending 直到已有设备批准", limits, async t => {
   const f = await fixture(t), first = await f.tab();
   assert.equal((await f.pair(first)).status, "ok");

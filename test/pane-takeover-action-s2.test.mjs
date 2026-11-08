@@ -135,9 +135,24 @@ test("用户拥有的任务不提供接管，parent 和 parentId 均能确定用
   }
 });
 
-test("所有权未知或历史目标关闭动作，接管拒绝 global、缺失表单及额外输入", async () => {
+test("未归属任务仍可显式签名接管，但不能按用户所有权返工或恢复", async () => {
+  for (const parent of [undefined, null]) {
+    const s = setup(); s.session.parent = parent;
+    for (const action of ['steer', 'recover']) assert.equal(await s.actions.resolveForm(actionId(action), target), null);
+    assert.equal((await s.actions.invoke(composer('unknown-composer'), origin)).status, 'failed');
+    const takeover = await invocation(s);
+    assert.equal((await s.actions.invoke(takeover, origin)).status, 'ok');
+    assert.equal(s.calls.length, 1);
+    assert.equal(s.calls[0].options.actAsUser, true);
+  }
+  const contradictory = setup({ parent: { kind: 'main', piSessionId: 'main-one' } });
+  contradictory.session.parentId = 'agora:root:user-tasks';
+  assert.equal(await contradictory.actions.resolveForm(actionId('steer'), target), null, '中立 parent 优先于旧 parentId');
+});
+
+test("归属格式无效或历史目标关闭动作，接管拒绝 global、缺失表单及额外输入", async () => {
   for (const patch of [
-    { parent: undefined }, { parent: null }, { parent: true }, { parent: { kind: "unknown" } },
+    { parent: true }, { parent: { kind: "unknown" } },
     { parent: { kind: "user" }, isCurrent: false }, { isCurrent: false },
   ]) {
     const s = setup();

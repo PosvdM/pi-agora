@@ -97,6 +97,8 @@ node packages/cli/dist/main.js config get --home <目录>
 node packages/cli/dist/main.js shutdown --timeout 600 --home <目录>
 ```
 
+`agora confirmations` 默认保留全状态的分页列表，不隐式隐藏终态。HTTP `GET /v1/confirmations` 可重复指定 `state`，允许 `pending`、`executing`、`confirmed`、`failed`、`cancelled`、`expired`；非法或空状态返回 400。pane 仅请求前两种活动状态，避免历史记录挤满待处理读取上限。
+
 只有 daemon start 自动启动 daemon。CLI 输出 JSON，错误返回非零退出码。用户级命令默认生成待确认，`--wait` 超时后应查询原确认，不应重新发起。host 可读取全部待确认，主 Agent 只能读取自己的；host 可取消其他 host / 主 Agent 发起的待确认，主 Agent 只能取消自己的。原生 PowerShell 中 JSON 参数应按当前 shell 的引号规则传入；机器可直接使用 HTTP API，避免 shell 转义。
 
 shutdown 默认排空，超时后保留 daemon；force 中断并清理运行。停止固定先 clear_queue，再 abort 和 hostkit 清理；无法确认时保锁和诊断，不自动 assumeNoWriter。成功的重复 stop 不改已有终态结果、业务 revision 和更新时间。
@@ -109,7 +111,7 @@ shutdown 默认排空，超时后保留 daemon；force 中断并清理运行。�
 - **请求重试**：安全 GET、可幂等续期及带原 Idempotency-Key 的业务写入最多三次，共用一个总期限、原 token、参数与 key；间隔 50 / 100ms。取消、关闭、HTTP 拒绝、协议不兼容、无效 JSON 和一次性认证兑换不重试。子会话短暂续期传输错误不立即 fatal。`AgoraConnectionError.cause` 保留捕获的底层异常，message 附可获得的底层错误码；诊断提取不参与重试分类，不能将错误信息增强视为偶发 loopback 失败根因已解决。
 - **退出确认**：hostkit 在停止返回前确认已知身份退出可见；driver 在有效 StopReport 后单次独立核对写者身份，不设 Windows 专属轮询，也不补杀；alive / unknown 立即保锁。driver 的失败 stop 可显式重试，只复查原报告、身份和 release，不重放清队列或底层停止；已有失败报告不能变成新成功报告。TaskManager 重试仍核对版本与租约。
 - **任务软预算**：根任务授予受单树和共享日封顶限制，`none` 不免除封顶，子树不重复占日授予；用量按请求去重并计入祖先。达到任一祖先上限先持久化对应子树的 `budget_paused`，再 clear_queue、abort、停止进程；合法尾量可超过上限。调度、返工、唤醒、额度自动恢复和 recover 都不能绕过；增额不自动恢复任何任务，显式恢复父任务也不恢复下级。计数与授予规则见 [tasks.md](tasks.md#任务树软预算)。
-- **用户接管**：显式接管允许目标召集人仍可达；普通 host 不能直接 recover Agent 资源。持久化 `taken_over_from` 与 outbox，保留 parent_task_id 和用量归属。原 Agent 的目标 / 子树管理返回 task_taken_over；祖先停止和调低预算在副作用前检查边界，相关控制执行中返回 task_busy，排队请求重新授权。内部任务运行时保留管理自身下级的权限。
+- **用户接管**：显式接管允许目标召集人仍可达；普通 host 不能直接 recover Agent 资源。持久化 `taken_over_from` 与 outbox，保留 parent_task_id 和用量归属；展示挂载则移到用户任务根，并在事务内用持久 tree/all marker 使原父、用户根及子树重建。pane 的显式接管表单说明后果并请求设备签名，未接管的 Agent 任务不开放输入和恢复。原 Agent 的目标 / 子树管理返回 task_taken_over；祖先停止和调低预算在副作用前检查边界，相关控制执行中返回 task_busy，排队请求重新授权。内部任务运行时保留管理自身下级的权限。
 - **签名事务**：同步的 takeover、limits、提问及安全动作与 sign 共用业务 / nonce / 确认 / 审计事务；仅 spawn、recover 使用 signAsync，先提交 executing 和 nonce，再执行异步操作。重启将遗留 executing 标为 failed，不重放。实际审计表为 security_audit，字段见 [security.md](security.md#审计)。
 - **迁移**：当前 schema v5。v3 保存任务树、限制、返工、提问与 worktree；v4 保存 skill 名单、额度恢复和逐请求用量；v5 增加任务预算与接管来源、答复证明、budget_grants、devices、pending_confirmations、security_alerts 和 security_audit。旧库依次升级到 v5，已有 v2 任务按第一层、默认两层回填。迁移前从同一 SQLite 连接做一致性 backup、只读 integrity_check，DDL 同事务，提交前 foreign_key_check；失败回滚原库。
 - **恢复**：旧 run 未确认退出不能拉起写者；resume 代数不变，reopen / replace 新建继承会话并增加代数，历史 result 指向所属代数的会话。连续 resume 失败两次后需重开、换人或放弃，不自动重放副作用。

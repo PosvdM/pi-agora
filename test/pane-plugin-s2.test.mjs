@@ -229,6 +229,15 @@ test("通知先交给宿主展示再 ack，空收件箱保持单个可取消的 
   assert.equal(a.state.closed, 1);
 });
 
+test("存档校验与预算暂停通知映射为 warning，完成通知保持 info", async t => {
+  const { h, a } = await activated(t);
+  const kinds = ["archive:warning", "task:budget_paused", "task:quota_paused", "task:completed"];
+  a.deliver(kinds.map((kind, index) => ({ noticeId: `severity-${index}`, dedupeKey: `severity-${index}`, kind, payload: { summary: kind } })));
+  await eventually(() => h.events.filter(event => event.type === "notify").length === 4, "通知应全部交给宿主");
+  assert.deepEqual(h.events.filter(event => event.type === "notify").map(event => event.value.level), ["warning", "warning", "warning", "info"]);
+  await eventually(() => a.calls.filter(call => call.path === "/v1/inbox/ack").length === 4, "展示后应确认全部通知");
+});
+
 test("通知展示失败不发送 ack，通知领取失败不会形成空转轮询", { timeout: 5_000 }, async t => {
   const { h, a } = await activated(t);
   h.context.notify = () => { throw new Error("宿主未展示通知"); };
@@ -311,6 +320,7 @@ test("周期健康检测断线触发离线 reset，恢复在线再次 reset 并�
   const offlineTreeEvents = [], offlineSessionEvents = [];
   plugin.tree.subscribe({ epoch: offline.epoch, revision: offline.revision }, event => offlineTreeEvents.push(event));
   plugin.sessions.subscribe(ref, { epoch: offline.epoch, seq: 0 }, event => offlineSessionEvents.push(event));
+  second.state.sessions[0].parent = { kind: "user" };
   current = second.api;
   t.mock.timers.tick(RETRY_MS);
   await eventually(() => offlineTreeEvents.length === 1 && offlineSessionEvents.length === 1 && archive.closed === 1 && second.polls.size === 1,
@@ -342,6 +352,7 @@ test("sessions.send 复用 composer 的固定请求机制，历史切换不污�
       return writes === 1 ? { status: 202, body: { operation: { state: "in_progress" } } } : ok({});
     }
   });
+  a.state.sessions[0].parent = { kind: "user" };
   const req = { idempotencyKey: "send-pending", origin };
   assert.equal((await plugin.sessions.send(ref, { text: "固定返工" }, req)).status, "pending");
   a.state.sessions[0].isCurrent = false;
@@ -351,6 +362,26 @@ test("sessions.send 复用 composer 的固定请求机制，历史切换不污�
   assert.equal(a.calls.filter(call => call.method === "GET" && call.path === `/v1/tasks/${session.taskId}`).length, 1);
   assert.equal((await plugin.sessions.send(ref, { text: "固定返工" }, { ...req, idempotencyKey: "new-history-send" })).status, "rejected");
   assert.equal(writes, 2);
+});
+
+test("接管结构 marker 使打开的会话重取权限，重入订阅不会被旧集合清理", async t => {
+  const { a, plugin } = await activated(t);
+  assert.equal((await plugin.sessions.snapshot(ref)).readonly, true);
+  const first = [], second = [];
+  plugin.sessions.subscribe(ref, sessionCursor, event => {
+    first.push(event);
+    if (event.event.type === 'resync') plugin.sessions.subscribe(ref, sessionCursor, next => second.push(next));
+  });
+  a.state.sessions[0].parent = { kind: 'user' };
+  const domain = a.streams.find(stream => stream.path.startsWith('/v1/changes?') && stream.stops === 0);
+  const marker = seq => ({ type: 'change', data: { cursor: { epoch: treeCursor.epoch, seq }, objectType: 'tree', objectId: 'all' } });
+  domain.emit(marker(11));
+  assert.equal(first.length, 1); assert.equal(first[0].event.type, 'resync');
+  assert.equal((await plugin.sessions.snapshot(ref)).readonly, false);
+  domain.emit(marker(12));
+  assert.equal(first.length, 1);
+  assert.equal(second.length, 1, '同步重新登记的订阅必须保留到下一次结构变化');
+  assert.equal(second[0].event.type, 'resync');
 });
 
 test("领域变更流过期必发树 reset，宿主据此重新对齐持久表单", async t => {

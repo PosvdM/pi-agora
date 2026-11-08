@@ -77,15 +77,20 @@ export default function createPlugin(options: PluginOptions = {}): PanePlugin {
     })().catch(error => { archive = undefined; throw error; });
     return archive;
   }
-  function resetSubscribers() {
-    for (const subscription of treeSubscriptions) {
-      subscription.stop(); subscription.emit({ type: "reset", epoch: `agora:connection:${generation}` });
-    }
-    treeSubscriptions.clear();
-    for (const subscription of sessionSubscriptions) {
+  function resetSessionSubscribers() {
+    const previous = [...sessionSubscriptions];
+    sessionSubscriptions.clear();
+    for (const subscription of previous) {
       subscription.stop(); subscription.emit({ ref: subscription.ref, cursor: { epoch: `agora:connection:${generation}`, seq: 0 }, event: { type: "resync" } });
     }
-    sessionSubscriptions.clear();
+  }
+  function resetSubscribers() {
+    const previous = [...treeSubscriptions];
+    treeSubscriptions.clear();
+    for (const subscription of previous) {
+      subscription.stop(); subscription.emit({ type: "reset", epoch: `agora:connection:${generation}` });
+    }
+    resetSessionSubscribers();
   }
   function disconnect() {
     if (!online && !api) return;
@@ -123,7 +128,10 @@ export default function createPlugin(options: PluginOptions = {}): PanePlugin {
         domainOff?.(); domainOff = undefined;
         resetSubscribers();
         void refreshDomains().then(() => watchDomains(token)).catch(error => log("agora 变更流暂时不可用", error));
-      } else if (event.type === "change") void refreshDomains();
+      } else if (event.type === "change") {
+        if (event.data?.objectType === "tree" && event.data?.objectId === "all") resetSessionSubscribers();
+        void refreshDomains();
+      }
     }, error => { domainOff?.(); domainOff = undefined; log("agora 领域变更流已断开", error); });
   }
   async function inbox(token: number): Promise<void> {
@@ -139,7 +147,7 @@ export default function createPlugin(options: PluginOptions = {}): PanePlugin {
           if (!activated || !online || token !== inboxGeneration) return;
           if (typeof notice.noticeId !== "string" || typeof notice.dedupeKey !== "string") throw new Error("agora 通知标识无效");
           const payload = notice.payload ?? {};
-          context!.notify({ id: `agora:${notice.dedupeKey}`, source: "agora", level: /failed|interrupted|unknown/.test(notice.kind) ? "warning" : "info",
+          context!.notify({ id: `agora:${notice.dedupeKey}`, source: "agora", level: /failed|interrupted|unknown|warning|suspect|missing|budget_paused|quota_paused/.test(notice.kind) ? "warning" : "info",
             title: typeof payload.title === "string" ? payload.title : "agora 通知", body: typeof payload.summary === "string" ? payload.summary : notice.kind,
             ...(typeof payload.nodeId === "string" ? { nodeId: payload.nodeId } : {}) });
           await runtime.api.request("POST", "/v1/inbox/ack", { noticeId: notice.noticeId, persisted: false });
@@ -236,8 +244,14 @@ export default function createPlugin(options: PluginOptions = {}): PanePlugin {
       async children(parentId, page) { active(); return online ? views.tree.children(parentId, page) : (await offline()).tree.children(parentId, page); },
       subscribe(from, emit) {
         active();
-        const subscription = { emit, stop: online ? views.tree.subscribe(from, emit) : () => {} };
+        const subscription = { emit, stop: () => {} };
         treeSubscriptions.add(subscription);
+        try {
+          if (online) subscription.stop = views.tree.subscribe(from, change => {
+            if (change.type === "reset") treeSubscriptions.delete(subscription);
+            emit(change);
+          });
+        } catch (error) { treeSubscriptions.delete(subscription); throw error; }
         return () => { subscription.stop(); treeSubscriptions.delete(subscription); };
       },
     },
@@ -245,8 +259,16 @@ export default function createPlugin(options: PluginOptions = {}): PanePlugin {
       async snapshot(ref) { active(); return online ? views.sessions.snapshot(ref) : (await offline()).sessions.snapshot(ref); },
       async history(ref, page) { active(); return online ? views.sessions.history(ref, page) : (await offline()).sessions.history(ref, page); },
       subscribe(ref, after, emit) {
-        active(); const subscription = { ref, emit, stop: online ? views.sessions.subscribe(ref, after, emit) : () => {} };
-        sessionSubscriptions.add(subscription); return () => { subscription.stop(); sessionSubscriptions.delete(subscription); };
+        active();
+        const subscription = { ref, emit, stop: () => {} };
+        sessionSubscriptions.add(subscription);
+        try {
+          if (online) subscription.stop = views.sessions.subscribe(ref, after, event => {
+            if (event.event.type === "resync") sessionSubscriptions.delete(subscription);
+            emit(event);
+          });
+        } catch (error) { sessionSubscriptions.delete(subscription); throw error; }
+        return () => { subscription.stop(); sessionSubscriptions.delete(subscription); };
       },
       async send(ref, input, req) {
         active(); if (!online) return { status: "rejected", message: offlineMessage };

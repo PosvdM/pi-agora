@@ -276,6 +276,15 @@ test("历史会话不能通过任务动作误控当前会话", async () => {
   assert.equal(s.calls.length, 0);
 });
 
+test("daemon 明确以 draining 拒绝创建时返回 failed，不伪装成永久 pending", async () => {
+  const s = setup();
+  const inv = await invocation(s, 'spawn', spawn, 'draining-key', { type: 'global' });
+  s.replies.push({ status: 503, body: { error: { code: 'draining', message: '后台正在排空，不接受新任务' } } });
+  const result = await s.actions.invoke(inv, origin);
+  assert.equal(result.status, 'failed');
+  assert.match(result.message, /排空/);
+});
+
 test("静态目录仅开放六个任务动作，返回副本且文案为中文", () => {
   const s = setup();
   const list = s.actions.list();

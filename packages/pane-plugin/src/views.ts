@@ -2,7 +2,7 @@ import type {
   PanePlugin, NodeStatus, TreeNode, SessionRef, SessionSnapshot, HistoryPage,
   SessionStreamEvent, PanelContent,
 } from "@pi-pane/plugin-api";
-import { encoded, message, parentNodeId, statusDetail, type PluginRuntime, type SessionItem, type SessionsPage, type ApiEvent } from "./contracts.js";
+import { encoded, message, parentNodeId, statusDetail, userTask, type PluginRuntime, type SessionItem, type SessionsPage, type ApiEvent } from "./contracts.js";
 
 const USER_TASKS = "agora:root:user-tasks";
 const TASK_PANEL = "agora.task";
@@ -35,7 +35,8 @@ function node(item: SessionItem, revision = item.revision): TreeNode {
   if (item.agoraSessionId === USER_TASKS) return group(revision);
   const capabilities = ["open"];
   const historical = !!item.taskId && item.isCurrent === false;
-  const steerable = !!item.taskId && !historical && STEERABLE.has(item.status);
+  const userOwned = userTask(item);
+  const steerable = !!item.taskId && !historical && userOwned && STEERABLE.has(item.status);
   const paused = ["quota_paused", "budget_paused"].includes(item.status);
   if (!historical && (!item.taskId || !TERMINAL.has(item.status) && !paused)) capabilities.push("subscribe");
   if (steerable) capabilities.push("send", "action:agora.task.steer");
@@ -44,13 +45,15 @@ function node(item: SessionItem, revision = item.revision): TreeNode {
     capabilities.push("action:agora.task.stop");
   }
   if (item.taskId && !historical && ["completed", "failed"].includes(item.status)) capabilities.push("action:agora.task.cleanup");
-  if (item.taskId && !historical && ["quota_paused", "budget_paused", "interrupted"].includes(item.status)) capabilities.push("action:agora.task.recover");
+  if (item.taskId && !historical && userOwned && ["quota_paused", "budget_paused", "interrupted"].includes(item.status)) capabilities.push("action:agora.task.recover");
+  if (item.taskId && !historical && !userOwned) capabilities.push("action:agora.task.takeover");
+  const detail = [item.taskId && !historical && !userOwned ? "由 Agent 管理，接管后可操作" : undefined, statusDetail(item)].filter(Boolean).join("；");
   return {
     id: nodeId(item.agoraSessionId), source: "agora", kind: "session",
     parentId: parentNodeId(item), title: item.title,
     badge: item.taskId ? "子代理" : item.kind === "secretary" ? "书记" : "参会",
     sessionRef: { source: "agora", id: item.agoraSessionId }, status: status(item.status),
-    ...(statusDetail(item) ? { statusDetail: statusDetail(item) } : {}),
+    ...(detail ? { statusDetail: detail } : {}),
     availability: item.archiveState === "missing" ? "missing" : historical || item.archiveState === "archived" ? "archived" : "online",
     hasChildren: item.hasChildren, ...(item.childCount === undefined ? {} : { childCount: item.childCount }),
     lastActivityAt: item.lastActivityAt, sortKey: item.createdAt, revision, capabilities,
@@ -273,7 +276,7 @@ export function createViews(runtime: PluginRuntime): {
       const data = await get<any>(`/v1/sessions/${id}/snapshot`);
       const item = await get<SessionItem>(`/v1/sessions/${id}`);
       remember([item]);
-      const readonly = !item.taskId || item.isCurrent === false || !STEERABLE.has(item.status);
+      const readonly = !item.taskId || item.isCurrent === false || !userTask(item) || !STEERABLE.has(item.status);
       return { ref, cursor: data.cursor, leafId: data.leafId, entries: data.entries,
         historyBefore: data.historyBefore, inFlight: data.inFlight, unfinishedPartials: data.unfinishedPartials,
         status: status(data.status), readonly, ...(readonly ? { readonlyReason: item.isCurrent === false ? "archived" as const : "noPermission" as const } : {}) } satisfies SessionSnapshot;
@@ -315,7 +318,7 @@ export function createViews(runtime: PluginRuntime): {
       if (input.delivery === "followUp") return { status: "rejected", message: "agora 任务通过返工发送，不支持 followUp" };
       if (req.expectedRevision !== undefined) return { status: "rejected", message: "agora 未提供会话控制修订号，请刷新后重试" };
       const item = await get<SessionItem>(`/v1/sessions/${sessionId(ref)}`);
-      if (!item.taskId || item.isCurrent === false || !STEERABLE.has(item.status)) return { status: "rejected", message: "此会话当前不能返工" };
+      if (!item.taskId || item.isCurrent === false || !userTask(item) || !STEERABLE.has(item.status)) return { status: "rejected", message: "此会话当前不能返工" };
       const reply = await runtime.api.request("POST", `/v1/tasks/${encoded(item.taskId)}/steer`,
         { message: input.text, interrupt: false }, { idempotencyKey: req.idempotencyKey, signal: lifetime.signal });
       if (reply.status < 200 || reply.status >= 300) return {

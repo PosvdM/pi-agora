@@ -124,7 +124,7 @@ HTTP 签名入口的同步动作（包括 task takeover、limits、提问答复�
 
 `POST /v1/tasks` 接受可选 `maxTokens`；`POST /v1/tasks/:id/limits` 使用 `{ maxTokens, expectedRevision? }` 调整子树软预算。`spawn`、详情、结果和 limits 响应的 `budget` 含当前上限、累计用量、剩余量、计数口径与祖先上限 / 用量 / 暂停标志。计数、共享日授予、默认值及 `budget_paused` 的显式恢复规则见 [tasks.md](tasks.md#任务树软预算)。
 
-`POST /v1/tasks/:id/takeover` 是用户级显式接管，可接管召集人仍可达的任务；普通 host 不能直接 recover Agent 资源。原 Agent 的目标 / 子树管理返回 `403 task_taken_over`，相关控制执行中的接管返回 `409 task_busy`；接管不改变父子关系或用量归属。完整边界见 [tasks.md](tasks.md#用户接管)。
+`POST /v1/tasks/:id/takeover` 是用户级显式接管，可接管召集人仍可达的任务；普通 host 不能直接 recover Agent 资源。原 Agent 的目标 / 子树管理返回 `403 task_taken_over`，相关控制执行中的接管返回 `409 task_busy`；接管保留预算父链和用量归属，展示挂载移到用户任务根。完整边界见 [tasks.md](tasks.md#用户接管)。
 
 `POST /v1/tasks` 接受可选的 `skills: string[]`，省略时按权限档位配置默认值，未配置时为空；显式数组覆盖默认值，下级只能取上级名单的子集。错误为 `400 skill_not_found`（未找到、歧义或不可访问）和 `403 skill_upgrade`（越出上级名单）。名字格式遵守 pi skill 规范：至多 64 字符，小写字母、数字和单个连接号，不以连接号开头或结尾。
 
@@ -358,15 +358,19 @@ agora:root:user-tasks            〔用户任务〕   用户通过 CLI 或 pi-pa
 
 | 节点 | daemon 在线 | daemon 不在线 |
 | --- | --- | --- |
-| 运行中的任务 | `open`、`subscribe`、`send`、`abort`、`action:agora.task.steer`、`action:agora.task.stop` | `open` |
-| 已完成、失败的任务 | `open`、`send`、`action:agora.task.steer`（返工）、`action:agora.task.cleanup` | `open` |
-| 中断的任务 | `open`、`action:agora.task.recover` | `open` |
-| 额度暂停的任务 | `open`、`action:agora.task.recover`（resume）、`action:agora.task.stop` | `open` |
+| 用户管理的运行任务 | `open`、`subscribe`、`send`、`abort`、`action:agora.task.steer`、`action:agora.task.stop` | `open` |
+| 用户管理的已完成、失败任务 | `open`、`send`、`action:agora.task.steer`（返工）、`action:agora.task.cleanup` | `open` |
+| 用户管理的中断任务 | `open`、`action:agora.task.recover` | `open` |
+| 用户管理的额度或预算暂停任务 | `open`、`action:agora.task.recover`（resume）、`action:agora.task.stop` | `open` |
+| Agent 管理的当前任务 | `open`、`action:agora.task.takeover`；按状态保留订阅、停止和清理，不提供 `send`、steer 或 recover | `open` |
+| 历史任务会话 | `open`，`availability: archived` | `open` |
 | 参会者、书记 | `open`、`subscribe` | `open` |
 | 会议 | `action:agora.meeting.interject`、`action:agora.meeting.decide`、`action:agora.meeting.limits`、`action:agora.meeting.stop` | 无 |
 | board | 无（点击 resource 节点时 pi-pane 打开适用的 `agora.board` 面板；`open` 只用于 session 节点） | 无 |
 
-- `send`：任务当前会话节点同时填 `composer: { actionId: "agora.task.steer", placeholder: "对子代理补充说明或返工", images: false }`。pi-pane 把聊天输入框的提交转成该动作（文字在 `input.fields.message`），不附动作表单的 id 或 revision；该受限通路只接受文字并固定 `interrupt: false`，仍保存固定请求快照。菜单里的返工表单保留版本校验，`interrupt` 由 checkbox 选择。两条通路都调用 `POST /v1/tasks/:id/steer`，保证有记录、有代数；`sessions.send` 也复用同一请求机制。`isCurrent: false` 的历史任务会话只有 `open` 能力，不能误控任务的当前运行。
+Agent 管理的当前任务在状态说明里显示“由 Agent 管理，接管后可操作”。接管动作的表单与确认提示写明原 Agent 将不能继续管理任务及子树，并经设备签名；成功后才开放输入和恢复，不能自动替用户接管。结构 marker 同时使已打开的会话 resync，重新读取只读权限。排队的 `created` 任务尚不能返工。
+
+- `send`：用户管理的任务当前会话节点同时填 `composer: { actionId: "agora.task.steer", placeholder: "对子代理补充说明或返工", images: false }`。pi-pane 把聊天输入框的提交转成该动作（文字在 `input.fields.message`），不附动作表单的 id 或 revision；该受限通路只接受文字并固定 `interrupt: false`，仍保存固定请求快照。菜单里的返工表单保留版本校验，`interrupt` 由 checkbox 选择。两条通路都调用 `POST /v1/tasks/:id/steer`，保证有记录、有代数；`sessions.send` 也复用同一请求机制。`isCurrent: false` 的历史任务会话只有 `open` 能力，不能误控任务的当前运行。
 - `abort`：插件实现 `sessions.abort(ref, { clearQueue, origin })`，调用 `POST /v1/tasks/:id/stop`，语义是取消（先 `clear_queue` 再 `abort`，见 [tasks.md](tasks.md#agora_task-接口)）。`AbortResult.clearedText` 填被清掉的返工消息原文（去掉 agora 加的标注行），pi-pane 放回输入框。
 - 参会者和书记不带 `send`：会议中对参会者说话一律通过会议插话，进入 board。
 
@@ -379,7 +383,7 @@ pane 插件的 `sessions.snapshot`、`sessions.history`、`sessions.subscribe` �
 | 会话 id `as_…` | `SessionRef { source: "agora", id: "as_…" }` |
 | 快照的 `cursor`、`leafId`、`entries`、`historyBefore`、`inFlight`、`unfinishedPartials` | `SessionSnapshot` 的同名字段 |
 | `status` | 按“状态映射”转换 |
-| — | `readonly`：可以 steer 的任务为 `false`（输入框经 `composer` 转成 steer）；参会者、书记为 `true`（`readonlyReason: "noPermission"`）；daemon 不在线时为 `true`（`"archived"`） |
+| — | `readonly`：用户管理且可 steer 的当前任务为 `false`；Agent 管理的任务、参会者和书记为 `true`（`noPermission`）；历史任务会话或 daemon 不在线时为 `true`（`archived`） |
 | `GET .../history` | `sessions.history` 的 `HistoryPage` |
 | SSE 的 `cursor`、`event` | `SessionStreamEvent` 的 `cursor`、`event`；`agora_entries` 转为 `pane_entries`；`agora_status` 转为 `pane_status`（`status` 按映射转换，`phase` 原样，`statusDetail` 放入 `detail`）；`agora_run` 本身不转发，它引起的 `resync` 原样转发 |
 
@@ -418,7 +422,8 @@ pane 插件通过 `renderers.customMessages` 声明 agora 自定义消息的渲�
 | `agora.task.steer` | `["node"]` | 是 | textarea `message`，checkbox `interrupt` | `POST /v1/tasks/:id/steer` | 主 Agent 级 |
 | `agora.task.stop` | `["node"]` | 否，`confirm` | — | `POST /v1/tasks/:id/stop` | 主 Agent 级 |
 | `agora.task.cleanup` | `["node"]` | 是 | checkbox `discard` | `POST /v1/tasks/:id/cleanup` | 主 Agent 级 |
-| `agora.task.recover` | `["node"]` | 是 | 单选 resume / reopen / replace / abandon（选项随任务状态） | `POST /v1/tasks/:id/recover` | 见 [security.md](security.md#任务) |
+| `agora.task.recover` | `["node"]` | 是 | 单选 resume / reopen / replace / abandon（选项随任务状态） | `POST /v1/tasks/:id/recover` | 用户级；只用于用户管理的任务 |
+| `agora.task.takeover` | `["node"]` | 是，且 `confirm` | 说明接管后原 Agent 将不能再管理该任务及子树，无额外参数 | `POST /v1/tasks/:id/takeover` | 用户级，需显式设备确认 |
 | `agora.meeting.convene` | `["global", "node"]` | 是 | 议题、交付物、brief、参会者（`type: "group"`，`min: 2`、`max: 4`，子字段为名称、模型、角色）、合并人、上限 | `POST /v1/meetings` | 主 Agent 级；pane 召集的会议是用户召集，上限超出 `meetingLimitDefaults` 时用户级 |
 | `agora.meeting.interject` | `["node"]` | 是 | kind 单选 + 正文 | `POST /v1/meetings/:id/interject` | 用户级 |
 | `agora.meeting.decide` | `["node"]` | 是 | 由当前决策请求生成 | `POST /v1/meetings/:id/decide` | 见 [security.md](security.md#会议) |
