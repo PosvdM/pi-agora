@@ -48,7 +48,7 @@ pi-agora 和 pi-pane 的 MVP 按同样的三个切片推进，两仓的 roadmap 
 | 1a：最小闭环 | 四包工程和三平台 CI；daemon 单实例、握手、主会话注册与恢复、租约、launch ticket、就绪检查、排空、版本和迁移；RPC driver、会话写锁、并发、诊断、旧进程清理、扩展 UI；explore 的 spawn / status / result / stop；outbox 可靠通知；CLI start / shutdown / status / ls / show |
 | 1b：任务补全 | 全部任务动作与状态机、generation、steer 追踪、worktree、三档与路径、agora_git、提问及逐级转交、pending / answer、空闲回收、看门狗；多层委派、子树限制与停止、等待下级；请求传输重试与 Windows 停止重试；D15 子代理标记、skill 白名单、逐请求用量及任务树汇总、额度暂停和恢复 |
 | 1c：安全 | 子 / 主 Agent 与用户级划分、预算封顶与任务树 token 软预算、已实现资源的统一访问控制、待确认、设备登记与验签、everPaired、离线命令、安全状态检查和审计；Git 布局核验后的执行根固定（#9）。可选扩展 / MCP 白名单及 saved 项目信任配置隔离推迟至 [#10](https://github.com/PosvdM/pi-agora/issues/10)：pi CLI 无独立 auth/models 路径，不能安全复制 OAuth 凭证；继续保留 `-ne --no-mcp --no-approve` 的 fail-closed 启动 |
-| 1d：存档与收尾 | 全量流片段和退出诊断、只读解析器、archive adapter、快照 / 历史 / SSE、log / tail / verify-archive / ls --tree、显式离线 archive delete；创建 archive 与共享 harness-pi 包；CLI 展示会话用量和上下文。用户级在线删除与接管须接入 1c 签名机制，不以主机凭证绕过 |
+| 1d：存档与收尾 | 全量流片段和退出诊断、只读解析器、archive adapter、快照 / 历史 / SSE、log / tail / verify-archive / ls --tree、在线设备签名与显式离线 archive delete；创建 archive 与共享 harness-pi 包；CLI 展示会话用量和上下文。在线删除强制签名，即使保护关闭也不以主机凭证绕过；无任务关联时保守要求离线维护 |
 | 1d 之后 | 上下文超过阈值时通知上级；返工时可选新会话附摘要或先压缩再返工 |
 
 下面列出切片 1 的完整目标，不表示这些内容均已实现。
@@ -59,7 +59,8 @@ pi-agora 和 pi-pane 的 MVP 按同样的三个切片推进，两仓的 roadmap 
 - 提问：`agora_request`、转给用户、`agora pending`。
 - 安全：子 Agent 级、主 Agent 级与用户级的划分，主 Agent 的封顶（`agentLimitCap`）、资源级访问控制、待确认、设备登记与验签、`everPaired`、离线命令、启动时的安全状态检查、`userConfirmation`、审计。浏览器侧的确认在切片 2 接入；切片 1 用测试签名器验证验签流程，只用终端时用离线命令关闭保护后验收。
 - 存档：全量保存、流片段（带块类型）、退出诊断、继承关系、完整性校验、只读解析器、archive adapter、用户聊天视图投影。
-- 会话视图：快照、历史分页、事件流（CLI 的 `show`、`log`、`tail` 使用）。
+- 会话视图：快照、历史分页、事件流（CLI 的 `show`、`log`、`tail` 使用）；在线 / 离线 `SessionMetadata` 同形、用户接管父节点展示与原预算关系分离。统一会话 ACL、v1 raw 游标的 reader / generation 绑定、SSE 有界实时队列与背压、历史退出确认及旧 run 的片段持久化屏障。
+- 存档维护：无 ID 的 `verify-archive` 自动跟随默认每页 200 条的在线分页；`archive delete` 默认在线请求确认，支持 `--wait`，仅显式 `--offline` 才维护本地存档。
 - CLI：`agora daemon start`、`agora shutdown`、`agora status`、`agora ls [--tree]`、`agora show`、`agora log`、`agora tail`、`agora pending`、`agora answer`、`agora task stop|cleanup|recover`、`agora takeover`、`agora confirmations`、`agora pair --reset`、`agora offline pair-reset`、`agora offline set userConfirmation off`、`agora config`、`agora verify-archive`、`agora archive delete`。
 
 ### 切片 2：pane 插件
@@ -120,7 +121,7 @@ pi-pane 的估算见其 `docs/roadmap.md`（18–26 人日，P0 后重估）；�
 | 子代理标记、skill 名单和只读授权 | 1b D15 | `driver-d15.test.mjs`、`task-d15.test.mjs`、`d15-e2e.test.mjs`：空默认值、子集继承、名单外及项目 skill 不自动加载、文件工具只读 |
 | 用量汇总、额度暂停与恢复 | 1b D15 | 上述 D15 测试覆盖请求去重、任务 / 代 / 树汇总、429 暂停、到期通知、可选自动恢复和父任务恢复不隐式恢复下级 |
 
-1d 的归档故障由 `archive-e2e-1d.test.mjs` 验证真实 pi 强杀时保留 thinking / text / toolCall、退出诊断和原文件；`session-views-1d.test.mjs` 覆盖停止未确认时的迟到流、闭片段双证据、快照切点和游标重同步。`archive-verification-1d.test.mjs` 验证重复校验不能覆盖可信前缀基线，在线和离线使用同一证据；离线删除的锁与路径拒绝见 `cli-archive-1d.test.mjs`。
+1d 的归档故障由 `archive-e2e-1d.test.mjs` 验证真实 pi 强杀时保留 thinking / text / toolCall、退出诊断和原文件；`session-views-1d.test.mjs` 覆盖停止未确认时的迟到流、闭片段双证据、快照切点、游标重同步、SSE 背压与排空、历史全部 run 的退出确认和旧 pending 持久化屏障。`archive-verification-1d.test.mjs` 验证重复校验不能覆盖可信前缀基线，在线和离线使用同一证据；`archive-security-1d.test.mjs` 覆盖强制签名在线删除、会话 ACL 与 verify 分页，`cli-archive-1d.test.mjs` 覆盖 CLI 确认、tail 续期及显式离线删除的锁与路径拒绝。上述条目列出验收入口，不表示本轮全量或三平台测试已通过。
 
 1b 的多层委派另须通过：父任务等待下级不提前完成；回收父进程后重拉并投递通知；子树各层 StopReport；层数、下级数、档位和限制拒绝；单名额多层调度不死锁；提问逐级上交与原提问者收到答案；禁止管理别人的任务，主代理不能跳级返工但能停止。自动化入口为 `task-1b.test.mjs` 与 `tree-e2e.test.mjs`。
 
