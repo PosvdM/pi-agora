@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { request as httpRequest } from 'node:http';
-import { startDaemon } from '../packages/daemon/dist/index.js';
+import { startDaemon, offline } from '../packages/daemon/dist/index.js';
 import { connectHost } from '../packages/protocol/dist/client.js';
 import { runArchiveCli, readSse } from '../packages/cli/dist/archive.js';
 import { SessionViews } from '../packages/daemon/dist/sessions.js';
@@ -87,6 +87,7 @@ async function setup(t) {
     } finally { for (const [key, value] of saved) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } }
   });
   await assertIsolatedTestHome(home);
+  await offline(home, ['set', 'userConfirmation', 'off']);
   const driver = new ArchiveDriver();
   daemon = await startDaemon({ home, driver, readyTimeoutMs: 3000, idleReclaimMs: 60_000 });
   client = await connectHost({ home, as: 'host:cli', autoStart: false });

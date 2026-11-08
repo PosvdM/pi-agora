@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isSameProcess } from 'pi-hostkit';
-import { startDaemon, RpcSubprocessDriver, deleteArchiveOffline } from '../packages/daemon/dist/index.js';
+import { startDaemon, RpcSubprocessDriver, deleteArchiveOffline, offline } from '../packages/daemon/dist/index.js';
 import { connectHost } from '../packages/protocol/dist/index.js';
 import { openArchive, projectPartials } from '../packages/archive/dist/index.js';
 import { containment, piFixture, providerPath, until } from './fixtures/driver-helpers.mjs';
@@ -24,6 +24,7 @@ test('真实 pi 中途强杀：delta-only 三类块归档、退出诊断和原�
   let daemon, client, reader;
   try {
     const driver = new RpcSubprocessDriver({ home, piPath: f.install.packageDir, extensionPath, env: f.env, extraExtensions: [providerPath], containment });
+    await offline(home, ['set', 'userConfirmation', 'off']);
     daemon = await startDaemon({ home, driver, idleReclaimMs: 60_000 });
     client = await connectHost({ home, as: 'host:cli', autoStart: false });
     const task = await client.request('POST', '/v1/tasks', { model: 'p0-fake/scripted', thinking: 'high', profile: 'explore', cwd: f.cwd, prompt: '验证完整流片段存档' });
@@ -77,6 +78,7 @@ test('真实 pi 正常完成：最终内容只展示一次，离线删除识别�
   let daemon, client, reader;
   try {
     const driver = new RpcSubprocessDriver({ home, piPath: f.install.packageDir, extensionPath, env: f.env, extraExtensions: [providerPath], containment });
+    await offline(home, ['set', 'userConfirmation', 'off']);
     daemon = await startDaemon({ home, driver, idleReclaimMs: 60_000 });
     client = await connectHost({ home, as: 'host:cli', autoStart: false });
     const task = await client.request('POST', '/v1/tasks', { model: 'p0-fake/scripted', thinking: 'off', profile: 'explore', cwd: f.cwd, prompt: '验证最终消息归档' });
