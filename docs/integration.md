@@ -195,17 +195,17 @@ HTTP 签名入口的同步动作（包括 task takeover、limits、提问答复�
 | | `GET /v1/sessions/:id/stream?epoch=&afterSeq=` | 实时事件流（SSE） | 同上 |
 | | `GET /v1/sessions/:id/diagnostics` | 各次 run 的退出诊断 | 同上 |
 | 收件箱 | `GET /v1/inbox?wait=25` | 长轮询通知：按创建时间、id 排序，每批最多 200 条，无游标；非空批后用 wait=0 连续拉取到空批，见 [tasks.md](tasks.md#投递) | 全部扩展、pane 插件 |
-| | `POST /v1/inbox/ack` | 确认通知已写入会话文件（扩展）或已展示（pane 插件）；仅提示的主会话通知以 `outcome: "uiNotified"` 确认（后续设计） | 同上 |
+| | `POST /v1/inbox/ack` | 确认通知已写入会话文件（扩展）或已展示（pane 插件）；主会话的部分通知以 `outcome` 标明 `uiNotified` 或 `obsolete`（后续设计，见 [tasks.md](tasks.md#投递结果)） | 同上 |
 | 变更流 | `GET /v1/changes?epoch=&afterSeq=` | 切片 2：领域对象变更（SSE），见“变更流” | pane 插件 |
 | 存档 | `POST /v1/archive/verify?limit=&cursor=` | 单会话或分页校验可见范围；主 Agent 级，更新校验元数据 | CLI |
 | | `POST /v1/sessions/:id/archive/delete` | 在线删除，仅 `expectedRevision` 参数，强制设备签名后异步执行 | CLI、pane 插件 |
 | 审计 | `GET /v1/audit?target=` | 审计记录 | CLI、pane 插件 |
 | 主会话定时项 | `POST /v1/main/quota-pauses`、`POST /v1/main/quota-pauses/:id/end` | 后续设计：登记主会话额度暂停（按出错消息幂等）及其结束，见 [tasks.md](tasks.md#主会话的额度暂停) | 主会话扩展 |
-| | `POST /v1/main/session-state` | 后续设计：上报主会话的分支末端和是否可续跑，见 [tasks.md](tasks.md#会话状态) | 主会话扩展 |
+| | `POST /v1/main/session-state` | 后续设计：上报主会话的分支末端、是否运行和是否可续跑，带 `seq`，见 [tasks.md](tasks.md#会话状态) | 主会话扩展 |
 | | `GET /v1/main/quota-pauses`、`GET /v1/main/schedules`、`GET /v1/main/session-state` | 后续设计：额度暂停、定时项和会话状态，按主会话筛选 | 主会话扩展、CLI、pane 插件 |
 | | `POST /v1/main/schedules`、`/:id/update`、`/:id/cancel` | 后续设计：创建、修改、取消定时项；修改和取消带 `expectedRevision` | 主会话扩展、pane 插件 |
-| | `POST /v1/main/schedules/:id/claim`、`/release`、`/skipped`、`/missed` | 后续设计：领取到期的定时项、放回、报告到时检查不通过或来源无法确认 | 主会话扩展 |
-| | `POST /v1/main/schedules/:id/resolve` | 后续设计：处理错过的定时项，`action` 为 `runNow` 或 `abandon` | pane 插件、CLI |
+| | `POST /v1/main/schedules/:id/claim`、`/release`、`/skipped`、`/missed` | 后续设计：领取到期的定时项（返回 `claimId`）、放回、报告到时检查不通过或无法投递；后三者带 `claimId`，或由当前租约持有者带 `recover: true` | 主会话扩展 |
+| | `POST /v1/main/schedules/:id/resolve` | 后续设计：处理错过的定时项，`action` 为 `runNow` 或 `abandon` | 主会话扩展、pane 插件、CLI |
 | | `POST /v1/main/continue` | 后续设计：请主会话立即续跑，带锚点 entryId | pane 插件 |
 | 管理 | `POST /v1/admin/shutdown` | 排空或强制关闭 | CLI |
 
@@ -518,7 +518,7 @@ daemon 的安全警告（规则见 [security.md](security.md#启动检查与安�
 | --- | --- | --- |
 | 面板 `agora.main-schedule` | `placement: "node"`，`appliesTo: { kinds: ["session"], sources: ["pane"] }` | `table`。pi-pane 调用 `panels.content(panelId, nodeId)` 时传入主会话节点 `pane:session:<piSessionId>`，插件据此找到主会话的 principal。第一行 `rowId: "session"` 显示额度暂停状态、预计重置时间和是否可续跑，该行提供续跑、定时续跑和定时发送；其余每行一个 `scheduled` 的定时项（`rowId` 为 scheduleId），显示类型、触发时间和正文摘要，该行提供修改和取消。每行都填 `nodeId`。主会话没有注册为 agora principal 时只显示一句说明，不提供操作 |
 | 动作 | 见下表，`scope: ["panelRow"]` | `ActionTarget` 为 `{ type: "panelRow", panelId: "agora.main-schedule", rowId, nodeId }`。缺少 `nodeId`、`nodeId` 不是 pane 主会话节点，或 `rowId` 对应的定时项不属于该会话时，插件返回 `failed` |
-| 错过的定时项 | 持久表单 `agora:schedule:<scheduleId>` | 定时项内容、原触发时间和错过原因；选项为“立即执行”和“放弃”，提交到 `/resolve` |
+| 错过的定时项 | 持久表单 `agora:schedule:<scheduleId>` | 定时项内容、原触发时间和错过原因（`stateReason` 为 `deliveryUnknown` 时写明消息可能已经写入会话）；选项为“立即执行”和“放弃”，提交到 `/resolve`；“立即执行”定时发送需要设备签名。`FormSpec.revision` 取定时项的 `revision` |
 | 保活 | `ctx.mainSessions.hold(ref, reason)` | 每个主会话最多一个 hold，按 [tasks.md](tasks.md#pi-pane-中的保活) 的条件重新计算；`reason` 写下一个定时项的类型和时间，如“定时发送（11-22 03:10）” |
 | 重置通知 | 主会话里的扩展调用 `ctx.ui.notify` | pi-pane 按扩展 UI 通知显示在该会话中，pane 插件不重复显示 |
 
@@ -532,7 +532,7 @@ daemon 的安全警告（规则见 [security.md](security.md#启动检查与安�
 
 - 会话状态为不可续跑（会话运行中，或最后一条消息是正常结束的助手消息）或离线时，`session` 行不提供 `agora.main.continue`，并在单元格里说明原因。发起续跑时，插件把会话状态中的分支末端作为锚点交给 daemon；是否实际执行以扩展注入前的检查为准。
 - 定时发送的正文只支持纯文本：pane 协议 v1 的 `FormField` 没有图片类型。
-- 用户级动作按[动作](#动作)一节的用户级动作流程走设备签名，签名内容包含定时项 id、revision、正文和触发时间。插件从变更流收到额度暂停、定时项或会话状态的变化时，调用 `ctx.panelChanged({ panelId: "agora.main-schedule", revision, nodeId })`，并同步持久表单和 hold。
+- 用户级动作按[动作](#动作)一节的用户级动作流程走设备签名，签名内容见 [tasks.md](tasks.md#定时发送)。插件从变更流收到额度暂停、定时项或会话状态的变化时，调用 `ctx.panelChanged({ panelId: "agora.main-schedule", revision, nodeId })`，并同步持久表单和 hold。
 
 ### 渲染安全
 
