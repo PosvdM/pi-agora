@@ -195,16 +195,18 @@ HTTP 签名入口的同步动作（包括 task takeover、limits、提问答复�
 | | `GET /v1/sessions/:id/stream?epoch=&afterSeq=` | 实时事件流（SSE） | 同上 |
 | | `GET /v1/sessions/:id/diagnostics` | 各次 run 的退出诊断 | 同上 |
 | 收件箱 | `GET /v1/inbox?wait=25` | 长轮询通知：按创建时间、id 排序，每批最多 200 条，无游标；非空批后用 wait=0 连续拉取到空批，见 [tasks.md](tasks.md#投递) | 全部扩展、pane 插件 |
-| | `POST /v1/inbox/ack` | 确认通知已写入会话文件（扩展）或已展示（pane 插件） | 同上 |
+| | `POST /v1/inbox/ack` | 确认通知已写入会话文件（扩展）或已展示（pane 插件）；仅提示的主会话通知以 `outcome: "uiNotified"` 确认（后续设计） | 同上 |
 | 变更流 | `GET /v1/changes?epoch=&afterSeq=` | 切片 2：领域对象变更（SSE），见“变更流” | pane 插件 |
 | 存档 | `POST /v1/archive/verify?limit=&cursor=` | 单会话或分页校验可见范围；主 Agent 级，更新校验元数据 | CLI |
 | | `POST /v1/sessions/:id/archive/delete` | 在线删除，仅 `expectedRevision` 参数，强制设备签名后异步执行 | CLI、pane 插件 |
 | 审计 | `GET /v1/audit?target=` | 审计记录 | CLI、pane 插件 |
-| 主会话定时项 | `POST /v1/main/quota-pauses`、`POST /v1/main/quota-pauses/:id/end` | 后续设计：报告主会话额度暂停及其结束，见 [tasks.md](tasks.md#主会话的额度暂停) | 主会话扩展 |
-| | `GET /v1/main/quota-pauses`、`GET /v1/main/schedules` | 后续设计：额度暂停和定时项列表，按主会话筛选 | 主会话扩展、CLI、pane 插件 |
+| 主会话定时项 | `POST /v1/main/quota-pauses`、`POST /v1/main/quota-pauses/:id/end` | 后续设计：登记主会话额度暂停（按出错消息幂等）及其结束，见 [tasks.md](tasks.md#主会话的额度暂停) | 主会话扩展 |
+| | `POST /v1/main/session-state` | 后续设计：上报主会话的分支末端和是否可续跑，见 [tasks.md](tasks.md#会话状态) | 主会话扩展 |
+| | `GET /v1/main/quota-pauses`、`GET /v1/main/schedules`、`GET /v1/main/session-state` | 后续设计：额度暂停、定时项和会话状态，按主会话筛选 | 主会话扩展、CLI、pane 插件 |
 | | `POST /v1/main/schedules`、`/:id/update`、`/:id/cancel` | 后续设计：创建、修改、取消定时项；修改和取消带 `expectedRevision` | 主会话扩展、pane 插件 |
-| | `POST /v1/main/schedules/:id/missed`、`/skipped` | 后续设计：扩展报告定时项错过，或因条件不满足未执行 | 主会话扩展 |
-| | `POST /v1/main/continue` | 后续设计：请主会话立即续跑，带分支末端 entryId | pane 插件 |
+| | `POST /v1/main/schedules/:id/claim`、`/release`、`/skipped`、`/missed` | 后续设计：领取到期的定时项、放回、报告到时检查不通过或来源无法确认 | 主会话扩展 |
+| | `POST /v1/main/schedules/:id/resolve` | 后续设计：处理错过的定时项，`action` 为 `runNow` 或 `abandon` | pane 插件、CLI |
+| | `POST /v1/main/continue` | 后续设计：请主会话立即续跑，带锚点 entryId | pane 插件 |
 | 管理 | `POST /v1/admin/shutdown` | 排空或强制关闭 | CLI |
 
 收件箱采用至少一次投递：返回通知时设置默认 120 秒的可见性超时，未确认项到期后可再次返回。扩展按 `dedupeKey` 去重，只有核实会话条目和完整磁盘记录后才调用 ack；ephemeral 会话单独记录内存送达，不声明已持久化。业务上取得结果与写入会话的确认互不替代。
@@ -309,7 +311,7 @@ CLI `tail` 在连接凭证到期前续期，按最后收到的 `{ epoch, seq }` 
 
 本节为切片 2 的接口目标；切片 1d 只提供会话事件流，不开放 `/v1/changes`。
 
-`GET /v1/changes?epoch=<e>&afterSeq=<n>`（SSE）推送领域对象的变更：任务、协作会话、会议、提问、board 头序号、待确认、设备。pane 插件据此生成 `TreeChange`、刷新面板和表单。
+`GET /v1/changes?epoch=<e>&afterSeq=<n>`（SSE）推送领域对象的变更：任务、协作会话、会议、提问、board 头序号、待确认、设备；主会话的额度暂停、定时项和会话状态（后续设计）也写入变更流。pane 插件据此生成 `TreeChange`、刷新面板和表单。
 
 - 变更记录持久化在 `changes` 表，与业务状态变更同事务写入。每条记录带 `seq`（全局递增）、对象类型与 id；删除时带 `tombstone: true`。
 - `epoch` 是数据库级的标识，只在数据库被重建或从备份恢复时改变。
@@ -430,7 +432,7 @@ pane 插件通过 `renderers.customMessages` 声明 agora 自定义消息的渲�
 | `agora.task` | node | `kinds: ["session"]`，`sources: ["agora"]`（参会者和书记节点返回席位信息） | `keyValue`：模型、档位、代数、worktree、用量，各代结果；答复过的提问附“由谁、怎样确认” |
 | `agora.meeting` | node | `kinds: ["group"]`，`sources: ["agora"]` | `steps`：各阶段为一步（`StepItem.status` 取 pending / active / done / failed / skipped），`progress` 为合并—核对循环数与上限；`detail` 写修订号、认可情况、用量与上限、暂停或排队原因 |
 | `agora.board` | node | `kinds: ["resource"]`，`resourceTypes: ["board"]` | `timeline`，按 seq 显示公开条目，`note` 标注替代关系、“基于旧版本”和“旧阶段产物，不计入” |
-| `agora.main-schedule` | node | `kinds: ["session"]`，`sources: ["pane"]` | `table`：主会话的额度暂停状态和定时项，见“主会话的定时项与续跑”（后续设计） |
+| `agora.main-schedule` | node | `kinds: ["session"]`，`sources: ["pane"]` | `table`：主会话的额度暂停状态和定时项，见[主会话的定时项与续跑](#主会话的定时项与续跑)（后续设计） |
 
 - 内容变化时插件调用 `ctx.panelChanged({ panelId, revision, nodeId })` 推送（如会议阶段推进、board 新条目）。
 - agora 不提供侧栏面板，也不做“待处理”面板：所有需要用户处理的事项都以持久表单进入 pi-pane 唯一的“待处理”区，见“表单”。
@@ -451,7 +453,7 @@ pane 插件通过 `renderers.customMessages` 声明 agora 自定义消息的渲�
 | `agora.meeting.stop` | `["node"]` | 否，`confirm` | — | `POST /v1/meetings/:id/stop` | 主 Agent 级 |
 
 - **动态表单**：表单依赖目标的当前状态（如 recover 是否允许 resume、decide 的选项来自当前决策请求），插件在 `actions.resolveForm(actionId, target)` 里按 `ActionTarget` 现取，`actions.list()` 只给静态目录。
-- **目标**：`ActionTarget` 为 `{ type: "node", nodeId }` 时，`agora:session:<as_id>` 解析为任务，`agora:meeting:<mt_id>` 解析为会议；`{ type: "global" }` 用于召集新任务和会议。`panelRow` 目标只用于 `agora.main-schedule` 面板，见“主会话的定时项与续跑”。
+- **目标**：`ActionTarget` 为 `{ type: "node", nodeId }` 时，`agora:session:<as_id>` 解析为任务，`agora:meeting:<mt_id>` 解析为会议；`{ type: "global" }` 用于召集新任务和会议。`panelRow` 目标只用于 `agora.main-schedule` 面板，见[主会话的定时项与续跑](#主会话的定时项与续跑)。
 - **结果映射**（`ActionResult`）：
 
   | daemon 响应 | `ActionResult` |
@@ -510,14 +512,14 @@ daemon 的安全警告（规则见 [security.md](security.md#启动检查与安�
 
 后续设计，尚未实现。功能规则见 [tasks.md](tasks.md#主会话的额度暂停定时发送与续跑)。pane 中的显示和操作全部由 agora pane 插件用 pi-pane 现有的插件接口提供，pi-pane 不认识定时项和续跑。
 
-插件不能给 pi-pane 自己的主会话节点增加 `capabilities`，所以这些操作不显示在会话视图顶部，放在下面的节点面板里。
+插件不能给 pi-pane 自己的主会话节点增加 `capabilities`，所以这些操作不显示在会话视图顶部，放在下面的节点面板里。插件也读不到 pi-pane 主会话的快照，分支末端和是否可续跑取自扩展上报给 daemon 的[会话状态](tasks.md#会话状态)。
 
 | 项目 | 接口 | 内容 |
 | --- | --- | --- |
-| 面板 `agora.main-schedule` | `placement: "node"`，`appliesTo: { kinds: ["session"], sources: ["pane"] }` | `table`。第一行 `rowId: "session"` 显示该主会话的额度暂停状态和预计重置时间，行动作为续跑、定时续跑和定时发送；其余每行一个 `scheduled` 的定时项（`rowId` 为 scheduleId），显示类型、触发时间和正文摘要，行动作为修改和取消。主会话没有注册为 agora principal 时只显示一句说明，没有行动作 |
-| 动作 | 见下表，`scope: ["panelRow"]` | `ActionTarget` 为 `{ type: "panelRow", panelId: "agora.main-schedule", rowId, nodeId }`，插件从 `nodeId`（`pane:session:<piSessionId>`）找到主会话的 principal |
-| 错过的定时项 | 持久表单 `agora:schedule:<scheduleId>` | 定时项内容、原触发时间和错过原因；选项为“立即执行”和“放弃” |
-| 保活 | `ctx.mainSessions.hold(ref, reason)` | 主会话有 `scheduled` 的定时项，或有带重置时间的额度暂停时持有；`reason` 写下一个定时项的类型和时间，如“定时发送（11-22 03:10）” |
+| 面板 `agora.main-schedule` | `placement: "node"`，`appliesTo: { kinds: ["session"], sources: ["pane"] }` | `table`。pi-pane 调用 `panels.content(panelId, nodeId)` 时传入主会话节点 `pane:session:<piSessionId>`，插件据此找到主会话的 principal。第一行 `rowId: "session"` 显示额度暂停状态、预计重置时间和是否可续跑，该行提供续跑、定时续跑和定时发送；其余每行一个 `scheduled` 的定时项（`rowId` 为 scheduleId），显示类型、触发时间和正文摘要，该行提供修改和取消。每行都填 `nodeId`。主会话没有注册为 agora principal 时只显示一句说明，不提供操作 |
+| 动作 | 见下表，`scope: ["panelRow"]` | `ActionTarget` 为 `{ type: "panelRow", panelId: "agora.main-schedule", rowId, nodeId }`。缺少 `nodeId`、`nodeId` 不是 pane 主会话节点，或 `rowId` 对应的定时项不属于该会话时，插件返回 `failed` |
+| 错过的定时项 | 持久表单 `agora:schedule:<scheduleId>` | 定时项内容、原触发时间和错过原因；选项为“立即执行”和“放弃”，提交到 `/resolve` |
+| 保活 | `ctx.mainSessions.hold(ref, reason)` | 每个主会话最多一个 hold，按 [tasks.md](tasks.md#pi-pane-中的保活) 的条件重新计算；`reason` 写下一个定时项的类型和时间，如“定时发送（11-22 03:10）” |
 | 重置通知 | 主会话里的扩展调用 `ctx.ui.notify` | pi-pane 按扩展 UI 通知显示在该会话中，pane 插件不重复显示 |
 
 | actionId | 所在行 | `hasForm` | 表单内容 | 调用的 daemon 端点 | 权限级别 |
@@ -528,9 +530,9 @@ daemon 的安全警告（规则见 [security.md](security.md#启动检查与安�
 | `agora.main.schedule.update` | 定时项 | 是 | 当前正文（仅 `send`）和触发时间 | `POST /v1/main/schedules/:id/update` | `send` 为用户级，`continue` 为主 Agent 级 |
 | `agora.main.schedule.cancel` | 定时项 | 否，`confirm` | — | `POST /v1/main/schedules/:id/cancel` | 主 Agent 级 |
 
-- 续跑不可用时（会话运行中，或末条是正常结束的助手消息），`session` 行不列出 `agora.main.continue`，并在单元格里说明原因。插件从 pi-pane 的会话快照取分支末端 entryId 和末条消息，发起续跑时把 entryId 交给 daemon；是否实际执行以扩展的到时检查为准。
+- 会话状态为不可续跑（会话运行中，或最后一条消息是正常结束的助手消息）或离线时，`session` 行不提供 `agora.main.continue`，并在单元格里说明原因。发起续跑时，插件把会话状态中的分支末端作为锚点交给 daemon；是否实际执行以扩展注入前的检查为准。
 - 定时发送的正文只支持纯文本：pane 协议 v1 的 `FormField` 没有图片类型。
-- 用户级动作按“动作”一节的用户级动作流程走设备签名。定时项或额度暂停变化时，插件调用 `ctx.panelChanged({ panelId: "agora.main-schedule", revision, nodeId })`。
+- 用户级动作按[动作](#动作)一节的用户级动作流程走设备签名，签名内容包含定时项 id、revision、正文和触发时间。插件从变更流收到额度暂停、定时项或会话状态的变化时，调用 `ctx.panelChanged({ panelId: "agora.main-schedule", revision, nodeId })`，并同步持久表单和 hold。
 
 ### 渲染安全
 
