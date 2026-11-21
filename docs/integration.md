@@ -201,10 +201,10 @@ HTTP 签名入口的同步动作（包括 task takeover、limits、提问答复�
 | | `POST /v1/sessions/:id/archive/delete` | 在线删除，仅 `expectedRevision` 参数，强制设备签名后异步执行 | CLI、pane 插件 |
 | 审计 | `GET /v1/audit?target=` | 审计记录 | CLI、pane 插件 |
 | 主会话定时项 | `POST /v1/main/quota-pauses`、`POST /v1/main/quota-pauses/:id/end` | 后续设计：登记主会话额度暂停（按出错消息幂等）及其结束，见 [tasks.md](tasks.md#主会话的额度暂停) | 主会话扩展 |
-| | `POST /v1/main/session-state` | 后续设计：上报主会话的分支末端、是否运行和是否可续跑，带 `seq`，见 [tasks.md](tasks.md#会话状态) | 主会话扩展 |
+| | `POST /v1/main/session-state` | 后续设计：上报主会话的锚点、是否运行和是否可续跑，带同一租约内递增的 `seq`，见 [tasks.md](tasks.md#会话状态) | 主会话扩展 |
 | | `GET /v1/main/quota-pauses`、`GET /v1/main/schedules`、`GET /v1/main/session-state` | 后续设计：额度暂停、定时项和会话状态，按主会话筛选 | 主会话扩展、CLI、pane 插件 |
 | | `POST /v1/main/schedules`、`/:id/update`、`/:id/cancel` | 后续设计：创建、修改、取消定时项；修改和取消带 `expectedRevision` | 主会话扩展、pane 插件 |
-| | `POST /v1/main/schedules/:id/claim`、`/release`、`/skipped`、`/missed` | 后续设计：领取到期的定时项（返回 `claimId`）、放回、报告到时检查不通过或无法投递；后三者带 `claimId`，或由当前租约持有者带 `recover: true` | 主会话扩展 |
+| | `POST /v1/main/schedules/:id/claim`、`/release`、`/skipped`、`/missed` | 后续设计：领取到期的定时项（带 `claimKey`，返回 `claimId`）、放回、报告锚点失效或来源无法确认；后三者带 `claimId`，`/release` 和 `/missed` 也可由当前租约持有者带 `recover: true` 调用，见 [tasks.md](tasks.md#定时项) | 主会话扩展 |
 | | `POST /v1/main/schedules/:id/resolve` | 后续设计：处理错过的定时项，`action` 为 `runNow` 或 `abandon` | 主会话扩展、pane 插件、CLI |
 | | `POST /v1/main/continue` | 后续设计：请主会话立即续跑，带锚点 entryId | pane 插件 |
 | 管理 | `POST /v1/admin/shutdown` | 排空或强制关闭 | CLI |
@@ -512,7 +512,7 @@ daemon 的安全警告（规则见 [security.md](security.md#启动检查与安�
 
 后续设计，尚未实现。功能规则见 [tasks.md](tasks.md#主会话的额度暂停定时发送与续跑)。pane 中的显示和操作全部由 agora pane 插件用 pi-pane 现有的插件接口提供，pi-pane 不认识定时项和续跑。
 
-插件不能给 pi-pane 自己的主会话节点增加 `capabilities`，所以这些操作不显示在会话视图顶部，放在下面的节点面板里。插件也读不到 pi-pane 主会话的快照，分支末端和是否可续跑取自扩展上报给 daemon 的[会话状态](tasks.md#会话状态)。
+插件不能给 pi-pane 自己的主会话节点增加 `capabilities`，所以这些操作不显示在会话视图顶部，放在下面的节点面板里。插件也读不到 pi-pane 主会话的快照，锚点和是否可续跑取自扩展上报给 daemon 的[会话状态](tasks.md#会话状态)。
 
 | 项目 | 接口 | 内容 |
 | --- | --- | --- |
@@ -530,7 +530,7 @@ daemon 的安全警告（规则见 [security.md](security.md#启动检查与安�
 | `agora.main.schedule.update` | 定时项 | 是 | 当前正文（仅 `send`）和触发时间 | `POST /v1/main/schedules/:id/update` | `send` 为用户级，`continue` 为主 Agent 级 |
 | `agora.main.schedule.cancel` | 定时项 | 否，`confirm` | — | `POST /v1/main/schedules/:id/cancel` | 主 Agent 级 |
 
-- 会话状态为不可续跑（会话运行中，或最后一条消息是正常结束的助手消息）或离线时，`session` 行不提供 `agora.main.continue`，并在单元格里说明原因。发起续跑时，插件把会话状态中的分支末端作为锚点交给 daemon；是否实际执行以扩展注入前的检查为准。
+- 会话状态为不可续跑（会话运行中，或最后一条消息是正常结束的助手消息）或离线时，`session` 行不提供 `agora.main.continue`，并在单元格里说明原因。发起续跑时，插件把会话状态中的锚点交给 daemon；是否实际执行以扩展注入前的检查为准。
 - 定时发送的正文只支持纯文本：pane 协议 v1 的 `FormField` 没有图片类型。
 - 用户级动作按[动作](#动作)一节的用户级动作流程走设备签名，签名内容见 [tasks.md](tasks.md#定时发送)。插件从变更流收到额度暂停、定时项或会话状态的变化时，调用 `ctx.panelChanged({ panelId: "agora.main-schedule", revision, nodeId })`，并同步持久表单和 hold。
 
