@@ -195,6 +195,10 @@ pi 的 `queue_update` 事件只给出排队消息的文本（依据：`docs/json
 | 工具无进展 | `task:<taskId>:stall:<toolCallId>:<n>` |
 | 额度重置时间已到 | `task:<taskId>:<generation>:quota:<quotaResumeAt>` |
 | 额度暂停但无重置时间 | `task:<taskId>:<generation>:quota_unknown:<runId>` |
+| 主会话额度重置时间已到 | `main_quota:<pauseId>:ready` |
+| 主会话额度暂停但无重置时间 | `main_quota:<pauseId>:unknown` |
+| 主会话定时项到期 | `schedule:<scheduleId>:<revision>` |
+| 主会话立即续跑（pi-pane 发起） | `continue:<requestId>` |
 | 新提问 | `request:<requestId>:opened` |
 | 提问被答复（发给提问者） | `request:<requestId>:answered` |
 
@@ -399,6 +403,114 @@ type AgoraRequestParams =
 
 - `mainCompaction.enabled` 和 `mainCompaction.thresholdTokens` 的默认值待定；阈值按固定 token 数还是按模型上下文窗口的比例设置，也待定。
 - `session_compact`、`session_compact_failed`、`ctx.compact()`、`ctx.getContextUsage()`、`ctx.isIdle()` 和 `ctx.hasPendingMessages()` 是新增的 pi 依赖，实现时只放在 Harness 适配层，并登记到 [harness-portability.md](harness-portability.md)。上文依赖的 pi 行为（压缩前中止当前运行、settled 处理后执行推迟的操作、扩展消息不受压缩状态拦截）同样登记，换用其他 Harness 时逐项核对。
+
+## 主会话的额度暂停、定时发送与续跑
+
+主会话因模型额度用完而中断后，用户通常要等额度重置再继续。本节规定 agora 扩展和 daemon 为主会话提供的三项支持：
+
+- **额度暂停**：识别并记录主会话因额度中断，到重置时间后提示用户或自动续跑。
+- **定时发送**：用户写好消息，到指定时间（可以是“额度重置后”）发进主会话。
+- **续跑**：不加入新消息，让被中断的回合从中断处继续；可以立即执行，也可以定时执行。
+
+本节属于切片 1 之后的设计，尚未实现；标为“待定”的细节在实现前确定。pi-pane 本身不实现定时功能，pane 中的显示和操作由 agora pane 插件通过 pi-pane 现有的插件接口提供，见 [integration.md](integration.md#主会话的定时项与续跑)。下文的 pi 依据均指 pi 1.5.2。
+
+### 主会话的额度暂停
+
+- **识别**：扩展在主会话 `agent_settled` 时检查本次运行的最后一条助手消息。`stopReason` 为 `error`，并按 [architecture.md](architecture.md#用量与额度事件) 的规则识别为额度用完时，记为额度暂停。pi 的自动重试（`retry` 设置）结束后才发出 `agent_settled`，所以重试成功的运行不会进入暂停。主会话和下级任务使用同一份识别和重置时间解析规则：实现时把解析从 daemon 的 `harness/pi/events.ts` 移到共享包 `packages/harness-pi`，由扩展和 daemon 共用。
+- **记录**：扩展把识别结果报告给 daemon（`POST /v1/main/quota-pauses`，见 [integration.md](integration.md#端点)）。daemon 为该 principal 记录一条主会话额度暂停（`pauseId`），包括会话 id、会话文件、`quotaResumeAt`（未识别时为 null）、出错助手消息的 entryId 和当时分支末端的 entryId。主会话进程不停止，用户仍可随时发消息；之后任一回合正常结束时，扩展报告结束，暂停记录关闭。
+- **到重置时间**：daemon 为有 `quotaResumeAt` 的暂停设置定时器，启动时从数据库恢复。到时向所属 principal 的 outbox 写入 `main_quota:<pauseId>:ready` 通知，扩展按[投递](#投递)的规则收取，然后：
+  - `quotaRecovery: "notify"`（默认）：用扩展 UI 通知（`ctx.ui.notify`）提示额度已重置，可以续跑；终端和 pi-pane 都显示这条通知。通知不写入会话，也不触发模型，所以扩展在显示后以 `persisted: false` 确认，与不持久化主会话的确认方式相同。
+  - `quotaRecovery: "auto"`：按[续跑](#续跑)的到时检查自动续跑一次，`agora:continue` 的 `dedupeKey` 取这条通知的 `dedupeKey`，按会话文件确认；检查不通过时改为发通知。自动续跑后的回合再次因额度中断时，产生新的暂停记录，同一主会话连续自动续跑最多 3 次（默认值待定），超过后只发通知，避免重置时间解析有误时反复请求。
+  - 重置时间未知时不设定时器、不推测时间，暂停时立即发一条说明重置时间未知的通知，由用户手动续跑或定时。
+- `quotaRecovery` 同时适用于下级任务和主会话，配置见 [architecture.md](architecture.md#用量与额度事件)。
+
+### 定时项
+
+定时发送和定时续跑统一保存为主会话的定时项，存在 daemon 数据库中，跨 daemon 重启保留，定时器在 daemon 启动时恢复。
+
+| 字段 | 含义 |
+| --- | --- |
+| `scheduleId`、`revision` | 定时项 id；修改时 `revision` 加 1 |
+| `principalId`、`sessionId`、`sessionFile` | 所属主会话 |
+| `kind` | `send`（定时发送）或 `continue`（定时续跑） |
+| `text` | `send` 的正文，只支持纯文本 |
+| `fireAt`、`fireBasis` | 触发时间；`fireBasis` 为 `time`（用户指定的时间）或 `quotaReset`（额度重置后） |
+| `anchorEntryId` | `continue` 创建时的分支末端 entryId，用于到时检查 |
+| `state` | 见下文 |
+| `origin`、`instanceKeyHash` | 定时发送的来源：`command`（扩展命令，附实例密钥的哈希）或 `signed`（设备签名），见[定时发送](#定时发送) |
+| `createdBy`、`confirmedBy` | 发起的 principal 和确认方式，与审计记录一致 |
+
+- **触发时间**：`fireBasis: "quotaReset"` 取该会话当前额度暂停的 `quotaResumeAt` 加 60 秒余量（默认值待定）。会话没有额度暂停或重置时间未知时，不能选择这一项。
+- **适用范围**：只能为当前持有控制租约、正在运行的主会话创建定时项。定时项不拉起主会话：主会话由终端或 pi-pane 托管，daemon 不能启动它。
+- **状态**：
+
+  | `state` | 含义 |
+  | --- | --- |
+  | `scheduled` | 等待触发，可以修改和取消 |
+  | `due` | 已到时间，outbox 中已有对应通知，不能再撤回 |
+  | `delivered` | 扩展已在会话文件中确认对应消息 |
+  | `skipped` | 到时条件不满足，未执行，原因见记录 |
+  | `missed` | 到期后超过 `missedAfterMs` 仍未执行 |
+  | `cancelled` | 触发前被取消 |
+
+- **触发**：到 `fireAt` 时，daemon 在同一事务中把定时项改为 `due`，并向所属 principal 的 outbox 写入通知，`dedupe_key` 为 `schedule:<scheduleId>:<revision>`。扩展按[投递](#投递)的规则收取、注入和确认，重复的通知按 `dedupeKey` 去重。
+- **错过**：扩展注入前比较当前时间与 `fireAt`，超过 `mainSchedule.missedAfterMs`（默认 10 分钟，待定）时不注入，向 daemon 报告错过。daemon 在同一事务中把定时项改为 `missed`、结束对应的 outbox 通知，并把它作为持久事项放进用户的“待处理”，用户可以选择立即执行或放弃。主会话关闭期间到期的定时项通常都按错过处理，不会在用户重新打开会话时自动执行。
+- **修改和取消**：`scheduled` 时可以修改正文和时间、取消；进入 `due` 之后取消返回 `409`。
+
+### 定时发送
+
+- **入口**：终端中用扩展命令（名称待定）；pi-pane 中用 agora 插件的面板动作，见 [integration.md](integration.md#主会话的定时项与续跑)。不提供 Agent 可调用的工具。
+- **来源**：正文到时以用户的身份进入主会话，必须确认是用户本人写的。定时发送只有两个合法来源，规则见 [security.md](security.md#主会话定时项)：
+  - **扩展命令**：用户在终端或 pi-pane 的输入框里输入命令，由所属主会话里的 agora 扩展创建。扩展进程内保存一个随机的实例密钥（放在 `globalThis`，扩展 reload 和会话替换后仍可用，不写入磁盘），创建时把密钥的哈希交给 daemon 记在定时项上（`origin: "command"`）。Agent 读不到扩展进程的内存，无法伪造这类定时项。这条路径不需要设备签名，保护开启时只用终端也能使用。
+  - **pi-pane 插件**：经设备签名的用户级操作创建（`origin: "signed"`）。
+- **投递时的来源检查**：扩展注入 `origin: "command"` 的定时发送前，核对实例密钥的哈希。不一致时（例如 pi 进程已重启，或定时项由读到磁盘凭证的其他进程创建）不注入，按错过处理，放进用户的“待处理”，由用户决定。`origin: "signed"` 的定时发送不绑定实例。
+- **修改**：修改正文或时间的来源规则与创建相同；取消不以用户身份发言，是主 Agent 级操作。错过的定时发送在“待处理”中改为立即发送是用户级操作。
+- **注入**：
+
+  ```ts
+  pi.sendMessage(
+    { customType: "agora:scheduled", content: text, display: true,
+      details: { scheduleId, revision, dedupeKey, fireAt } },
+    { triggerTurn: true, deliverAs: "followUp" },
+  );
+  ```
+
+  会话空闲时立即开始新一轮；会话运行中时排在当前运行之后。正文原样交给模型，不加 agora 的标注行：它是经用户确认的发言，与“完成通知”中子代理事件的正文不同。斜杠命令和提示模板不展开。
+- 发送后的回合再次因额度中断时，按[主会话的额度暂停](#主会话的额度暂停)重新记录。正文已经在会话中，之后只需续跑，不重发正文。
+
+### 续跑
+
+- **含义**：不加入新的用户消息，让模型从被中断的位置继续。适用于回合因错误（包括额度用完）或用户停止而中断的情况。
+- **可续跑的条件**：会话空闲，且当前分支的最后一条消息是 `stopReason` 为 `error` 或 `aborted` 的助手消息、用户消息或工具结果。pi-ai 组装模型请求时跳过 `stopReason` 为 `error` 和 `aborted` 的助手消息（依据：pi-ai `dist/api/transform-messages.js`），所以模型看到的上下文停在最后一条用户消息或工具结果上；被中止回合里已生成的半截内容不会交给模型，这一步会重新生成。最后一条是正常结束的助手消息时，没有可以继续的内容，续跑不可用，界面说明原因，用户需要发新消息。不使用 `agent_before_settle` 提供的 `canContinue`：它按 pi 自己的消息投影判断，是否同样跳过出错的助手消息需要实测。
+- **执行**：扩展写入一条隐藏消息启动回合，并在 `context` 事件中把它从发给模型的消息里删除（依据：`ContextEvent`、`ContextEventResult`）：
+
+  ```ts
+  pi.sendMessage(
+    { customType: "agora:continue", content: "Continue.", display: false,
+      details: { dedupeKey, scheduleId } },
+    { triggerTurn: true },
+  );
+  // context 事件：删除 customType 为 agora:continue 的消息后返回
+  ```
+
+  模型收到的上下文与中断前相同。会话文件中保留这条隐藏消息，作为续跑记录和投递确认的依据。没有加载 agora 扩展的 pi 打开这个会话时，这条消息会作为一句用户角色文本交给模型，所以正文固定为无害的 `Continue.`。
+- **立即续跑**：终端中用扩展命令（名称待定）在主会话进程内直接执行，不经过 daemon；这条命令由用户在终端输入，效果与用户手动发一句“继续”相同。pi-pane 中由插件的面板动作发起，请求带界面上看到的分支末端 entryId；daemon 写入 `continue:<requestId>` 通知后由扩展执行，执行前同样做下面的到时检查，末端取请求中的 entryId。
+- **定时续跑**：创建 `kind: "continue"` 的定时项，记录 `anchorEntryId`。续跑不向会话加入新内容，效果与 `quotaRecovery: "auto"` 的自动续跑相同，因此创建和取消都是主 Agent 级操作。
+- **到时检查**：经 daemon 执行的续跑（pi-pane 发起的立即续跑、定时续跑和自动续跑）执行前，扩展确认会话空闲、满足可续跑的条件，且分支末端仍是 `anchorEntryId`（自动续跑取暂停记录中的末端 entryId）。末端已变化说明用户已经发过消息或已经续跑过，此时不执行：定时项记为 `skipped`，其他续跑记录原因，并用扩展 UI 通知告诉用户。会话正在运行时同样不执行。通知在检查后确认：执行了的按会话文件中的 `agora:continue` 确认，未执行的以 `persisted: false` 确认。
+
+### pi-pane 中的保活
+
+主会话有 `scheduled` 的定时项时，agora pane 插件对它调用 `ctx.mainSessions.hold(ref, reason)`，`reason` 写明下一个定时项的类型和时间，到期处理后释放。hold 只阻止空闲回收，不拉起未运行的会话；pi-pane 重启后主会话没有运行，期间到期的定时项按“错过”处理。
+
+### 配置与可迁移性
+
+- `mainSchedule.missedAfterMs`、“额度重置后”的余量和自动续跑的次数上限，默认值待定。
+- 新增的 pi 依赖：`context` 事件删改发给模型的消息；`sendMessage` 的 `display: false` 与 `triggerTurn`；pi-ai 跳过出错和中止的助手消息；`agent_settled` 时读取助手消息的 `stopReason` 和错误；`ctx.ui.notify`；扩展命令注册。实现时只放在 Harness 适配层，并登记到 [harness-portability.md](harness-portability.md)。
+- 实现前先做验证实验：
+  1. 额度错误中断后和用户停止后续跑：模型请求中的消息与中断前一致，请求里没有 `agora:continue`；
+  2. 其他扩展的 `context` 处理在 agora 之前或之后运行时，`agora:continue` 都被删除；
+  3. `agent_before_settle` 的 `canContinue` 在额度错误后的取值，能否代替扩展自己的判断；
+  4. pi-pane 托管的主会话中，扩展 UI 通知的显示，以及 `display: false` 消息默认不显示。
 
 ## 用户接管
 
