@@ -369,13 +369,14 @@ type AgoraRequestParams =
 
 - 压缩期间 pi 只拒绝 `prompt()` 提交的提示，不拦截扩展消息：会话空闲时以 `triggerTurn: true` 调用 `sendMessage`，会直接开始新一轮，与正在进行的总结同时运行（依据：`prompt()` 的压缩检查只在 `prompt()` 中，`sendCustomMessage` 调用的 `_startRun` 不检查压缩状态）。因此由 agora 扩展保证压缩期间不注入：从开始执行压缩到收到成功或失败的结果，扩展停止 inbox 长轮询，也不注入任何通知。
 - 压缩开始时仍在进行的长轮询如果返回了通知，扩展把这些通知留在内存中，压缩结束后先注入它们，再恢复收取。这些通知已经进入可见性超时，压缩结束后重新收取取不到，所以不能只靠重新收取。进程在此期间退出时，这些通知未确认，按可见性超时重投（见[投递](#投递)）。
+- 压缩期间以及压缩成功后检查点写入会话之前，不注入定时发送和续跑（见[主会话的额度暂停、定时发送与续跑](#主会话的额度暂停定时发送与续跑)）。
 
 ### 压缩后续跑
 
 - 压缩成功后（扩展收到 `session_compact` 事件，依据：`SessionCompactEvent`），扩展请 daemon 生成一条检查点通知写入 outbox，`dedupeKey` 取压缩条目的 entryId。检查点按 daemon 的当前状态生成，不依赖总结是否准确：内容为上面的协作状态，以及一条提示，要求主 Agent 重新读取协作规则（如有）并继续压缩前的工作。pi 在发出 `session_compact` 时尚未解除压缩状态，所以 `session_compact` 的处理中只请求生成检查点，不注入；主动压缩的检查点在 `onComplete` 之后注入。
 - 检查点的投递方式由压缩来源决定：
   - **主动压缩和阈值提醒引起的压缩**：主 Agent 预期压缩后继续工作。检查点以 `triggerTurn: true, deliverAs: "followUp"` 投递，会话空闲时不需要用户发消息就开始新一轮；压缩结束后已有新的运行时，检查点排在该运行之后。
-  - **pi 的自动压缩**：发生在两个位置。一是下一次模型请求之前，压缩后这次请求照常发出，检查点经 daemon 生成，赶不上这次请求。二是运行结束时，压缩后只有队列中还有消息，运行才继续（依据：`_runAutoCompaction` 返回 `hasQueuedMessages()`），通常会话随即空闲。两种情况下检查点都以 `triggerTurn: false` 投递：会话运行中时，检查点在当前轮结束后写入会话，本次运行的后续请求会带上它，运行不会因此多一轮；会话空闲时，检查点直接写入会话，随下一轮被模型读到，不另起回合。
+  - **pi 的自动压缩**：发生在两个位置。一是下一次模型请求之前，压缩后这次请求照常发出，检查点经 daemon 生成，在这次请求发出之后才投递。二是运行结束时，压缩后只有队列中还有消息，运行才继续（依据：`_runAutoCompaction` 返回 `hasQueuedMessages()`），通常会话随即空闲。两种情况下检查点都以 `triggerTurn: false` 投递：会话运行中时，检查点在当前轮结束后写入会话，本次运行的后续请求会带上它，运行不会因此多一轮；会话空闲时，检查点直接写入会话，随下一轮被模型读到，不另起回合。
 - 压缩失败时不自动重试：
   - `session_compact_failed` 的 `aborted` 为真时，压缩被中止，包括用户在压缩期间按停止（依据：`abort()` 会调用 `abortCompaction()`）。扩展只记录，不启动回合；中止的是主动压缩时，以 `deliverAs: "nextTurn"` 告诉主 Agent 压缩已取消。
   - 主动压缩因 `Already compacted` 或 `Nothing to compact` 失败时（依据：`compact()` 的准备步骤），按无需压缩处理：以 `triggerTurn: true` 注入一条“无需压缩”的说明，主 Agent 照常继续工作。
@@ -398,7 +399,99 @@ type AgoraRequestParams =
 ### 配置与可迁移性
 
 - `mainCompaction.enabled` 和 `mainCompaction.thresholdTokens` 的默认值待定；阈值按固定 token 数还是按模型上下文窗口的比例设置，也待定。
-- `session_compact`、`session_compact_failed`、`ctx.compact()`、`ctx.getContextUsage()`、`ctx.isIdle()` 和 `ctx.hasPendingMessages()` 是新增的 pi 依赖，实现时只放在 Harness 适配层，并登记到 [harness-portability.md](harness-portability.md)。上文依赖的 pi 行为（压缩前中止当前运行、settled 处理后执行推迟的操作、扩展消息不受压缩状态拦截）同样登记，换用其他 Harness 时逐项核对。
+- `session_compact`、`session_compact_failed`、`ctx.compact()`、`ctx.getContextUsage()`、`ctx.isIdle()` 和 `ctx.hasPendingMessages()` 这些 pi 接口的调用限于 Harness 适配层，并登记到 [harness-portability.md](harness-portability.md)。上文依赖的 pi 行为（压缩前中止当前运行、settled 处理后执行推迟的操作、扩展消息不受压缩状态拦截）同样登记，换用其他 Harness 时逐项核对。
+
+## 主会话的额度暂停、定时发送与续跑
+
+主会话因模型额度用完而中断后，用户通常要等额度重置再继续。本节规定 agora 为主会话提供的三项支持：
+
+- **额度暂停**：识别并记录主会话因额度中断，到重置时间后提示用户或自动续跑。
+- **定时发送**：用户写好消息，到指定时间（可以是“额度重置后”）发送到主会话。
+- **续跑**：不加入新的用户消息，让被中断的回合继续；可以立即执行，也可以定时执行。
+
+本节属于切片 1 之后的设计，尚未实现，只规定方向和关键约束；投递、领取、恢复和时序的细节在实现时确定，见[实现前待定](#实现前待定)。下文的 pi 依据均指 pi 1.5.2。
+
+### 范围
+
+- 功能由 agora 扩展和 daemon 实现。pi-pane 不实现定时功能，pane 中的显示和操作由 agora pane 插件通过 pi-pane 现有的插件接口提供，见 [integration.md](integration.md#主会话的定时项与续跑)。
+- 只做一次性的定时项，不做周期任务。
+- 只适用于会话文件已经写出的主会话。以 `--no-session` 运行的主会话和尚未写出会话文件的新会话无法在会话文件中确认投递，不支持。
+- daemon 不能拉起主会话。定时项到期时主会话不在线，记为错过，进入用户的“待处理”，由用户选择立即执行或放弃；重新打开会话时不自动补发。
+
+### 额度暂停
+
+- **识别**：主会话一次运行结束后，扩展检查当前分支上最后一条助手消息，按 [architecture.md](architecture.md#用量与额度事件) 的规则识别为额度用完时，向 daemon 登记暂停，记录重置时间（未识别时为空）。识别规则与下级任务共用，放在 `packages/harness-pi`。pi 自动重试成功的运行不算暂停；用户停止运行时不登记。
+- **结束**：主会话进程不因暂停而停止，用户随时可以发消息。之后出现新的助手消息、用户停止运行或切到其他分支时，暂停结束。
+- **到重置时间**：`quotaRecovery: "notify"`（默认）时，扩展用扩展 UI 通知（`ctx.ui.notify`）提示可以续跑；`"auto"` 时自动续跑一次。连续的自动续跑有次数上限，防止重置时间解析有误时反复请求；用户发消息、手动续跑、定时续跑或定时发送后重新计数。重置时间未知时不推测，只提示。
+- 扩展 UI 通知不写入会话，RPC 模式也没有显示回执，没有界面在显示时提示会丢失。持续的状态以 pane 面板和 CLI 列表为准。
+- `quotaRecovery` 同时适用于下级任务和主会话，配置见 [architecture.md](architecture.md#用量与额度事件)。
+
+### 定时项
+
+- 定时发送和定时续跑统一保存为定时项，存在 daemon 数据库中，跨 daemon 重启保留。触发时间可以是指定的时间，也可以是“额度重置后”，即创建时当前暂停的重置时间加一段余量。
+- 到期后经 outbox 投递给主会话里的扩展，扩展在会话空闲时注入。投递沿用至少一次的规则（见[投递](#投递)），扩展按定时项 id 在会话文件中去重，同一定时项在会话中最多写入一条消息。这只保证消息不重复，不保证消息写入后模型请求已经发出；请求没有发出时，可以续跑。
+- 到期后超过一段宽限时间仍未执行的，记为错过，进入“待处理”。
+- 只有尚未到期的定时项可以修改和取消。
+
+### 定时发送
+
+- **入口**：终端中用扩展命令（名称待定）；pi-pane 中用 agora 插件的面板动作。不提供 Agent 可调用的工具。
+- **来源**：正文到时以用户的身份进入主会话，所以只接受两种来源，访问控制见 [security.md](security.md#主会话定时项)：
+  - **扩展命令**：用户在终端或 pi-pane 的输入框里输入命令，由所属主会话里的 agora 扩展创建，不需要设备签名，保护开启时只用终端也能使用。扩展进程内保存一个随机密钥，不写入磁盘，对定时项的 id、revision、正文和触发时间计算 HMAC 标签交给 daemon，投递前重新计算核对。仅凭磁盘凭证或数据库内容无法伪造标签。pi 进程重启后密钥变化，尚未投递的这类定时项进入“待处理”，由用户决定。
+  - **pi-pane 插件**：经设备签名的用户级操作创建。
+- **注入**：
+
+  ```ts
+  pi.sendMessage(
+    { customType: "agora:scheduled", content: text, display: true,
+      details: { scheduleId, revision, dedupeKey, fireAt } },
+    { triggerTurn: true },
+  );
+  ```
+
+  只在会话空闲时注入，不进入 pi 的 followUp 队列，所以用户停止运行时 `clear_queue` 不会清出它。正文原样交给模型，不加 agora 的标注行，斜杠命令和提示模板不展开。只支持纯文本。
+
+### 续跑
+
+- **可续跑的条件**：会话空闲，且当前分支上最后一条进入模型上下文的消息（`agora:continue` 标记除外）是 `stopReason` 为 `error` 或 `aborted` 的助手消息、用户消息、工具结果或进入上下文的自定义消息。pi-ai 的常规消息转换跳过 `stopReason` 为 `error` 和 `aborted` 的助手消息（依据：pi-ai `dist/api/transform-messages.js`），模型看到的上下文停在之前的用户消息或工具结果上，被中断的回合重新生成。最后一条是正常结束的助手消息时续跑不可用，用户需要发新消息。`agent_before_settle` 的 `canContinue` 不经过这项过滤，不能用来判断。
+- **做法**：扩展写入一条隐藏的标记消息启动回合，并在 `context` 事件中把它从发给模型的消息里删除（依据：`ContextEvent`、`ContextEventResult`）：
+
+  ```ts
+  pi.sendMessage(
+    { customType: "agora:continue", content: "Continue.", display: false,
+      details: { dedupeKey, scheduleId, auto } },
+    { triggerTurn: true },
+  );
+  ```
+
+  标记保留在会话文件中，作为续跑记录和投递确认的依据。没有加载 agora 扩展的 pi 打开这个会话时，标记会作为一句用户文本交给模型，所以正文固定为 `Continue.`。pi 的压缩和分支摘要不经过 `context` 事件，`Continue.` 会出现在总结的输入中。
+- **入口**：立即续跑在终端中用扩展命令（名称待定）发起，在 pi-pane 中由插件的面板动作经 daemon 发起；定时续跑创建定时项。
+- **执行前检查**：经 daemon 执行的续跑（pane 发起的立即续跑、定时续跑和自动续跑）记录发起时的会话位置。执行前仍满足可续跑的条件，且会话在这期间没有新的对话时才执行，否则不执行并提示用户。
+- **权限**：续跑不向会话加入新的用户发言，效果与用户发一句“继续”相同，因此是主 Agent 级操作。
+
+### pi-pane 中的显示与保活
+
+- 插件接口的 `mainSessions` 不提供主会话的快照。面板需要的状态（是否可续跑、额度暂停、定时项）由扩展上报给 daemon，插件从 daemon 读取。
+- 主会话有未处理的定时项或带重置时间的额度暂停时，插件对它持有 hold，避免空闲回收。hold 不拉起未运行的会话，pi-pane 重启期间到期的定时项记为错过。
+
+### 已知限制
+
+- 有几个时序窗口扩展观察不到：排在 agora 之前的 `input` 处理器异步等待、用户提示的预处理时间较长、其他扩展的 `agent_settled` 处理器跨事件循环等待。在这些窗口中注入时，用户的提示可能被 pi 拒绝而需要重新发送，或者多运行一轮。
+- 排在 agora 之前的 `context` 处理器（按消息条数截断、把自定义消息改为用户消息）可能使标记计入截断或无法被识别。
+- 用户在自动重试的等待期间取消重试（终端按 Esc、RPC `abort_retry`）时，pi 不通知扩展，agora 会照常登记暂停。处理办法在实现时确定。
+- 扩展命令的来源证明防不住同一 pi 进程中的其他扩展和借系统自动化输入的命令，见 [security.md](security.md#剩余风险)。
+
+### 实现前待定
+
+- 默认值：错过的宽限时间、“额度重置后”的余量、自动续跑的次数上限；扩展命令的名称。
+- 投递、领取、恢复、注入时机、会话状态上报和续跑计数的细节，以及设计审查提出的未解决问题，记在 [#23](https://github.com/PosvdM/pi-agora/issues/23)。
+- 本节依赖的 pi 接口和行为（`context` 事件、`sendMessage` 的 `display: false` 与 `triggerTurn`、pi-ai 对出错助手消息的过滤、`ctx.ui.notify`、扩展命令等）的调用限于 Harness 适配层，并登记到 [harness-portability.md](harness-portability.md)。
+- 实现前先做验证实验：
+  1. 额度错误中断后和用户停止后续跑，常规模型请求中没有 `agora:continue`；
+  2. 其他扩展的 `context` 处理器排在 agora 之前时的实际效果；
+  3. 用户提示预处理期间、其他扩展异步处理 `agent_settled` 期间注入时的实际顺序；
+  4. 自动重试等待期间取消重试时扩展能观察到什么；
+  5. pi-pane 托管的主会话中扩展 UI 通知的显示，以及 `display: false` 的消息默认不显示。
 
 ## 用户接管
 
