@@ -341,6 +341,44 @@ type AgoraRequestParams =
 
 召集人恢复后，补送的通知按产生顺序送达；已被用户处理的事项送达一条“已由用户处理”的说明，不再要求召集人决定。
 
+## 主会话的上下文压缩
+
+长任务中，主 Agent 分多个阶段派活和验收，用户可能不在场，只看最终交付。主会话的上下文随阶段增长，需要在合适的时机压缩，并且压缩后没有用户发消息也能继续工作。本节规定 agora 扩展在主会话中提供的支持，属于切片 1 之后的设计，尚未实现；标为“待定”的细节在实现前确定。下级任务的上下文超限处理见 [roadmap.md](roadmap.md#切片-1agora-任务核心) 的“1d 之后”。
+
+### 触发
+
+- **主 Agent 主动压缩**：主 Agent 调用压缩工具（名称待定，下文记作 `agora_compact`），参数 `focus` 写下一阶段要保留的方案、接口约定、未完成的事项，以及可以丢弃的过程。工具只登记一次待执行的压缩并立即返回，扩展在主会话 `agent_settled` 时执行。pi 在压缩期间拒绝提交新的提示（依据：`dist/core/agent-session.js` 的 prompt 检查），所以不在回合中途执行。
+- **阈值提醒**：扩展在主会话 `agent_settled` 时用 `ctx.getContextUsage()` 读取上下文大小（依据：`dist/core/extensions/types.d.ts` 的 `ContextUsage`）。超过 `mainCompaction.thresholdTokens` 且没有待执行的压缩时，注入一条提醒并启动回合，要求主 Agent 在派下一批任务前调用 `agora_compact`。同一次超限只提醒一次；`tokens` 为 `null`（刚压缩完、还没有新的模型请求）时不判断。
+- 阈值应低于 pi 自动压缩的阈值（`contextWindow - reserveTokens`），使主动压缩先于 pi 在回合中途发生、不带重点的自动压缩。
+- 压缩不要求下级全部结束。主会话 settled 时通常正在等待下级，此时压缩不影响下级运行。扩展在压缩期间暂停注入通知，压缩结束后立即收取一次；压缩期间注入失败的通知没有写入会话，不确认，按可见性超时重投（见[投递](#投递)）。
+
+### 执行
+
+- 扩展调用 `ctx.compact({ customInstructions, onComplete, onError })`（依据：pi `docs/extensions.md` 的 `ctx.compact()`）。`customInstructions` 由主 Agent 的 `focus` 和 daemon 返回的协作状态组成。协作状态包括：该 principal 召集的任务树，各任务的 taskId、generation、状态和 worktree 分支，未确认的通知，未答复的提问。
+- 压缩使用 pi 自带的总结流程和当前会话的模型，agora 不另选模型，也不自己生成总结。
+
+### 压缩后续跑
+
+- 压缩成功后（扩展收到 `session_compact` 事件，依据：`dist/core/extensions/types.d.ts` 的 `SessionCompactEvent`），扩展请 daemon 生成一条检查点通知写入 outbox，`dedupeKey` 取压缩条目的 entryId。检查点按 daemon 的当前状态生成，不依赖总结是否准确：内容为上面的协作状态，以及一条提示，要求主 Agent 重新读取协作规则（如有）并继续压缩前的工作。
+- 主动压缩和阈值提醒引起的压缩在主会话空闲时执行，检查点以 `triggerTurn: true` 投递，主会话不需要用户发消息就开始新一轮。
+- pi 在回合中途或提交用户提示前自动压缩（`reason` 为 `threshold` 或 `overflow`）时，回合会继续，检查点在下一次模型请求前送达，不另起回合。投递方式（`deliverAs` 取 `steer` 还是其他值）待定。
+- 检查点写入会话前进程退出时，检查点留在 outbox，恢复后重投。压缩完成前进程退出时，不生成检查点；会话恢复后由阈值提醒重新触发。
+- 压缩失败（`onError` 或 `session_compact_failed`）时不自动重试，注入一条失败说明并启动回合，由主 Agent 决定是否再次压缩。
+
+### pi 的自动压缩
+
+`session_before_compact` 的处理结果只能取消压缩或提供完整的总结（依据：`dist/core/extensions/types.d.ts` 的 `SessionBeforeCompactResult`），不能只补充总结指令。因此 agora 不拦截 pi 的自动压缩，只在压缩后投递检查点。
+
+### 无人值守时的记录
+
+- 下级转给用户的提问和需要用户确认的事项照常进入“待处理”，不阻塞其他任务。
+- 每次主会话压缩记录时间、触发方式（主动、阈值提醒、pi 自动）、压缩前的 token 数（`tokensBefore`）、总结请求的用量（`usage`，pi 提供时）和检查点的投递结果，供用户事后查看。压缩条目本身在 pi 会话文件中，随全量存档保存。CLI 和 pane 中的展示位置待定。
+
+### 配置与可迁移性
+
+- `mainCompaction.enabled` 和 `mainCompaction.thresholdTokens` 的默认值待定；阈值按固定 token 数还是按模型上下文窗口的比例设置，也待定。
+- `session_compact`、`ctx.compact()` 和 `ctx.getContextUsage()` 是新增的 pi 依赖，实现时只放在 Harness 适配层，并登记到 [harness-portability.md](harness-portability.md)。
+
 ## 用户接管
 
 `POST /v1/tasks/:id/takeover` 或 `agora task takeover <任务 ID>` 显式将目标任务的召集人改为 `user`。用户可接管召集人仍可达的任务；保护开启时须设备签名，保护关闭时 CLI 可通过可信的 `none` 通路执行。普通 host 即使持有签名，也不能跳过接管直接恢复 Agent 的任务：召集人可达时返回 `convener_reachable`，不可达时返回 `takeover_required`。

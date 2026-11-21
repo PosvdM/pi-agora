@@ -49,7 +49,7 @@ pi-agora 和 pi-pane 的 MVP 按同样的三个切片推进，两仓的 roadmap 
 | 1b：任务补全 | 全部任务动作与状态机、generation、steer 追踪、worktree、三档与路径、agora_git、提问及逐级转交、pending / answer、空闲回收、看门狗；多层委派、子树限制与停止、等待下级；请求传输重试与 Windows 停止重试；D15 子代理标记、skill 白名单、逐请求用量及任务树汇总、额度暂停和恢复 |
 | 1c：安全 | 子 / 主 Agent 与用户级划分、预算封顶与任务树 token 软预算、已实现资源的统一访问控制、待确认、设备登记与验签、everPaired、离线命令、安全状态检查和审计；Git 布局核验后的执行根固定（#9）。可选扩展 / MCP 白名单及 saved 项目信任配置隔离推迟至 [#10](https://github.com/PosvdM/pi-agora/issues/10)：pi CLI 无独立 auth/models 路径，不能安全复制 OAuth 凭证；继续保留 `-ne --no-mcp --no-approve` 的 fail-closed 启动 |
 | 1d：存档与收尾 | 全量流片段和退出诊断、只读解析器、archive adapter、快照 / 历史 / SSE、log / tail / verify-archive / ls --tree、在线设备签名与显式离线 archive delete；创建 archive 与共享 harness-pi 包；CLI 展示会话用量和上下文。在线删除强制签名，即使保护关闭也不以主机凭证绕过；无任务关联时保守要求离线维护 |
-| 1d 之后 | 上下文超过阈值时通知上级；返工时可选新会话附摘要或先压缩再返工 |
+| 1d 之后 | 下级上下文超过阈值时通知上级；返工时可选新会话附摘要或先压缩再返工；主会话的上下文压缩与压缩后续跑，见 [tasks.md](tasks.md#主会话的上下文压缩) |
 
 下面列出切片 1 的完整目标，不表示这些内容均已实现。
 
@@ -124,6 +124,14 @@ pi-pane 的估算见其 `docs/roadmap.md`（18–26 人日，P0 后重估）；�
 1d 的归档故障由 `archive-e2e-1d.test.mjs` 验证真实 pi 强杀时保留 thinking / text / toolCall、退出诊断和原文件；`session-views-1d.test.mjs` 覆盖停止未确认时的迟到流、闭片段双证据、快照切点、游标重同步、SSE 背压与排空、历史全部 run 的退出确认和旧 pending 持久化屏障。`archive-verification-1d.test.mjs` 验证重复校验不能覆盖可信前缀基线，在线和离线使用同一证据；`archive-security-1d.test.mjs` 覆盖强制签名在线删除、会话 ACL 与 verify 分页，`cli-archive-1d.test.mjs` 覆盖 CLI 确认、tail 续期及显式离线删除的锁与路径拒绝。上述条目列出验收入口，不表示本轮全量或三平台测试已通过。
 
 1b 的多层委派另须通过：父任务等待下级不提前完成；回收父进程后重拉并投递通知；子树各层 StopReport；层数、下级数、档位和限制拒绝；单名额多层调度不死锁；提问逐级上交与原提问者收到答案；禁止管理别人的任务，主代理不能跳级返工但能停止。自动化入口为 `task-1b.test.mjs` 与 `tree-e2e.test.mjs`。
+
+1d 之后的主会话上下文压缩：
+
+- 压缩期间下级完成：通知不丢失、不重复唤醒，压缩结束后送达；
+- 没有用户发消息时，主动压缩完成后主会话自动开始新一轮，并收到检查点；
+- pi 在回合中途自动压缩后，检查点在下一次模型请求前送达，不另起回合；
+- 检查点写入会话前进程退出，恢复后重投，会话中只有一条；
+- 压缩失败时主会话收到失败说明，agora 不自动重试。
 
 切片 2：
 
