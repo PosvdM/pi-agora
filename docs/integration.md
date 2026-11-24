@@ -146,12 +146,14 @@ HTTP 签名入口的同步动作（包括 task takeover、limits、提问答复�
 
 会话的两个修订号用途不同：
 
-- `revision`：会话行修订号。会话状态、召集人或存档状态变化时递增，不受其他会话影响。列表、详情、快照响应和 `agora_status` 事件返回的 `revision` 都是它，存档删除的 `expectedRevision` 也与它比较；客户端回填刚读到的值即可。
+- `revision`：会话行修订号，不受其他会话影响。以下变化使它递增：任务状态迁移写入会话状态（包括预算暂停）、用户接管改写任务当前会话的召集人、存档状态或校验结果更新。返工开始新一代时会话状态改回 `running`，以及停止中标记、pi 会话 ID、结束时间的变化，都不递增；因此它不能用来判断会话状态是否变过，只用于存档删除的版本核对。列表、详情、快照响应和 `agora_status` 事件返回的 `revision` 都是它，存档删除的 `expectedRevision` 也与它比较；客户端回填刚读到的值即可。
 - `treeRevision`：列表和详情返回的树修订号，取该会话及其任务最近一次变更的 `seq` 与最近 `tree/all` 结构标记 `seq` 的较大值，与变更流同一口径。pane 插件用它填 `TreeNode.revision`。它会随其他任务的结构迁移变化，不能用作删除等条件操作的版本。
+
+`packages/protocol` 的 `SessionSummary`（列表项和详情）声明这两个字段，`SessionSnapshot` 声明 `revision`。daemon 协议版本仍为 1，`treeRevision` 不另行协商：pane 插件读到缺少 `treeRevision` 的列表项或详情时，判定对方是旧版 daemon，树快照、子节点分页和树订阅都报错，提示运行 `agora shutdown` 后重新启动后台，不用会话行 `revision` 顶替。
 
 列表、详情、快照、历史、事件流、诊断及完整性校验统一使用会话 ACL：host 全读；主 Agent 只读自己的会话及自己召集的任务树，拒绝跨越接管边界；协作子代理没有全量会话视图权限。异步读取返回前复查 ACL。SSE 每次写出事件前同步复查身份和权限，用户接管等权限变化提交后产生的事件不会发给已失去权限的连接，连接随即关闭；空闲连接每秒复查一次。
 
-`POST /v1/archive/verify` 接受 `{ sessionId? }`。指定 ID 时返回单会话校验结果；省略时按当前身份可见范围分页，查询参数 `limit` 默认 200、上限 200，`cursor` 为不透明水位，响应 `{ items, nextCursor }`，末页 `nextCursor` 为 `null`。CLI 无 ID 时自动跟页并拒绝重复游标。在线校验更新元数据并通知异常；离线校验只读。`GET /v1/status` 返回 `archiveBytes`，是统计时刻 `sessions` 目录下普通文件的字节数；统计期间被重命名或删除的文件不计入，不会让状态查询失败。
+`POST /v1/archive/verify` 接受 `{ sessionId? }`。指定 ID 时返回单会话校验结果；省略时按当前身份可见范围分页，查询参数 `limit` 默认 200、上限 200，`cursor` 为不透明水位，响应 `{ items, nextCursor }`，末页 `nextCursor` 为 `null`。CLI 无 ID 时自动跟页并拒绝重复游标。在线校验更新元数据并通知异常；离线校验只读。`GET /v1/status` 返回 `archiveBytes`，是统计时刻 `sessions` 目录下普通文件的字节数；统计期间被重命名或删除的文件和目录不计入，不影响同一目录中其他文件的统计，也不会让状态查询失败。
 
 `POST /v1/sessions/:id/archive/delete` 只接受 `{ expectedRevision? }`，取值为列表、详情或快照返回的会话 `revision`，省略时使用当前会话 revision。挑战动作是 `agora.archive.delete`，目标为会话 ID，签名参数仅含 `expectedRevision`；即使 `userConfirmation = off` 也强制设备签名。签名前版本冲突返回 `409 conflict`，执行时再次核验。验签先提交 `executing` 与 nonce，再在目标任务控制队列中排空归档并设置删除屏障；执行前复查 ACL、终态、全部 run 的退出 / cleanup、写锁释放和路径证据。无任务关联时返回 `409 archive_offline_required`，要求显式离线维护。删除成功保留元数据并设 `archiveState: "missing"`；规则见 [archive.md](archive.md#保留策略)。
 

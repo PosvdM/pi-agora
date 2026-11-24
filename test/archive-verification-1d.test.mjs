@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, writeFile, appendFile, readFile, rm, symlink } from 'no
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { openStore } from '../packages/daemon/dist/store.js';
 import { archiveSchemaV6 } from '../packages/daemon/dist/archive-schema.js';
 import { ArchiveVerifier, archiveStorageBytes } from '../packages/daemon/dist/archive-verification.js';
@@ -104,4 +105,28 @@ test('校验拒绝数据目录外路径，存档占用不跟随目录链接', as
   await writeFile(f.file, f.content);
   await symlink(outside, path.join(f.home, 'sessions', 'external'), process.platform === 'win32' ? 'junction' : 'dir');
   assert.equal(await archiveStorageBytes(f.home), Buffer.byteLength(f.content));
+});
+
+test('存档占用统计时一个条目消失不影响同目录其他文件', async t => {
+  const home = await mkdtemp(path.join(tmpdir(), 'agora-bytes-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const directory = path.join(home, 'sessions', 'as_vanish');
+  await mkdir(directory, { recursive: true });
+  await writeFile(path.join(directory, 'kept.jsonl'), '12345');
+  await writeFile(path.join(directory, 'vanish.tmp'), 'abc');
+  const require = createRequire(import.meta.url), fsp = require('node:fs/promises');
+  const { readdir } = fsp;
+  // 模拟不返回目录项类型的文件系统：枚举后 vanish.tmp 被重命名走，withFileTypes 的逐项补查随之失败。
+  fsp.readdir = async function (target, options, ...rest) {
+    if (path.resolve(String(target)) !== directory) return readdir.call(this, target, options, ...rest);
+    const names = await readdir.call(this, target);
+    await rm(path.join(directory, 'vanish.tmp'));
+    if (options?.withFileTypes) throw Object.assign(new Error(`ENOENT: no such file or directory, lstat '${path.join(directory, 'vanish.tmp')}'`), { code: 'ENOENT' });
+    return names;
+  };
+  syncBuiltinESMExports();
+  let bytes;
+  try { bytes = await archiveStorageBytes(home); }
+  finally { fsp.readdir = readdir; syncBuiltinESMExports(); }
+  assert.equal(bytes, 5);
 });

@@ -144,7 +144,7 @@ test('树串行读取任务会话，非树对象推进来源修订号', async t 
     if (path === '/v1/tasks/t1') return task.promise;
     if (path === '/v1/sessions/s1') return session.promise;
     if (path === '/v1/tasks/t2') return { status: 200, body: { agoraSessionId: 's2' } };
-    if (path === '/v1/sessions/s2') return { status: 200, body: item('s2', { revision: 999, treeRevision: 999 }) };
+    if (path === '/v1/sessions/s2') return { status: 200, body: item('s2', { revision: 999, treeRevision: 2 }) };
   });
   const emitted = [];
   h.views.tree.subscribe({ epoch: 'db', revision: 0 }, value => emitted.push(value));
@@ -158,13 +158,50 @@ test('树串行读取任务会话，非树对象推进来源修订号', async t 
   task.resolve({ status: 200, body: { agoraSessionId: 's1' } });
   await tick();
   assert.deepEqual(h.requests.map(req => req.path), ['/v1/tasks/t1', '/v1/sessions/s1']);
-  session.resolve({ status: 200, body: item() });
+  session.resolve({ status: 200, body: item('s1', { treeRevision: 1 }) });
   await tick();
   assert.deepEqual(emitted.map(value => [value.type, value.revision]), [['upsert', 1], ['upsert', 2], ['upsert', 3], ['remove', 4]]);
-  assert.equal(emitted[1].node.revision, 2);
+  assert.equal(emitted[1].node.revision, 2, '节点修订号取树修订号，不取会话行 revision');
   assert.equal(emitted[2].node.id, 'agora:root:user-tasks');
   assert.equal(emitted[3].id, 'agora:session:s2');
   assert.equal(h.panels[0].nodeId, 'agora:session:s1');
+});
+
+test('从两次变更之前恢复订阅时，节点只以与数据版本一致的修订号推送', async t => {
+  // 会话 s1 在 seq 1 和 seq 3 各变更一次，读到的详情已是 seq 3 的数据。
+  const latest = item('s1', { status: 'completed', revision: 5, treeRevision: 3 });
+  const h = setup(t, ({ path }) => path === '/v1/sessions/s1' ? { status: 200, body: latest } : undefined);
+  const emitted = [];
+  h.views.tree.subscribe({ epoch: 'db', revision: 0 }, value => emitted.push(value));
+  change(h.streams[0], 1); change(h.streams[0], 2, 'device', 'd1'); change(h.streams[0], 3);
+  for (let i = 0; i < 5; i++) await tick();
+  assert.deepEqual(emitted.map(value => [value.type, value.revision, value.node.id, value.node.revision]), [
+    ['upsert', 2, 'agora:root:user-tasks', 2],
+    ['upsert', 3, 'agora:session:s1', 3],
+  ]);
+  assert.equal(emitted[1].node.status, 'done');
+  assert.deepEqual(h.panels.map(panel => [panel.nodeId, panel.revision]), [['agora:session:s1', 3]]);
+  assert.equal(h.streams[0].closed, false);
+  assert.deepEqual(h.warnings, []);
+});
+
+test('旧 daemon 不返回 treeRevision 时树快照、分页和订阅明确报错，不输出缺修订号的节点', async t => {
+  const legacy = item('old');
+  delete legacy.treeRevision;
+  const h = setup(t, ({ path, url }) => {
+    if (url.pathname === '/v1/sessions') return { status: 200, body: page([legacy]) };
+    if (path === '/v1/sessions/old') return { status: 200, body: legacy };
+  });
+  const expected = /agora 后台版本过旧，会话缺少 treeRevision，请运行 agora shutdown 后重新启动后台/;
+  await assert.rejects(h.views.tree.snapshot({ openNodeIds: [], recentSince: '2026-01-01T00:00:00Z' }), expected);
+  await assert.rejects(h.views.tree.children('pane:session:main', { epoch: 'db', limit: 10 }), expected);
+  const emitted = [];
+  h.views.tree.subscribe({ epoch: 'db', revision: 0 }, value => emitted.push(value));
+  change(h.streams[0], 1, 'session', 'old');
+  for (let i = 0; i < 5; i++) await tick();
+  assert.deepEqual(emitted, [{ type: 'reset', epoch: 'db' }]);
+  assert.equal(h.streams[0].closed, true);
+  assert.match(String(h.warnings[0]?.[1]?.message), expected);
 });
 
 test('树重置和取消使排队读取失效，禁止迟到更新', async t => {
@@ -238,7 +275,7 @@ test('树映射积压同时限制总字节，未达到数量上限也会关闭',
 
 test('树映射完成后归还积压预算，持续变更仍按修订号串行映射', async t => {
   const h = setup(t, ({ path }) => path === '/v1/sessions/s1'
-    ? { status: 200, body: item() } : undefined);
+    ? { status: 200, body: item('s1', { treeRevision: 1 }) } : undefined);
   const emitted = [];
   h.views.tree.subscribe({ epoch: 'db', revision: 0 }, value => emitted.push(value));
   for (let batch = 0; batch < 3; batch++) {

@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { openArchive, projectPartials, projectUserView, verifySessionFile, resolveArchivePath } from "@pi-agora/archive";
-import type { InFlightState, SessionStreamEvent } from "@pi-agora/protocol";
+import type { InFlightState, SessionSnapshot, SessionStreamEvent } from "@pi-agora/protocol";
 import { parseSessionFile, sessionMessages } from "@pi-agora/harness-pi";
 import type { SessionEntry } from "@pi-agora/protocol";
 import type { DriverHandle } from "./driver.js";
@@ -474,7 +474,7 @@ export class SessionViews {
     const start = Math.max(0, end - limit);
     return { leafId: state.leafId, entries: clone(entries.slice(start, end)), historyBefore: start > 0 ? entries[start]!.id : null };
   }
-  async snapshot(sessionId: string, limit?: number) {
+  async snapshot(sessionId: string, limit?: number): Promise<SessionSnapshot> {
     const count = pageLimit(limit, 100);
     const state = await this.ensure(sessionId);
     // 所有可变字段和游标在同一同步段内复制，绝不跨 await 读取流状态。

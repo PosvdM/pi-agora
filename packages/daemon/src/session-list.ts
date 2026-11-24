@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { SessionKind, SessionSummary } from "@pi-agora/protocol";
 import type { Connection } from "./auth.js";
 import { AgoraError, invalid } from "./errors.js";
 import type { Store, SessionRow } from "./store.js";
@@ -66,7 +67,7 @@ function treeSql(): string {
   )`;
 }
 
-export function sessionView(session: ListedSession, store: Store) {
+export function sessionView(session: ListedSession, store: Store): SessionSummary {
   return { agoraSessionId: session.id, taskId: session.task_id, piSessionId: session.pi_session_id,
     profile: session.profile, model: session.model, thinking: session.thinking, cwd: session.cwd,
     status: session.effective_status ?? session.status, revision: session.revision, treeRevision: session.tree_revision, createdAt: session.created_at,
@@ -74,7 +75,7 @@ export function sessionView(session: ListedSession, store: Store) {
     ...(session.parent_id === "agora:root:user-tasks" ? { parent: { kind: "user" } }
       : session.task_parent_id && session.parent_session_id ? { parent: { kind: "task", taskId: session.task_parent_id, sessionId: session.parent_session_id } }
       : session.convener_pi_session_id ? { parent: { kind: "main", piSessionId: session.convener_pi_session_id } } : {}),
-    title: session.title, kind: session.kind,
+    title: session.title, kind: session.kind as SessionKind,
     ...store.sessionMetadata(session.id),
     hasChildren: session.child_count > 0, childCount: session.child_count,
     lastActivityAt: session.last_activity_at, statusDetail: session.status_detail, archiveState: session.archive_state,

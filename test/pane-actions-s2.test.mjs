@@ -80,7 +80,7 @@ async function composerInvocation(s, key = "composer", message = "补充检查�
         assert.equal(method, "GET");
         assert.ok(path.startsWith("/v1/sessions?"));
         return { status: 200, body: {
-          items: [{ ...s.state, kind: "task", parentId: "agora:root:user-tasks", parent: { kind: "user" }, title: "任务", hasChildren: false, createdAt: origin.receivedAt }],
+          items: [{ ...s.state, treeRevision: 1, kind: "task", parentId: "agora:root:user-tasks", parent: { kind: "user" }, title: "任务", hasChildren: false, createdAt: origin.receivedAt }],
           changesCursor: { epoch: "composer-test", seq: 1 }, nextCursor: null,
         } };
       },

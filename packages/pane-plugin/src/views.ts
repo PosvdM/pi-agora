@@ -33,7 +33,15 @@ function group(revision: number): TreeNode {
   return { id: USER_TASKS, source: "agora", kind: "group", parentId: null, title: "用户任务",
     status: "idle", availability: "online", hasChildren: true, sortKey: "", revision, capabilities: [] };
 }
-function node(item: SessionItem, revision = item.treeRevision): TreeNode {
+// 协议版本仍为 1；不返回 treeRevision 的是旧 daemon，不能拿会话行 revision 顶替节点修订号。
+function treeRevision(item: SessionItem): number {
+  const value: unknown = item.treeRevision;
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    throw new Error("agora 后台版本过旧，会话缺少 treeRevision，请运行 agora shutdown 后重新启动后台");
+  }
+  return value;
+}
+function node(item: SessionItem, revision = treeRevision(item)): TreeNode {
   if (item.agoraSessionId === USER_TASKS) return group(revision);
   const capabilities = ["open"];
   const historical = !!item.taskId && item.isCurrent === false;
@@ -274,6 +282,9 @@ export function createViews(runtime: PluginRuntime): {
               const item = await get<SessionItem>(`/v1/sessions/${encoded(id)}`, stream!.signal);
               if (stopped || !stream!.active()) return;
               remember([item]);
+              // 详情总是最新数据。数据版本晚于本条变更时，之后必有该节点的变更（或 tree/all 触发 reset），
+              // 由那一条以一致的修订号推送；本条不推送，避免给新数据标上旧修订号。
+              if (treeRevision(item) > revision) { seq = revision; return; }
               emit({ type: "upsert", revision, node: node(item, revision) });
             }
             runtime.context.panelChanged({ panelId: TASK_PANEL, revision, nodeId: nodeId(id) });

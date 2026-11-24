@@ -91,15 +91,15 @@ export async function archiveStorageBytes(home: string): Promise<number> {
     const directory = directories.pop()!;
     const own = await lstat(directory).catch(vanished);
     if (!own || own.isSymbolicLink() || !own.isDirectory()) continue;
-    const entries = await readdir(directory, { withFileTypes: true }).catch(vanished) ?? [];
-    for (const entry of entries) {
-      if (entry.isSymbolicLink()) continue;
-      const file = path.join(directory, entry.name);
-      if (entry.isDirectory()) directories.push(file);
-      else if (entry.isFile()) {
-        const info = await lstat(file).catch(vanished);
-        if (info?.isFile()) bytes += info.size;
-      }
+    // 只列名称、逐项 lstat：某些文件系统不返回目录项类型，withFileTypes 会在内部逐项补查，
+    // 一个条目消失就使整个目录枚举失败；逐项查询时只跳过消失的那一项。
+    const names = await readdir(directory).catch(vanished) ?? [];
+    for (const name of names) {
+      const file = path.join(directory, name);
+      const info = await lstat(file).catch(vanished);
+      if (!info || info.isSymbolicLink()) continue;
+      if (info.isDirectory()) directories.push(file);
+      else if (info.isFile()) bytes += info.size;
     }
   }
   return bytes;

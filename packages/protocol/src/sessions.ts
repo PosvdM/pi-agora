@@ -1,4 +1,4 @@
-import type { SessionParent, UsageSummary } from "./index.js";
+import type { Page, SessionKind, SessionParent, UsageSummary } from "./index.js";
 
 export interface SessionMetadata {
   parent?: SessionParent;
@@ -53,5 +53,43 @@ export interface SessionSnapshot {
   unfinishedPartials: UnfinishedPartial[];
   status: string;
   statusDetail: string | null;
+  /** 会话行修订号，与 SessionSummary.revision 相同，可直接用作存档删除的 expectedRevision。 */
+  revision: number;
   usage?: UsageSummary;
+}
+
+/** `GET /v1/sessions` 的列表项，也是 `GET /v1/sessions/:id` 的详情。 */
+export interface SessionSummary extends SessionMetadata {
+  agoraSessionId: string;
+  taskId: string;
+  piSessionId: string | null;
+  kind: SessionKind;
+  title: string;
+  status: string;
+  statusDetail: string | null;
+  /** 会话行修订号：存档删除的 expectedRevision、签名挑战和 agora_status 事件使用它。 */
+  revision: number;
+  /** 变更流口径的树修订号，pane 插件用它填 TreeNode.revision。 */
+  treeRevision: number;
+  parentId: string | null;
+  hasChildren: boolean;
+  childCount: number;
+  createdAt: string;
+  lastActivityAt: string;
+  endedAt?: string;
+  profile: string;
+  model: string;
+  thinking: string;
+  cwd: string;
+  archiveState: string;
+  archiveHash: string | null;
+  archiveBytes: number;
+  archiveVerifiedAt: string | null;
+  archiveError: string | null;
+  treeUsage?: UsageSummary;
+  originToolCall?: { sessionRef: { source: string; id: string }; toolCallId: string };
+}
+
+export interface SessionsPage extends Page<SessionSummary> {
+  changesCursor: StreamCursor;
 }

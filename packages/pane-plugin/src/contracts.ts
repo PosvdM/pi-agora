@@ -1,5 +1,5 @@
 import type { PaneHostContext } from "@pi-pane/plugin-api";
-import type { SessionMetadata, SessionParent } from "@pi-agora/protocol";
+import type { SessionParent, SessionSummary, SessionsPage as ProtocolSessionsPage } from "@pi-agora/protocol";
 export type { SessionParent } from "@pi-agora/protocol";
 
 export interface ApiReply<T = any> { status: number; body: T }
@@ -26,39 +26,8 @@ export function parentNodeId(item: { parent?: SessionParent; parentId?: string |
   if (item.parent?.kind === "user") return "agora:root:user-tasks";
   return item.parentId ?? null;
 }
-export interface SessionItem extends SessionMetadata {
-  agoraSessionId: string;
-  taskId?: string | null;
-  kind?: string;
-  isCurrent?: boolean;
-  takenOver?: boolean;
-  parentId: string | null;
-  parent?: SessionParent;
-  title: string;
-  status: string;
-  /** 会话行修订号，存档删除的 expectedRevision 使用它。 */
-  revision: number;
-  /** 变更流口径的树修订号，用作 TreeNode.revision。 */
-  treeRevision: number;
-  createdAt: string;
-  lastActivityAt?: string;
-  statusDetail?: string | null;
-  hasChildren: boolean;
-  childCount?: number;
-  archiveState?: string;
-  model?: string;
-  profile?: string;
-  thinking?: string;
-  cwd?: string;
-  piSessionId?: string | null;
-  originToolCall?: { sessionRef: { source: string; id: string }; toolCallId: string };
-}
-export interface ChangeCursor { epoch: string; seq: number }
-export interface SessionsPage {
-  items: SessionItem[];
-  nextCursor?: string | null;
-  changesCursor: ChangeCursor;
-}
+export type SessionItem = SessionSummary;
+export type SessionsPage = ProtocolSessionsPage;
 export function userTask(item: { parent?: SessionParent; parentId?: string | null }): boolean {
   return parentNodeId(item) === "agora:root:user-tasks";
 }
