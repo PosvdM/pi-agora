@@ -7,8 +7,13 @@ export const ACTION_STORE_LIMIT = 16 * 1024 * 1024;
 export class ActionStoreError extends Error {
   constructor() { super("动作请求存储不可用，请检查数据目录后重启插件"); }
 }
+// 候选快照超过上限时不写盘，存储保持可用；已落盘的快照和调用方的内存状态都不变。
+export class ActionStoreCapacityError extends Error {
+  constructor() { super("动作请求存储容量不足（16 MiB），新操作未执行；请使用原请求标识查询已有操作或等待记录过期"); }
+}
 
-// 一个插件实例独占数据目录；写入失败后必须重启，避免使用未落盘的内存状态。
+// 一个插件实例独占数据目录。读取或写入失败后存储关闭，必须重启插件；
+// 容量拒绝发生在写入之前，不关闭存储。
 export class ActionStore {
   private failed = false;
   private readonly path: string;
@@ -50,10 +55,10 @@ export class ActionStore {
   }
   async save(data: unknown): Promise<void> {
     this.check();
+    const json = JSON.stringify({ version: 1, data });
+    if (Buffer.byteLength(json, "utf8") > ACTION_STORE_LIMIT) throw new ActionStoreCapacityError();
     let temporary: string | undefined;
     try {
-      const json = JSON.stringify({ version: 1, data });
-      if (Buffer.byteLength(json, "utf8") > ACTION_STORE_LIMIT) throw new ActionStoreError();
       await mkdir(this.dataDir, { recursive: true, mode: 0o700 });
       temporary = `${this.path}.${randomUUID()}.tmp`;
       const file = await open(temporary, "wx", 0o600);

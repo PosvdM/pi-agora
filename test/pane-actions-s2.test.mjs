@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test, { after } from "node:test";
 import { mkdtempSync, rmSync } from "node:fs";
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { readFile, writeFile, mkdir, rename, rmdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createActions } from "../packages/pane-plugin/dist/actions.js";
@@ -785,12 +785,12 @@ test("离线与预检失败的身份也落盘，pending 不阻止恢复后再次
   }
 });
 
-test("损坏快照或写入失败均阻止 HTTP 执行，并且不自行覆盖损坏文件", async () => {
+test("损坏快照或写入失败均阻止 HTTP 执行并返回 pending，不自行覆盖损坏文件", async () => {
   for (const content of ["{", "{}", '{"version":1,"data":{}}', '{"version":1,"data":{"identities":[],"forms":[],"versions":[["bad",{}]]}}']) {
     const s = setup();
     const path = join(s.dataDir, "actions.json");
     await writeFile(path, content);
-    assert.equal((await s.actions.invoke(stop("corrupt"), origin)).status, "failed");
+    assert.equal((await s.actions.invoke(stop("corrupt"), origin)).status, "pending");
     assert.equal(await s.actions.resolveForm(id("steer"), target), null);
     assert.equal(s.calls.length, 0);
     assert.equal(s.reads.length, 0);
@@ -805,13 +805,17 @@ test("损坏快照或写入失败均阻止 HTTP 执行，并且不自行覆盖�
     rmSync(path);
     await mkdir(path);
   });
-  assert.equal((await s.actions.invoke(inv, origin)).status, "failed");
+  assert.equal((await s.actions.invoke(inv, origin)).status, "pending");
   rmSync(path, { recursive: true });
-  assert.equal((await s.actions.invoke(inv, origin)).status, "failed");
+  assert.equal((await s.actions.invoke(inv, origin)).status, "pending");
   assert.equal(s.calls.length, 0);
+  // 快照未写入时 HTTP 从未执行，重启后同一 key 重新预检并执行一次。
+  const next = setup("running", s.dataDir);
+  assert.equal((await next.actions.invoke(inv, origin)).status, "ok");
+  assert.equal(next.calls.length, 1);
 });
 
-test("合法 JSON 中的无效 HTTP 或表单结构同样关闭执行", async () => {
+test("合法 JSON 中的无效 HTTP 或表单结构同样关闭执行并返回 pending", async () => {
   for (const mutate of [
     saved => { saved.data.identities[0][1].operation.method = "DELETE"; },
     saved => { saved.data.identities[0][1].operation.path = "/auth/token"; },
@@ -826,7 +830,7 @@ test("合法 JSON 中的无效 HTTP 或表单结构同样关闭执行", async ()
     mutate(saved);
     await writeFile(path, JSON.stringify(saved));
     const next = setup("running", s.dataDir);
-    assert.equal((await next.actions.invoke(inv, origin)).status, "failed");
+    assert.equal((await next.actions.invoke(inv, origin)).status, "pending");
     assert.equal(next.calls.length, 0);
     assert.equal(next.reads.length, 0);
   }
@@ -837,7 +841,7 @@ test("合法 JSON 中的无效 HTTP 或表单结构同样关闭执行", async ()
   saved.data.forms[0][1].record.form.fields = [null];
   await writeFile(path, JSON.stringify(saved));
   const next = setup("running", s.dataDir);
-  assert.equal((await next.actions.invoke(stop("bad-form-storage"), origin)).status, "failed");
+  assert.equal((await next.actions.invoke(stop("bad-form-storage"), origin)).status, "pending");
   assert.equal(next.calls.length, 0);
 });
 
@@ -875,4 +879,139 @@ test("持久化身份与快照在重启后仍保留至少 24 小时", async t =>
   assert.equal((await next.actions.invoke(inv, origin)).status, "ok");
   assert.deepEqual(next.calls[0].body, prepared.calls[0].body);
   assert.equal((await next.actions.invoke({ ...inv, target: { type: "global" } }, origin)).status, "idempotencyConflict");
+});
+
+// 先固定一个已提交 daemon、结果为 pending 的请求，后续容量或写入故障都不能影响它的查询。
+async function preparedPending(s, key = "prepared-before-fault") {
+  const inv = stop(key);
+  s.replies.push({ status: 202, body: {} });
+  assert.equal((await s.actions.invoke(inv, origin)).status, "pending");
+  assert.equal(s.calls.length, 1);
+  return { inv, body: structuredClone(s.calls[0].body) };
+}
+async function queryPrepared(s, prepared) {
+  s.state.revision++;
+  const before = { calls: s.calls.length, reads: s.reads.length };
+  assert.equal((await s.actions.invoke(prepared.inv, origin)).status, "ok");
+  assert.equal(s.reads.length, before.reads, "已固定的请求不能重新预检");
+  assert.equal(s.calls.length, before.calls + 1);
+  assert.deepEqual(s.calls.at(-1).body, prepared.body);
+  s.state.revision--;
+}
+const steerKey = index => `large-steer-${index}`;
+const largeSteer = index => ({
+  actionId: id("steer"), target, idempotencyKey: steerKey(index),
+  input: { answers: [], fields: { message: `${index}:`.padEnd(1_000_000, "x") } },
+});
+
+test("17 个约 1 MiB 的请求触发字节容量拒绝，不污染状态，已固定请求在重启前后都可查询", { timeout: 60_000 }, async () => {
+  const s = setup();
+  const prepared = await preparedPending(s);
+  let accepted = 0;
+  for (let index = 0; index < 17; index++) {
+    s.replies.push({ status: 202, body: {} });
+    const result = await s.actions.invoke(largeSteer(index), origin);
+    if (index < 16) { assert.equal(result.status, "pending"); accepted++; continue; }
+    assert.equal(result.status, "failed");
+    assert.match(result.message, /容量不足/);
+  }
+  assert.equal(accepted, 16);
+  assert.equal(s.calls.length, 17, "被拒绝的请求不能发送 HTTP");
+  s.replies.length = 0;
+  const path = join(s.dataDir, "actions.json");
+  const rejected = await readFile(path, "utf8");
+  assert.ok(Buffer.byteLength(rejected) <= 16 * 1024 * 1024);
+  // 被拒绝的请求只登记了指纹，没有 HTTP 快照；内存与磁盘一致。
+  const saved = JSON.parse(rejected);
+  assert.equal(saved.data.identities.length, 18);
+  assert.equal(saved.data.identities.find(([key]) => key === steerKey(16))[1].operation, undefined);
+  await queryPrepared(s, prepared);
+  // 容量拒绝不关闭存储：小请求仍可登记、落盘并执行。
+  assert.equal((await s.actions.invoke(stop("small-after-capacity"), origin)).status, "ok");
+  assert.equal(JSON.parse(await readFile(path, "utf8")).data.identities.length, 19);
+  // 重复提交被拒绝的请求仍得到容量失败，不执行 HTTP。
+  const calls = s.calls.length;
+  assert.equal((await s.actions.invoke(largeSteer(16), origin)).status, "failed");
+  assert.equal(s.calls.length, calls);
+
+  const next = setup("running", s.dataDir);
+  await queryPrepared(next, prepared);
+  next.replies.push({ status: 202, body: {} });
+  assert.equal((await next.actions.invoke(largeSteer(0), origin)).status, "pending");
+  assert.equal(next.reads.length, 0);
+  assert.equal(next.calls[1].body.message, largeSteer(0).input.fields.message);
+  assert.equal((await next.actions.invoke(largeSteer(16), origin)).status, "failed");
+  assert.equal(next.calls.length, 2);
+});
+
+test("4097 个表单版本触发条数容量拒绝，不污染表单索引，已固定请求在重启前后都可查询", { timeout: 30_000 }, async () => {
+  const s = setup();
+  const prepared = await preparedPending(s);
+  const form = await s.actions.resolveForm(id("steer"), target);
+  assert.ok(form);
+  const path = join(s.dataDir, "actions.json");
+  const saved = JSON.parse(await readFile(path, "utf8"));
+  const [[formId, index]] = saved.data.forms;
+  const record = saved.data.versions[0][1];
+  saved.data.versions = Array.from({ length: 4096 }, (_, i) => {
+    const version = structuredClone(record);
+    version.form.revision = i + 1;
+    return [`${formId}:${i + 1}`, version];
+  });
+  index.record = structuredClone(saved.data.versions.at(-1)[1]);
+  const content = JSON.stringify(saved);
+  await writeFile(path, content);
+
+  const next = setup("running", s.dataDir);
+  next.state.revision++;
+  assert.equal(await next.actions.resolveForm(id("steer"), target), null, "第 4097 个版本被拒绝");
+  assert.equal(await readFile(path, "utf8"), content);
+  next.state.revision--;
+  await queryPrepared(next, prepared);
+  // 内存中的表单索引没有保留被拒绝的版本：原状态仍对应第 4096 版，提交后磁盘保持 4096 版。
+  const current = await next.actions.resolveForm(id("steer"), target);
+  assert.equal(current.revision, 4096);
+  const submitted = { actionId: id("steer"), target, idempotencyKey: "steer-after-versions", formId: current.id, formRevision: current.revision,
+    input: { answers: [], fields: { message: "容量拒绝后继续返工" } } };
+  assert.equal((await next.actions.invoke(submitted, origin)).status, "ok");
+  const after = JSON.parse(await readFile(path, "utf8"));
+  assert.equal(after.data.versions.length, 4096);
+  assert.equal(after.data.forms[0][1].record.form.revision, 4096);
+  // 拒绝新版本后，新的身份仍能登记；第 4097 个身份同样只拒绝新 key。
+  assert.equal((await next.actions.invoke(stop("stop-after-versions"), origin)).status, "ok");
+
+  const restarted = setup("running", s.dataDir);
+  await queryPrepared(restarted, prepared);
+  assert.equal((await restarted.actions.resolveForm(id("steer"), target)).revision, 4096);
+});
+
+test("写入失败后已固定请求仍可查询，新请求返回 pending，重启后各自继续", { timeout: 10_000 }, async () => {
+  const s = setup();
+  const prepared = await preparedPending(s);
+  const path = join(s.dataDir, "actions.json");
+  const backup = `${path}.backup`;
+  // 新 key 已登记；读取任务后把快照文件换成目录，使固定 HTTP 快照的原子替换失败。
+  s.setBeforeRead(async (_method, requestPath) => {
+    if (requestPath !== "/tasks/tk_actual") return;
+    s.setBeforeRead(undefined);
+    await rename(path, backup);
+    await mkdir(path);
+  });
+  const fresh = stop("write-failure");
+  assert.equal((await s.actions.invoke(fresh, origin)).status, "pending");
+  assert.equal(s.calls.length, 1, "未落盘的快照不能执行");
+  await queryPrepared(s, prepared);
+  assert.equal((await s.actions.invoke(fresh, origin)).status, "pending");
+  assert.equal((await s.actions.invoke(stop("after-write-failure"), origin)).status, "pending");
+  assert.equal(await s.actions.resolveForm(id("steer"), target), null);
+  assert.equal(s.calls.length, 2);
+  await rmdir(path);
+  await rename(backup, path);
+
+  const next = setup("running", s.dataDir);
+  await queryPrepared(next, prepared);
+  assert.equal((await next.actions.invoke(fresh, origin)).status, "ok");
+  assert.equal(next.calls.length, 2);
+  assert.deepEqual(next.calls[1].body, { expectedGeneration: 2, expectedRevision: 7 });
+  assert.equal((await next.actions.invoke({ ...fresh, actionId: id("cleanup") }, origin)).status, "idempotencyConflict", "写入失败前登记的指纹仍然有效");
 });

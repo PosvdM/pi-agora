@@ -3,7 +3,7 @@ import test from "node:test";
 import { mkdtemp, readFile, readdir, writeFile, rm, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ActionStore, ActionStoreError, ACTION_STORE_LIMIT } from "../packages/pane-plugin/dist/action-store.js";
+import { ActionStore, ActionStoreCapacityError, ActionStoreError, ACTION_STORE_LIMIT } from "../packages/pane-plugin/dist/action-store.js";
 
 async function directory(t) {
   const path = await mkdtemp(join(tmpdir(), "pane-action-store-s2-"));
@@ -34,14 +34,16 @@ test("损坏 JSON、版本和结构不兼容时关闭存储，不覆盖原文件
   }
 });
 
-test("超过 16 MiB 的读写均被拒绝，容量不足不丢弃原快照", async t => {
+test("超过 16 MiB 的读写均被拒绝，容量拒绝不丢弃原快照也不关闭存储", async t => {
   const dir = await directory(t);
   const store = new ActionStore(dir);
   await store.save({ value: "保留" });
   const original = await readFile(join(dir, "actions.json"), "utf8");
-  await assert.rejects(store.save({ value: "x".repeat(ACTION_STORE_LIMIT) }), ActionStoreError);
+  await assert.rejects(store.save({ value: "x".repeat(ACTION_STORE_LIMIT) }), ActionStoreCapacityError);
   assert.equal(await readFile(join(dir, "actions.json"), "utf8"), original);
-  await assert.rejects(store.save({ value: "缩小后仍需重启" }), ActionStoreError);
+  assert.deepEqual(await readdir(dir), ["actions.json"]);
+  await store.save({ value: "缩小后可继续写入" });
+  assert.deepEqual(await new ActionStore(dir).load(), { value: "缩小后可继续写入" });
   await writeFile(join(dir, "actions.json"), " ".repeat(ACTION_STORE_LIMIT + 1));
   await assert.rejects(new ActionStore(dir).load(), ActionStoreError);
 });

@@ -1,9 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { setImmediate as turn, setTimeout as delay } from "node:timers/promises";
+import { createHook } from "node:async_hooks";
 import { AgoraConnectionError } from "@pi-agora/protocol";
 import createPlugin from "../packages/pane-plugin/dist/plugin.js";
 
@@ -688,3 +689,93 @@ for (const [status, expected] of [[404, "failed"], [409, "failed"], [503, "faile
     }
   });
 }
+
+// R3-2：容量拒绝和存储不可用都不能让插件把已提交请求缓存为最终失败。
+function steerDaemon(revision) {
+  const writes = [];
+  const handler = call => {
+    if (call.method === "GET" && call.path === `/v1/tasks/${session.taskId}`) return ok({ taskId: session.taskId, agoraSessionId: ref.id, status: "running", generation: 1, revision: revision.value });
+    if (call.method === "POST" && call.path === `/v1/tasks/${session.taskId}/steer`) {
+      writes.push(call);
+      return writes.filter(value => value.options.idempotencyKey === call.options.idempotencyKey).length === 1 ? { status: 202, body: {} } : ok({});
+    }
+  };
+  return { writes, handler };
+}
+async function steerPlugin(h, handler) {
+  const a = mockApi(h, handler);
+  a.state.sessions[0].parent = { kind: "user" };
+  const plugin = h.plugin({ connect: async () => a.api });
+  await plugin.activate(h.context);
+  return { a, plugin };
+}
+
+test("旧 pending 请求经过 17 个约 1 MiB 请求的容量拒绝后，原 key 查询与重启后查询都得到真实结果", { timeout: 60_000 }, async t => {
+  const h = await host(t);
+  const revision = { value: 7 };
+  const daemon = steerDaemon(revision);
+  let { a, plugin } = await steerPlugin(h, daemon.handler);
+  const old = { idempotencyKey: "old-pending", origin };
+  assert.equal((await plugin.sessions.send(ref, { text: "固定返工" }, old)).status, "pending");
+  const large = index => `${index}:`.padEnd(1_000_000, "x");
+  for (let index = 0; index < 17; index++) {
+    const result = await plugin.sessions.send(ref, { text: large(index) }, { idempotencyKey: `large-${index}`, origin });
+    assert.equal(result.status, index < 16 ? "pending" : "rejected", `第 ${index + 1} 个请求`);
+    if (index === 16) assert.match(result.message, /容量不足/);
+  }
+  assert.equal(daemon.writes.length, 17);
+  revision.value = 8;
+  assert.equal((await plugin.sessions.send(ref, { text: "固定返工" }, old)).status, "accepted");
+  assert.equal(daemon.writes.length, 18);
+  assert.equal(daemon.writes.at(-1).body.expectedRevision, 7, "原 key 使用固定快照，不重读任务");
+
+  await plugin.deactivate();
+  ({ a, plugin } = await steerPlugin(h, daemon.handler));
+  assert.equal((await plugin.sessions.send(ref, { text: "固定返工" }, old)).status, "accepted");
+  assert.equal(daemon.writes.length, 18, "已确认的终态直接复用");
+  assert.equal((await plugin.sessions.send(ref, { text: large(0) }, { idempotencyKey: "large-0", origin })).status, "accepted");
+  assert.equal(daemon.writes.length, 19);
+  assert.equal(daemon.writes.at(-1).body.expectedRevision, 7);
+  assert.equal(a.calls.filter(call => call.path === `/v1/tasks/${session.taskId}`).length, 0, "重启后的固定请求查询不重读任务");
+});
+
+test("动作存储不可用时原 key 返回 pending 不缓存，修复后重启得到真实结果", { timeout: 10_000 }, async t => {
+  const h = await host(t);
+  const daemon = steerDaemon({ value: 7 });
+  let { plugin } = await steerPlugin(h, daemon.handler);
+  const old = { idempotencyKey: "pending-before-corruption", origin };
+  assert.equal((await plugin.sessions.send(ref, { text: "固定返工" }, old)).status, "pending");
+  await plugin.deactivate();
+  const file = path.join(h.context.dataDir, "actions.json");
+  const content = await readFile(file, "utf8");
+  await writeFile(file, "{");
+  ({ plugin } = await steerPlugin(h, daemon.handler));
+  for (let attempt = 0; attempt < 2; attempt++) assert.equal((await plugin.sessions.send(ref, { text: "固定返工" }, old)).status, "pending");
+  assert.equal(daemon.writes.length, 1);
+  await plugin.deactivate();
+  await writeFile(file, content);
+  ({ plugin } = await steerPlugin(h, daemon.handler));
+  assert.equal((await plugin.sessions.send(ref, { text: "固定返工" }, old)).status, "accepted");
+  assert.equal(daemon.writes.length, 2);
+  assert.deepEqual(daemon.writes[1].body, daemon.writes[0].body);
+});
+
+test("领域刷新挂起时大量变更事件只置脏标记，不为每条事件创建等待者", { timeout: 10_000 }, async t => {
+  let gate;
+  const alerts = call => call.method === "GET" && call.url.pathname === "/v1/security/alerts";
+  const { a } = await activated(t, call => { if (gate && alerts(call)) return gate.promise; });
+  gate = deferred();
+  a.domainChange(11);
+  await eventually(() => a.calls.filter(alerts).length === 2, "第一条变更应启动一次领域刷新");
+  let promises = 0;
+  const hook = createHook({ init(_id, type) { if (type === "PROMISE") promises++; } }).enable();
+  try { for (let index = 0; index < 10_000; index++) a.domainChange(12 + index); }
+  finally { hook.disable(); }
+  assert.ok(promises < 100, `挂起期间的 10000 条事件创建了 ${promises} 个 Promise`);
+  const reruns = a.calls.filter(alerts).length;
+  gate.resolve(ok({ items: [structuredClone(alert)] }));
+  gate = undefined;
+  await eventually(() => a.calls.filter(alerts).length === reruns + 1, "挂起期间的变更合并为一次补刷");
+  await delay(20);
+  assert.equal(a.calls.filter(alerts).length, reruns + 1);
+});

@@ -292,7 +292,8 @@ test("落盘的用户级标记与 HTTP 参数白名单不能用于其他动作",
     mutate(saved.data.identities[0][1].operation);
     await writeFile(disk(s), JSON.stringify(saved));
     const next = setup({ dataDir: s.dataDir });
-    assert.equal((await next.actions.invoke(inv, origin)).status, "failed");
+    // 无法核实落盘快照时只能返回 pending，不能把已提交的操作固化为失败。
+    assert.equal((await next.actions.invoke(inv, origin)).status, "pending");
     assert.equal(next.calls.length, 0);
     assert.equal(next.reads.length, 0);
   }

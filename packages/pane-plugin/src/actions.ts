@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { ActionInvocation, ActionResult, ActionSpec, ActionTarget, FormField, FormSpec, PanePlugin, RequestOrigin } from "@pi-pane/plugin-api";
 import { encoded, message, type ApiReply, type PluginRuntime } from "./contracts.js";
-import { ActionStore, ActionStoreError } from "./action-store.js";
+import { ActionStore, ActionStoreCapacityError, ActionStoreError } from "./action-store.js";
 
 export type ExecuteOperation = (method: string, path: string, body: unknown, options: {
   idempotencyKey: string; origin: RequestOrigin; actAsUser?: boolean;
@@ -21,6 +21,10 @@ interface Operation { method: "POST"; path: string; body: JsonRecord; actAsUser?
 interface Identity {
   fingerprint: string; expiresAt: number; operation?: Operation; result?: ActionResult;
 }
+interface FormIndex { signature: string; record: FormRecord; expiresAt: number }
+// stored 是已落盘的状态。条目对象发布后不再原地修改，修改先写入 draft() 的副本，commit() 落盘后整体替换。
+interface State { identities: Map<string, Identity>; forms: Map<string, FormIndex>; versions: Map<string, FormRecord> }
+const MAX_ENTRIES = 4096;
 const DAY = 24 * 60 * 60 * 1000;
 const profiles = ["explore", "review", "implement"];
 const thinking = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -126,14 +130,12 @@ function outcome(reply: ApiReply, action: TaskAction): ActionResult {
 
 export function createActions(runtime: PluginRuntime, execute: ExecuteOperation): NonNullable<PanePlugin["actions"]> {
   // 只保存调用身份、HTTP 参数和未执行 HTTP 的表单结果；daemon 的结果每次转发。
-  const identities = new Map<string, Identity>();
-  const forms = new Map<string, { signature: string; record: FormRecord; expiresAt: number }>();
-  const versions = new Map<string, FormRecord>();
+  let stored: State = { identities: new Map(), forms: new Map(), versions: new Map() };
   const store = new ActionStore(runtime.context.dataDir);
   let initialized: Promise<void> | undefined;
   let queue: Promise<unknown> = Promise.resolve();
   function entries(value: unknown): [string, unknown][] {
-    if (!Array.isArray(value) || value.length > 4096) throw new ActionStoreError();
+    if (!Array.isArray(value) || value.length > MAX_ENTRIES) throw new ActionStoreError();
     const seen = new Set<string>();
     return value.map(item => {
       if (!Array.isArray(item) || item.length !== 2 || typeof item[0] !== "string" || seen.has(item[0])) throw new ActionStoreError();
@@ -184,6 +186,7 @@ export function createActions(runtime: PluginRuntime, execute: ExecuteOperation)
     return record as unknown as FormRecord;
   }
   async function initialize(): Promise<void> {
+    const { identities, forms, versions }: State = { identities: new Map(), forms: new Map(), versions: new Map() };
     try {
       const saved = await store.load();
       if (saved === undefined) return;
@@ -251,10 +254,16 @@ export function createActions(runtime: PluginRuntime, execute: ExecuteOperation)
         identities.set(key, entry as unknown as Identity);
       }
     } catch { throw new ActionStoreError(); }
+    stored = { identities, forms, versions };
   }
-  async function persist(): Promise<void> {
-    if ([identities.size, forms.size, versions.size].some(size => size > 4096)) throw new ActionStoreError();
-    await store.save({ identities: [...identities], forms: [...forms], versions: [...versions] });
+  function draft(): State {
+    return { identities: new Map(stored.identities), forms: new Map(stored.forms), versions: new Map(stored.versions) };
+  }
+  // 容量检查和写入都针对候选状态；任一步失败时 stored 保持上次落盘的内容。
+  async function commit(next: State): Promise<void> {
+    if ([next.identities.size, next.forms.size, next.versions.size].some(size => size > MAX_ENTRIES)) throw new ActionStoreCapacityError();
+    await store.save({ identities: [...next.identities], forms: [...next.forms], versions: [...next.versions] });
+    stored = next;
   }
   function exclusive<T>(work: () => Promise<T>): Promise<T> {
     const result = queue.then(async () => {
@@ -265,7 +274,9 @@ export function createActions(runtime: PluginRuntime, execute: ExecuteOperation)
     queue = result.catch(() => {});
     return result;
   }
+  // 过期记录只从内存移除，下一次 commit() 时一并落盘；重启后会再次按时间移除。
   function prune(): void {
+    const { identities, forms, versions } = stored;
     const now = Date.now();
     for (const [key, item] of identities) if (item.expiresAt <= now) identities.delete(key);
     for (const [key, item] of forms) if (item.expiresAt <= now) {
@@ -299,12 +310,12 @@ export function createActions(runtime: PluginRuntime, execute: ExecuteOperation)
       ...(typeof task.cwd === "string" ? { cwd: task.cwd } : {}),
     } };
   }
-  function formFor(action: TaskAction, target: string, state: TargetState, replace = false): FormRecord {
+  function formFor(next: State, action: TaskAction, target: string, state: TargetState, replace = false): FormRecord {
     const id = `agora.action.${action}.${hash(target).slice(0, 24)}${replace ? ".replace" : ""}`;
     const signature = hash({ action, target, state, replace });
-    const old = forms.get(id);
+    const old = next.forms.get(id);
     if (old?.signature === signature) {
-      old.expiresAt = Date.now() + DAY;
+      next.forms.set(id, { ...old, expiresAt: Date.now() + DAY });
       return old.record;
     }
     let fields: FormField[];
@@ -337,14 +348,14 @@ export function createActions(runtime: PluginRuntime, execute: ExecuteOperation)
     };
     // JSON 表单不携带 undefined 默认值，首次返回与重启后的副本保持一致。
     const record = { form: JSON.parse(JSON.stringify(form)) as FormSpec, action, target, state: structuredClone(state), replace };
-    forms.set(id, { signature, record, expiresAt: Date.now() + DAY });
-    versions.set(`${id}:${form.revision}`, record);
+    next.forms.set(id, { signature, record, expiresAt: Date.now() + DAY });
+    next.versions.set(`${id}:${form.revision}`, record);
     return record;
   }
-  async function resolve(action: TaskAction, target: string): Promise<FormSpec | null> {
+  async function resolve(next: State, action: TaskAction, target: string): Promise<FormSpec | null> {
     const state = await readTarget(target);
     if (!allowed(action, state.task) || action === "stop") return null;
-    return structuredClone(formFor(action, target, state).form);
+    return structuredClone(formFor(next, action, target, state).form);
   }
   function inputFields(inv: ActionInvocation, names: string[]): JsonRecord {
     const input = object(inv.input, "表单输入");
@@ -357,7 +368,7 @@ export function createActions(runtime: PluginRuntime, execute: ExecuteOperation)
   function conditions(state: TargetState): JsonRecord {
     return state.task ? { expectedGeneration: state.task.generation, expectedRevision: state.task.revision } : {};
   }
-  async function prepare(inv: ActionInvocation, action: TaskAction): Promise<Operation | ActionResult> {
+  async function prepare(next: State, inv: ActionInvocation, action: TaskAction): Promise<Operation | ActionResult> {
     const target = targetKey(inv.target, action);
     if (action === "stop") {
       if (inv.formId !== undefined || inv.formRevision !== undefined || inv.input !== undefined) throw new Invalid("停止任务不接受表单输入");
@@ -367,7 +378,7 @@ export function createActions(runtime: PluginRuntime, execute: ExecuteOperation)
     }
     if (inv.input === undefined) {
       if (inv.formId !== undefined || inv.formRevision !== undefined) throw new Invalid("表单输入缺失");
-      const form = await resolve(action, target);
+      const form = await resolve(next, action, target);
       if (!form) throw new Invalid("任务当前状态不允许此动作");
       return { status: "needsInput", followUpForm: form };
     }
@@ -380,7 +391,7 @@ export function createActions(runtime: PluginRuntime, execute: ExecuteOperation)
       return { method: "POST", path: `/tasks/${encoded(state.task!.taskId)}/steer`, body: { message, interrupt: false, ...conditions(state) } };
     }
     if (typeof inv.formId !== "string" || !Number.isSafeInteger(inv.formRevision)) throw new Invalid("请先读取动作表单");
-    const record = versions.get(`${inv.formId}:${inv.formRevision}`);
+    const record = next.versions.get(`${inv.formId}:${inv.formRevision}`);
     if (!record || record.action !== action || record.target !== target) throw new Invalid("表单无效或已过期，请重新读取");
     const state = await readTarget(target);
     if (hash(state) !== hash(record.state)) throw new Invalid("任务状态已变化，请重新读取表单");
@@ -410,7 +421,7 @@ export function createActions(runtime: PluginRuntime, execute: ExecuteOperation)
     } else {
       const fields = inputFields(inv, ["mode"]);
       const mode = enumValue(fields.mode, modes(state.task!), "恢复方式");
-      if (mode === "replace") return { status: "needsInput", followUpForm: structuredClone(formFor(action, target, state, true).form) };
+      if (mode === "replace") return { status: "needsInput", followUpForm: structuredClone(formFor(next, action, target, state, true).form) };
       body = { mode };
     }
     return { method: "POST", path: `/tasks/${encoded(state.task!.taskId)}/${action}`, body: { ...body, ...conditions(state) }, ...(["recover", "takeover"].includes(action) ? { actAsUser: true } : {}) };
@@ -422,8 +433,9 @@ export function createActions(runtime: PluginRuntime, execute: ExecuteOperation)
         return await exclusive(async () => {
           const action = actionName(actionId);
           if (!runtime.online()) return null;
-          const form = await resolve(action, targetKey(target, action));
-          await persist();
+          const next = draft();
+          const form = await resolve(next, action, targetKey(target, action));
+          if (form) await commit(next);
           return form;
         });
       } catch { return null; }
@@ -437,37 +449,45 @@ export function createActions(runtime: PluginRuntime, execute: ExecuteOperation)
           object(invocation, "动作调用");
           const idempotencyKey = text(invocation.idempotencyKey, "请求标识", 1024);
           const fingerprint = hash(invocation);
-          const old = identities.get(idempotencyKey);
+          const old = stored.identities.get(idempotencyKey);
           if (old && old.fingerprint !== fingerprint) return { status: "idempotencyConflict", message: "同一请求标识不能用于不同的动作调用" };
-          const entry = old ?? { fingerprint, expiresAt: Date.now() + DAY };
-          identities.set(idempotencyKey, entry);
           // 预检失败和离线也保留完整调用的指纹，禁止同 key 改写调用。
-          await persist();
+          // 已登记的 key 直接读取已落盘的记录，查询不依赖新的写入空间。
+          if (!old) {
+            const next = draft();
+            next.identities.set(idempotencyKey, { fingerprint, expiresAt: Date.now() + DAY });
+            await commit(next);
+          }
           keys(invocation as unknown as JsonRecord, ["actionId", "target", "input", "formId", "formRevision", "idempotencyKey"], "动作调用");
           const action = actionName(invocation.actionId);
+          let entry = stored.identities.get(idempotencyKey)!;
           if (entry.result) return structuredClone(entry.result);
           if (!runtime.online()) return { status: "pending", message: "agora 尚未连接，请使用同一请求标识重试" };
           if (!entry.operation) {
             // HTTP 快照与表单版本在执行前提交；重试不能重读任务修订号。
-            const result = await prepare(invocation, action);
+            const next = draft();
+            const result = await prepare(next, invocation, action);
             if ("status" in result) {
               if (result.status === "needsInput") {
-                entry.result = structuredClone(result);
-                entry.expiresAt = Date.now() + DAY;
-                const form = forms.get(result.followUpForm!.id)!;
-                form.expiresAt = Math.max(form.expiresAt, entry.expiresAt);
+                const expiresAt = Date.now() + DAY;
+                next.identities.set(idempotencyKey, { ...entry, result: structuredClone(result), expiresAt });
+                const id = result.followUpForm!.id, form = next.forms.get(id)!;
+                next.forms.set(id, { ...form, expiresAt: Math.max(form.expiresAt, expiresAt) });
+                await commit(next);
               }
-              await persist();
               return result;
             }
-            entry.operation = structuredClone(result);
-            entry.expiresAt = Date.now() + DAY;
-            await persist();
+            entry = { ...entry, operation: structuredClone(result), expiresAt: Date.now() + DAY };
+            next.identities.set(idempotencyKey, entry);
+            await commit(next);
           }
-          return { operation: structuredClone(entry.operation), action, idempotencyKey };
+          return { operation: structuredClone(entry.operation!), action, idempotencyKey };
         });
       } catch (error) {
-        if (error instanceof Invalid || error instanceof ActionStoreError) return { status: "failed", message: error.message };
+        // 走到这里时本 key 没有可执行的 HTTP 快照，校验失败和容量拒绝都可确定未执行。
+        if (error instanceof Invalid || error instanceof ActionStoreCapacityError) return { status: "failed", message: error.message };
+        // 存储不可用时无法核实此 key 是否已有落盘快照，不能给出最终失败。
+        if (error instanceof ActionStoreError) return { status: "pending", message: `${error.message}，然后使用同一请求标识查询` };
         if (error instanceof ReadReply) return outcome(error.reply, "stop");
         return { status: "pending", message: "网络结果未知，请使用同一请求标识重试" };
       }
