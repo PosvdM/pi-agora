@@ -202,6 +202,7 @@ HTTP 签名入口的同步动作（包括 task takeover、limits、提问答复�
 | 存档 | `POST /v1/archive/verify?limit=&cursor=` | 单会话或分页校验可见范围；主 Agent 级，更新校验元数据 | CLI |
 | | `POST /v1/sessions/:id/archive/delete` | 在线删除，仅 `expectedRevision` 参数，强制设备签名后异步执行 | CLI、pane 插件 |
 | 审计 | `GET /v1/audit?target=` | 审计记录 | CLI、pane 插件 |
+| 主会话定时项 | `/v1/main/*` | 后续设计：登记额度暂停、上报会话状态、创建和管理定时项、立即续跑。具体端点在实现时确定，见 [tasks.md](tasks.md#主会话的额度暂停定时发送与续跑) | 主会话扩展、pane 插件、CLI |
 | 管理 | `POST /v1/admin/shutdown` | 排空或强制关闭 | CLI |
 
 收件箱采用至少一次投递：返回通知时设置默认 120 秒的可见性超时，未确认项到期后可再次返回。扩展按 `dedupeKey` 去重，只有核实会话条目和完整磁盘记录后才调用 ack；ephemeral 会话单独记录内存送达，不声明已持久化。业务上取得结果与写入会话的确认互不替代。
@@ -304,12 +305,11 @@ CLI `tail` 在连接凭证到期前续期，按最后收到的 `{ epoch, seq }` 
 
 ## 变更流
 
-`GET /v1/changes?epoch=<e>&afterSeq=<n>`（SSE）推送领域对象的变更：任务、协作会话、会议、提问、board 头序号、待确认、设备。pane 插件据此生成 `TreeChange`、刷新面板和表单。当前只允许 `host:cli`、`host:pane` 读取全局变更流，主/子 Agent 不能用它取得无权读取的对象 ID。
+`GET /v1/changes?epoch=<e>&afterSeq=<n>`（SSE）推送领域对象的变更：任务、协作会话、会议、提问、board 头序号、待确认、设备；主会话的额度暂停、定时项和会话状态（后续设计）也写入变更流。pane 插件据此生成 `TreeChange`、刷新面板和表单。当前只允许 `host:cli`、`host:pane` 读取全局变更流，主/子 Agent 不能用它取得无权读取的对象 ID。
 
 每条记录使用 `event: change`，data 为 `{ cursor: { epoch, seq }, objectType, objectId, tombstone }`。无效切点只返回一条 `event: reset`，data 为 `{ epoch }`，随后关闭连接。流保持期间持续检查 token，关闭 daemon、撤销或过期凭证都会终止连接。
 
 `objectType: "tree", objectId: "all"` 是持久的结构失效标记。会话重开、换人等结构迁移在同一事务里写入该标记；插件将其映射为树 `reset`，不改变数据库 epoch。重建后的节点 revision 至少达到最近结构标记的 seq；标记被保留清理移走后，其水位仍保存在对象 head 中。
-
 
 - 变更记录持久化在 `changes` 表，与业务状态变更同事务写入。每条记录带 `seq`（全局递增）、对象类型与 id；删除时带 `tombstone: true`。
 - `epoch` 是数据库级的标识，只在数据库被重建或从备份恢复时改变。
@@ -421,6 +421,9 @@ pane 插件通过 `renderers.customMessages` 声明 agora 自定义消息的渲�
 | `agora:notice` | 召集人主会话 | `label: "agora 通知"`，展开显示正文；`fields` 显示 `details.taskId`、`details.generation`；`nodeIdPath: "nodeId"`（`details.nodeId` 由 daemon 填为对应树节点），点击打开子会话 |
 | `agora:board-delta` | 参会者会话 | `label: "board 增量"`，默认折叠 |
 | `agora:meeting-turn` | 参会者会话 | `label: "会议阶段"`，`fields` 显示 `details.phase`、`details.phaseEpoch` |
+| `agora:scheduled` | 主会话 | `label: "定时发送"`，展开显示正文；`fields` 显示 `details.fireAt` |
+
+`agora:continue` 以 `display: false` 写入，按 pi-pane 的缺省规则默认不显示，插件不为它声明渲染器。
 
 `agora-principal` 是 `appendEntry` 写入的自定义条目，不是消息，pi-pane 不显示。
 
@@ -435,6 +438,7 @@ pane 插件通过 `renderers.customMessages` 声明 agora 自定义消息的渲�
 | `agora.task` | node | `kinds: ["session"]`，`sources: ["agora"]`（参会者和书记节点返回席位信息） | `keyValue`：模型、档位、代数、worktree、用量，各代结果；答复过的提问附“由谁、怎样确认” |
 | `agora.meeting` | node | `kinds: ["group"]`，`sources: ["agora"]` | `steps`：各阶段为一步（`StepItem.status` 取 pending / active / done / failed / skipped），`progress` 为合并—核对循环数与上限；`detail` 写修订号、认可情况、用量与上限、暂停或排队原因 |
 | `agora.board` | node | `kinds: ["resource"]`，`resourceTypes: ["board"]` | `timeline`，按 seq 显示公开条目，`note` 标注替代关系、“基于旧版本”和“旧阶段产物，不计入” |
+| `agora.main-schedule` | node | `kinds: ["session"]`，`sources: ["pane"]` | `table`：主会话的额度暂停状态和定时项，见[主会话的定时项与续跑](#主会话的定时项与续跑)（后续设计） |
 
 - 内容变化时插件调用 `ctx.panelChanged({ panelId, revision, nodeId })` 推送（如会议阶段推进、board 新条目）。
 - agora 不提供侧栏面板，也不做“待处理”面板：所有需要用户处理的事项都以持久表单进入 pi-pane 唯一的“待处理”区，见“表单”。
@@ -456,7 +460,7 @@ pane 插件通过 `renderers.customMessages` 声明 agora 自定义消息的渲�
 | `agora.meeting.stop` | `["node"]` | 否，`confirm` | — | `POST /v1/meetings/:id/stop` | 主 Agent 级 |
 
 - **动态表单**：表单依赖目标的当前状态（如 recover 是否允许 resume、decide 的选项来自当前决策请求），插件在 `actions.resolveForm(actionId, target)` 里按 `ActionTarget` 现取，`actions.list()` 只给静态目录。
-- **目标**：`ActionTarget` 为 `{ type: "node", nodeId }` 时，`agora:session:<as_id>` 解析为任务，`agora:meeting:<mt_id>` 解析为会议；`{ type: "global" }` 用于召集新任务和会议。agora 不使用表格面板，没有 `panelRow` 目标。
+- **目标**：`ActionTarget` 为 `{ type: "node", nodeId }` 时，`agora:session:<as_id>` 解析为任务，`agora:meeting:<mt_id>` 解析为会议；`{ type: "global" }` 用于召集新任务和会议。`panelRow` 目标只用于 `agora.main-schedule` 面板，见[主会话的定时项与续跑](#主会话的定时项与续跑)。
 - **结果映射**（`ActionResult`）：
 
   | daemon 响应 | `ActionResult` |
@@ -510,6 +514,18 @@ daemon 的安全警告（规则见 [security.md](security.md#启动检查与安�
 - **只按 daemon 的确定状态清除**：只有从 daemon 读到（`GET /v1/security/alerts` 或变更流）警告已解除时才调用 `clearBanner`。daemon 不可达、插件刚启动还没连上 daemon、读取失败时，一律不清除，保持原横幅。
 - **重连对齐**：插件启动、重连 daemon、变更流 `reset` 后，先读 `GET /v1/security/alerts`，为每条未解除的警告 `setBanner`（同 id 整条替换），再清除 daemon 已明确报告解除的横幅。
 - 插件不在本地缓存“已解除”的判断。
+
+### 主会话的定时项与续跑
+
+后续设计，尚未实现。功能规则见 [tasks.md](tasks.md#主会话的额度暂停定时发送与续跑)。pane 中的显示和操作全部由 agora pane 插件用 pi-pane 现有的插件接口提供，pi-pane 不认识定时项和续跑。
+
+- **面板**：插件不能给 pi-pane 自己的主会话节点增加 `capabilities`，所以操作不放在会话视图顶部，放在节点面板 `agora.main-schedule` 里（`placement: "node"`，`appliesTo: { kinds: ["session"], sources: ["pane"] }`，`table`）。第一行显示额度暂停、预计重置时间和是否可续跑，提供续跑、定时续跑和定时发送；其余每行一个定时项，提供修改和取消。动作的目标为 `panelRow`，插件从行的 `nodeId` 找到主会话。
+- **状态来源**：插件读不到 pi-pane 主会话的快照，面板的状态取自扩展上报给 daemon 的数据，并随变更流刷新。
+- **权限**：定时发送的创建和修改是用户级操作，经设备签名；续跑、定时续跑和取消是主 Agent 级操作。
+- **错过的定时项**：以持久表单 `agora:schedule:<scheduleId>` 进入“待处理”，选项为“立即执行”和“放弃”。
+- **保活**：主会话有未处理的定时项或带重置时间的额度暂停时，插件对它持有 hold。
+- **重置提示**：由主会话里的扩展调用 `ctx.ui.notify`，pi-pane 按扩展 UI 通知显示，插件不重复显示。
+- 定时发送的正文只支持纯文本：pane 协议 v1 的 `FormField` 没有图片类型。
 
 ### 渲染安全
 

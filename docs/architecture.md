@@ -151,7 +151,7 @@ pi 专有的 skill 解析与启动参数位于 `packages/daemon/src/harness/pi/d
 
 额度识别只匹配助手错误中的明确限额代码（`usage_limit_reached`、`quota_exceeded`、`insufficient_quota`）和 HTTP 429 信息；普通 `rate_limit_exceeded` 不按额度用完处理。驱动从错误返回的重置时间或重试等待时间生成 `resumeAt`；未识别的时间保留 null，不推测恢复时刻。无法识别的错误仍按原失败路径处理。pi RPC 提供的错误可能只有 `errorMessage` 文本，解析以其可见字段为限，不保证所有 provider 的私有错误格式都能识别。
 
-`quotaRecovery` 在 `AGORA_HOME/config.json` 配置，默认 `"notify"`，也可设为 `"auto"`。持久化状态、恢复和通知规则见 [tasks.md](tasks.md#额度暂停)。定时器在启动时从数据库恢复；停止子树与额度恢复复用任务串行控制队列。
+`quotaRecovery` 在 `AGORA_HOME/config.json` 配置，默认 `"notify"`，也可设为 `"auto"`；主会话的额度暂停（后续设计）使用同一配置，见 [tasks.md](tasks.md#主会话的额度暂停定时发送与续跑)。持久化状态、恢复和通知规则见 [tasks.md](tasks.md#额度暂停)。定时器在启动时从数据库恢复；停止子树与额度恢复复用任务串行控制队列。
 
 ### 受管扩展的就绪检查
 
