@@ -151,7 +151,7 @@ function pluginFixture(t, f) {
 }
 
 function projection(item) {
-  return { id: item.agoraSessionId, parentId: item.parentId, childCount: item.childCount, hasChildren: item.hasChildren, revision: item.revision };
+  return { id: item.agoraSessionId, parentId: item.parentId, childCount: item.childCount, hasChildren: item.hasChildren, revision: item.treeRevision };
 }
 async function snapshotMatchesSql(plugin, f, ids) {
   const req = { openNodeIds: ids.map(nodeId), recentSince: '2999-01-01T00:00:00.000Z' };
@@ -243,8 +243,8 @@ test('签名接管嵌套任务移动全部历史及下属投影，保留预算�
   assert.deepEqual(f.store.usage(outer.taskId, true), treeUsage);
   assert.deepEqual(f.tasks.budgets.view(f.store.task(leaf.taskId)).ancestors.map(row => row.taskId), [branch.taskId, outer.taskId]);
   for (const id of ids) {
-    assert.ok(after.get(id).revision >= markers[0].seq, id);
-    assert.ok(after.get(id).revision > before.get(id).revision, id);
+    assert.ok(after.get(id).treeRevision >= markers[0].seq, id);
+    assert.ok(after.get(id).treeRevision > before.get(id).treeRevision, id);
     const wire = JSON.parse(JSON.stringify(after.get(id)));
     assert.deepEqual(wire, await f.ok(f.pane, 'GET', `/v1/sessions/${id}`));
     assert.deepEqual(wire, JSON.parse(JSON.stringify(sessionDetail(f.store, id))));

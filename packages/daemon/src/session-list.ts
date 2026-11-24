@@ -69,7 +69,7 @@ function treeSql(): string {
 export function sessionView(session: ListedSession, store: Store) {
   return { agoraSessionId: session.id, taskId: session.task_id, piSessionId: session.pi_session_id,
     profile: session.profile, model: session.model, thinking: session.thinking, cwd: session.cwd,
-    status: session.effective_status ?? session.status, revision: session.tree_revision, createdAt: session.created_at,
+    status: session.effective_status ?? session.status, revision: session.revision, treeRevision: session.tree_revision, createdAt: session.created_at,
     parentId: session.parent_id,
     ...(session.parent_id === "agora:root:user-tasks" ? { parent: { kind: "user" } }
       : session.task_parent_id && session.parent_session_id ? { parent: { kind: "task", taskId: session.task_parent_id, sessionId: session.parent_session_id } }

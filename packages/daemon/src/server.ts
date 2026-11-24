@@ -425,17 +425,25 @@ async function route(context: ServerContext, method: string, url: URL, conn: Con
       epoch = lastId.slice(0, colon);
       afterSeq = positive(lastId.slice(colon + 1), 0, Number.MAX_SAFE_INTEGER, true);
     }
-    await tasks.sessions.snapshot(sessionId);
+    // 关闭监听先于等待快照注册，快照期间断开的连接不再创建鉴权定时器。
+    let disconnected = false;
+    const disconnect = () => { disconnected = true; };
+    response.once("close", disconnect);
+    try { await tasks.sessions.snapshot(sessionId); }
+    finally { response.off("close", disconnect); }
+    if (disconnected || response.destroyed) return ok(undefined);
     tasks.acl.session(conn, store.session(sessionId));
+    const authorized = () => {
+      try { tasks.acl.session(auth.authenticate(request.headers.authorization), store.session(sessionId)); return true; }
+      catch { return false; }
+    };
     const stop = () => { if (!response.writableEnded) response.end(); };
-    const guard = setInterval(() => {
-      try { const current = auth.authenticate(request.headers.authorization); tasks.acl.session(current, store.session(sessionId)); }
-      catch { stop(); }
-    }, 1000);
+    // 每次写出前同步复查授权，接管提交后产生的事件不会发给已失去权限的连接；定时检查只用于关闭空闲连接。
+    const guard = setInterval(() => { if (!authorized()) stop(); }, 1000);
     guard.unref();
     context.closing.addEventListener("abort", stop, { once: true });
     response.once("close", () => { clearInterval(guard); context.closing.removeEventListener("abort", stop); });
-    tasks.sessions.stream(sessionId, request, response, { epoch, afterSeq });
+    tasks.sessions.stream(sessionId, request, response, { epoch, afterSeq, authorized });
     return ok(undefined);
   }
   const session = pathname.match(/^\/v1\/sessions\/([^/]+)$/);

@@ -6,7 +6,7 @@ import { createOfflineViews } from '../packages/pane-plugin/dist/offline.js';
 const PARENT = 'agora:root:user-tasks';
 const SECOND = { epoch: 'db', limit: 1, cursor: 'valid-second-page' };
 const row = id => ({ agoraSessionId: id, taskId: `t-${id}`, parentId: PARENT,
-  title: id, status: 'completed', revision: 7, createdAt: '2026-01-01T00:00:00Z', hasChildren: false });
+  title: id, status: 'completed', revision: 3, treeRevision: 7, createdAt: '2026-01-01T00:00:00Z', hasChildren: false });
 const ok = (epoch = 'db', items = [], nextCursor = null) => ({ status: 200,
   body: { items, changesCursor: { epoch, seq: 10 }, nextCursor } });
 const invalid = () => ({ status: 400,

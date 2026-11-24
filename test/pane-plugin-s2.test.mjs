@@ -19,7 +19,7 @@ const alert = { alertId: "alert-one", kind: "devices-reset", revision: 1, create
 const question = { id: "rq-one", targetId: "user", state: "escalated", revision: 1, createdAt: AT,
   questions: [{ id: "q", question: "选择方案", options: [{ label: "甲" }, { label: "乙" }] }] };
 const session = { agoraSessionId: ref.id, taskId: "tk_lifecycle", kind: "task", parentId: "pane:session:main",
-  title: "生命周期任务", status: "running", revision: 1, createdAt: AT, hasChildren: false };
+  title: "生命周期任务", status: "running", revision: 1, treeRevision: 1, createdAt: AT, hasChildren: false };
 const submission = key => ({ formId: "agora:request:rq-one", revision: 1, idempotencyKey: key,
   outcome: { status: "submitted", values: { answers: [{ id: "q", selected: ["甲"] }] } } });
 const ok = body => ({ status: 200, body });

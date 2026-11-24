@@ -913,7 +913,8 @@ test("17 个约 1 MiB 的请求触发字节容量拒绝，不污染状态，已�
     const result = await s.actions.invoke(largeSteer(index), origin);
     if (index < 16) { assert.equal(result.status, "pending"); accepted++; continue; }
     assert.equal(result.status, "failed");
-    assert.match(result.message, /容量不足/);
+    assert.match(result.message, /容量不足（文件已达 16 MiB 上限）/);
+    assert.doesNotMatch(result.message, /4096/);
   }
   assert.equal(accepted, 16);
   assert.equal(s.calls.length, 17, "被拒绝的请求不能发送 HTTP");
@@ -983,6 +984,26 @@ test("4097 个表单版本触发条数容量拒绝，不污染表单索引，已
   const restarted = setup("running", s.dataDir);
   await queryPrepared(restarted, prepared);
   assert.equal((await restarted.actions.resolveForm(id("steer"), target)).revision, 4096);
+});
+
+test("4096 个请求身份后新请求因条数上限失败，提示写明 4096 条而不是 16 MiB", { timeout: 30_000 }, async () => {
+  const s = setup();
+  assert.equal((await s.actions.invoke(stop("fill-seed"), origin)).status, "ok");
+  const path = join(s.dataDir, "actions.json");
+  const saved = JSON.parse(await readFile(path, "utf8"));
+  const [[, entry]] = saved.data.identities;
+  saved.data.identities = Array.from({ length: 4096 }, (_, i) => [`fill-${i}`, structuredClone(entry)]);
+  const content = JSON.stringify(saved);
+  assert.ok(Buffer.byteLength(content) < 16 * 1024 * 1024);
+  await writeFile(path, content);
+
+  const next = setup("running", s.dataDir);
+  const result = await next.actions.invoke(stop("one-more"), origin);
+  assert.equal(result.status, "failed");
+  assert.match(result.message, /容量不足（记录数已达 4096 条上限）/);
+  assert.doesNotMatch(result.message, /16 MiB/);
+  assert.equal(next.calls.length, 0, "被拒绝的请求不能发送 HTTP");
+  assert.equal(await readFile(path, "utf8"), content);
 });
 
 test("写入失败后已固定请求仍可查询，新请求返回 pending，重启后各自继续", { timeout: 10_000 }, async () => {

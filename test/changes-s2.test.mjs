@@ -103,7 +103,7 @@ test('清理同时满足七天与十万条，冷节点修订号在清理及重�
   store.run(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<100000)
     INSERT INTO changes(epoch,object_type,object_id,created_at) SELECT (SELECT value FROM settings WHERE key='epoch'),'noise',CAST(i AS TEXT),? FROM n`, new Date().toISOString());
   const original = sessionDetail(store, 'cold');
-  assert.equal(original.revision, 1);
+  assert.equal(original.treeRevision, 1);
   assert.equal(pruneChanges(store), 1);
   assert.equal(store.get('SELECT COUNT(*) AS n FROM changes').n, 100000);
   assert.equal(pruneChanges(store), 0);
@@ -199,7 +199,7 @@ test('热快照包含祖先与状态映射，继承会话保留召集关系，�
   assert.equal(sessionDetail(store, 'middle').parentId, 'agora:session:replacement');
   assert.equal(sessionDetail(store, 'ancestor').hasChildren, false);
   assert.equal(sessionDetail(store, 'replacement').hasChildren, true);
-  assert.equal(sessionDetail(store, 'replacement').revision, changesCursor(store).seq);
+  assert.equal(sessionDetail(store, 'replacement').treeRevision, changesCursor(store).seq);
   assert.deepEqual(listSessions(store, host, params('snapshot=1'), 50).items.map(item => item.agoraSessionId), ['middle', 'hot', 'replacement']);
 });
 
@@ -236,7 +236,7 @@ test('HTTP 列表兼容无 parent、默认 50/max200、主会话权限及丰富�
   assert.equal(page.items.length, 50);
   assert.ok(page.nextCursor);
   const detail = await (await f.get('/v1/sessions/session-0')).json();
-  for (const key of ['parentId', 'title', 'kind', 'hasChildren', 'childCount', 'lastActivityAt', 'statusDetail', 'archiveState', 'revision']) assert.ok(key in detail, key);
+  for (const key of ['parentId', 'title', 'kind', 'hasChildren', 'childCount', 'lastActivityAt', 'statusDetail', 'archiveState', 'revision', 'treeRevision']) assert.ok(key in detail, key);
   assert.equal(detail.revision, 1);
   assert.equal((await f.get('/v1/sessions?limit=201')).status, 400);
   const mainConn = f.connection('agent:main');

@@ -261,7 +261,7 @@ export function createActions(runtime: PluginRuntime, execute: ExecuteOperation)
   }
   // 容量检查和写入都针对候选状态；任一步失败时 stored 保持上次落盘的内容。
   async function commit(next: State): Promise<void> {
-    if ([next.identities.size, next.forms.size, next.versions.size].some(size => size > MAX_ENTRIES)) throw new ActionStoreCapacityError();
+    if ([next.identities.size, next.forms.size, next.versions.size].some(size => size > MAX_ENTRIES)) throw new ActionStoreCapacityError("entries");
     await store.save({ identities: [...next.identities], forms: [...next.forms], versions: [...next.versions] });
     stored = next;
   }

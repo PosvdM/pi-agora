@@ -144,11 +144,16 @@ HTTP 签名入口的同步动作（包括 task takeover、limits、提问答复�
 
 旧元数据无法确定主会话标识时省略 `parent` 并给出 `parentDiagnostics`。这些字段不包含 pane 节点 ID，节点映射由插件负责。`isCurrent` 标识任务当前指向的会话，不能按创建时间猜测；`inheritsFrom` 和 `inheritReason` 保留重开或换人的来源。任务在数据库提供接管来源列时返回 `takenOver`，普通任务为 `false`；缺该列的旧库与非任务会话省略，不伪造 `false`。`usage` 按会话累计，并给出最近已知上下文，不把后继会话的上下文填到旧段。
 
-列表、详情、快照、历史、事件流、诊断及完整性校验统一使用会话 ACL：host 全读；主 Agent 只读自己的会话及自己召集的任务树，拒绝跨越接管边界；协作子代理没有全量会话视图权限。异步读取返回前复查 ACL，SSE 存续期间持续复查身份和权限。
+会话的两个修订号用途不同：
 
-`POST /v1/archive/verify` 接受 `{ sessionId? }`。指定 ID 时返回单会话校验结果；省略时按当前身份可见范围分页，查询参数 `limit` 默认 200、上限 200，`cursor` 为不透明水位，响应 `{ items, nextCursor }`，末页 `nextCursor` 为 `null`。CLI 无 ID 时自动跟页并拒绝重复游标。在线校验更新元数据并通知异常；离线校验只读。`GET /v1/status` 返回 `archiveBytes`。
+- `revision`：会话行修订号。会话状态、召集人或存档状态变化时递增，不受其他会话影响。列表、详情、快照响应和 `agora_status` 事件返回的 `revision` 都是它，存档删除的 `expectedRevision` 也与它比较；客户端回填刚读到的值即可。
+- `treeRevision`：列表和详情返回的树修订号，取该会话及其任务最近一次变更的 `seq` 与最近 `tree/all` 结构标记 `seq` 的较大值，与变更流同一口径。pane 插件用它填 `TreeNode.revision`。它会随其他任务的结构迁移变化，不能用作删除等条件操作的版本。
 
-`POST /v1/sessions/:id/archive/delete` 只接受 `{ expectedRevision? }`，省略时使用当前会话 revision。挑战动作是 `agora.archive.delete`，目标为会话 ID，签名参数仅含 `expectedRevision`；即使 `userConfirmation = off` 也强制设备签名。签名前版本冲突返回 `409 conflict`，执行时再次核验。验签先提交 `executing` 与 nonce，再在目标任务控制队列中排空归档并设置删除屏障；执行前复查 ACL、终态、全部 run 的退出 / cleanup、写锁释放和路径证据。无任务关联时返回 `409 archive_offline_required`，要求显式离线维护。删除成功保留元数据并设 `archiveState: "missing"`；规则见 [archive.md](archive.md#保留策略)。
+列表、详情、快照、历史、事件流、诊断及完整性校验统一使用会话 ACL：host 全读；主 Agent 只读自己的会话及自己召集的任务树，拒绝跨越接管边界；协作子代理没有全量会话视图权限。异步读取返回前复查 ACL。SSE 每次写出事件前同步复查身份和权限，用户接管等权限变化提交后产生的事件不会发给已失去权限的连接，连接随即关闭；空闲连接每秒复查一次。
+
+`POST /v1/archive/verify` 接受 `{ sessionId? }`。指定 ID 时返回单会话校验结果；省略时按当前身份可见范围分页，查询参数 `limit` 默认 200、上限 200，`cursor` 为不透明水位，响应 `{ items, nextCursor }`，末页 `nextCursor` 为 `null`。CLI 无 ID 时自动跟页并拒绝重复游标。在线校验更新元数据并通知异常；离线校验只读。`GET /v1/status` 返回 `archiveBytes`，是统计时刻 `sessions` 目录下普通文件的字节数；统计期间被重命名或删除的文件不计入，不会让状态查询失败。
+
+`POST /v1/sessions/:id/archive/delete` 只接受 `{ expectedRevision? }`，取值为列表、详情或快照返回的会话 `revision`，省略时使用当前会话 revision。挑战动作是 `agora.archive.delete`，目标为会话 ID，签名参数仅含 `expectedRevision`；即使 `userConfirmation = off` 也强制设备签名。签名前版本冲突返回 `409 conflict`，执行时再次核验。验签先提交 `executing` 与 nonce，再在目标任务控制队列中排空归档并设置删除屏障；执行前复查 ACL、终态、全部 run 的退出 / cleanup、写锁释放和路径证据。无任务关联时返回 `409 archive_offline_required`，要求显式离线维护。删除成功保留元数据并设 `archiveState: "missing"`；规则见 [archive.md](archive.md#保留策略)。
 
 ### 端点
 
@@ -264,7 +269,8 @@ daemon 是 RPC 事件的唯一消费者，按 stdout 的顺序为每个有进程
   },
   "unfinishedPartials": [ { "runId": "pr_previous", "at": "…", "blocks": [ { "type": "text", "contentIndex": 0, "text": "中断时正在生成的内容……", "done": false } ] } ],
   "status": "running",
-  "statusDetail": null
+  "statusDetail": null,
+  "revision": 3
 }
 ```
 

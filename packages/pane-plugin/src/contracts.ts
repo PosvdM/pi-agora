@@ -36,7 +36,10 @@ export interface SessionItem extends SessionMetadata {
   parent?: SessionParent;
   title: string;
   status: string;
+  /** 会话行修订号，存档删除的 expectedRevision 使用它。 */
   revision: number;
+  /** 变更流口径的树修订号，用作 TreeNode.revision。 */
+  treeRevision: number;
   createdAt: string;
   lastActivityAt?: string;
   statusDetail?: string | null;

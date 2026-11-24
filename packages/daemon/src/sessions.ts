@@ -484,7 +484,7 @@ export class SessionViews {
       inFlight: { ...state.events.inFlight(state.entries, !!state.handle && !state.ended), phase: status.phase },
       unfinishedPartials: projectPartials(clone([...state.archivedPartials,
         ...state.events.unfinished(state.diskEntries, !!state.handle && !state.ended)])),
-      status: status.status, statusDetail: status.statusDetail,
+      status: status.status, statusDetail: status.statusDetail, revision: status.revision,
       usage: this.store.sessionUsage(sessionId),
     };
   }
@@ -540,7 +540,8 @@ export class SessionViews {
       client.finish();
     }
   }
-  stream(sessionId: string, request: IncomingMessage, response: ServerResponse, q: { epoch?: string; afterSeq?: number }): void {
+  /** `authorized` 在每批写出前同步调用；返回 false 时关闭连接，不再写出任何已排队或新产生的事件。 */
+  stream(sessionId: string, request: IncomingMessage, response: ServerResponse, q: { epoch?: string; afterSeq?: number; authorized?: () => boolean }): void {
     this.store.session(sessionId);
     const state = this.states.get(sessionId);
     response.writeHead(200, { "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-cache", Connection: "keep-alive", "X-Accel-Buffering": "no" });
@@ -552,6 +553,7 @@ export class SessionViews {
     const pump = () => {
       if (closed || blocked) return;
       try {
+        if ((replayIndex < replay.length || queue.length) && q.authorized && !q.authorized()) { client.close(); return; }
         while (replayIndex < replay.length || queue.length) {
           if (response.destroyed || response.writableEnded) { client.close(); return; }
           let next: string;

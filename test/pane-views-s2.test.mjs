@@ -10,7 +10,7 @@ function deferred() {
 }
 function item(id = 's1', patch = {}) {
   return { agoraSessionId: id, taskId: `t-${id}`, parentId: 'pane:session:main',
-    title: id, status: 'running', revision: 2, createdAt: '2026-01-01T00:00:00Z',
+    title: id, status: 'running', revision: 2, treeRevision: 2, createdAt: '2026-01-01T00:00:00Z',
     hasChildren: false, ...patch };
 }
 function page(items = [], patch = {}) {
@@ -77,7 +77,7 @@ test('Agent 管理的当前任务显示接管入口，接管后才开放输入�
   assert.equal(managed.composer, undefined);
   assert.match(managed.statusDetail, /由 Agent 管理，接管后可操作/);
   assert.equal((await h.views.sessions.snapshot({ source: 'agora', id: 'managed' })).readonly, true);
-  current = { ...current, parent: { kind: 'user' }, takenOver: true, revision: 3 };
+  current = { ...current, parent: { kind: 'user' }, takenOver: true, revision: 3, treeRevision: 3 };
   const owned = (await h.views.tree.snapshot(req)).nodes.find(node => node.id === 'agora:session:managed');
   assert.ok(owned.capabilities.includes('action:agora.task.recover'));
   assert.ok(!owned.capabilities.includes('action:agora.task.takeover'));
@@ -144,7 +144,7 @@ test('树串行读取任务会话，非树对象推进来源修订号', async t 
     if (path === '/v1/tasks/t1') return task.promise;
     if (path === '/v1/sessions/s1') return session.promise;
     if (path === '/v1/tasks/t2') return { status: 200, body: { agoraSessionId: 's2' } };
-    if (path === '/v1/sessions/s2') return { status: 200, body: item('s2', { revision: 999 }) };
+    if (path === '/v1/sessions/s2') return { status: 200, body: item('s2', { revision: 999, treeRevision: 999 }) };
   });
   const emitted = [];
   h.views.tree.subscribe({ epoch: 'db', revision: 0 }, value => emitted.push(value));

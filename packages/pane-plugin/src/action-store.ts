@@ -9,7 +9,10 @@ export class ActionStoreError extends Error {
 }
 // 候选快照超过上限时不写盘，存储保持可用；已落盘的快照和调用方的内存状态都不变。
 export class ActionStoreCapacityError extends Error {
-  constructor() { super("动作请求存储容量不足（16 MiB），新操作未执行；请使用原请求标识查询已有操作或等待记录过期"); }
+  /** `limit` 指明触发的上限：文件字节数或记录条数。 */
+  constructor(limit: "bytes" | "entries" = "bytes") {
+    super(`动作请求存储容量不足（${limit === "entries" ? "记录数已达 4096 条上限" : "文件已达 16 MiB 上限"}），新操作未执行；请使用原请求标识查询已有操作或等待记录过期`);
+  }
 }
 
 // 一个插件实例独占数据目录。读取或写入失败后存储关闭，必须重启插件；
@@ -56,7 +59,7 @@ export class ActionStore {
   async save(data: unknown): Promise<void> {
     this.check();
     const json = JSON.stringify({ version: 1, data });
-    if (Buffer.byteLength(json, "utf8") > ACTION_STORE_LIMIT) throw new ActionStoreCapacityError();
+    if (Buffer.byteLength(json, "utf8") > ACTION_STORE_LIMIT) throw new ActionStoreCapacityError("bytes");
     let temporary: string | undefined;
     try {
       await mkdir(this.dataDir, { recursive: true, mode: 0o700 });

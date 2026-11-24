@@ -33,7 +33,7 @@ function group(revision: number): TreeNode {
   return { id: USER_TASKS, source: "agora", kind: "group", parentId: null, title: "用户任务",
     status: "idle", availability: "online", hasChildren: true, sortKey: "", revision, capabilities: [] };
 }
-function node(item: SessionItem, revision = item.revision): TreeNode {
+function node(item: SessionItem, revision = item.treeRevision): TreeNode {
   if (item.agoraSessionId === USER_TASKS) return group(revision);
   const capabilities = ["open"];
   const historical = !!item.taskId && item.isCurrent === false;

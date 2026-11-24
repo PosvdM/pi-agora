@@ -76,7 +76,7 @@ function viewsFixture(t, store) {
 }
 
 function projection(item) {
-  return { id: item.agoraSessionId, parentId: item.parentId, childCount: item.childCount, hasChildren: item.hasChildren, revision: item.revision };
+  return { id: item.agoraSessionId, parentId: item.parentId, childCount: item.childCount, hasChildren: item.hasChildren, revision: item.treeRevision };
 }
 async function snapshotMatchesSql(views, store, ids) {
   const request = { openNodeIds: ids.map(nodeId), recentSince: '2999-01-01T00:00:00.000Z' };
@@ -136,8 +136,8 @@ for (const mode of ['reopen', 'replace']) test(`父任务 ${mode} 使全部历�
     assert.equal(after.get(id).status, before.get(id).status);
   }
   for (const id of ids) {
-    assert.ok(after.get(id).revision >= markers[0].seq, id);
-    if (before.has(id)) assert.ok(after.get(id).revision > before.get(id).revision, id);
+    assert.ok(after.get(id).treeRevision >= markers[0].seq, id);
+    if (before.has(id)) assert.ok(after.get(id).treeRevision > before.get(id).treeRevision, id);
     assert.deepEqual(after.get(id), sessionDetail(f.store, id));
   }
 });
@@ -161,7 +161,7 @@ test('已完成子任务中断重开推进外父计数及 revision；普通状�
   const after = items.find(item => item.agoraSessionId === parent.agoraSessionId);
   assert.equal(before.childCount, 1);
   assert.equal(after.childCount, 2);
-  assert.ok(after.revision > before.revision);
+  assert.ok(after.treeRevision > before.treeRevision);
   for (const id of [child.agoraSessionId, reopened.agoraSessionId]) {
     const item = sessionDetail(f.store, id);
     assert.equal(item.parentId, nodeId(parent.agoraSessionId));
@@ -211,7 +211,7 @@ test('结构 marker 与迁移一同回滚；prune 及重启保留结构 revision
   assert.ok(latest > saved.seq);
   for (let i = 0; i < ids.length; i++) {
     const item = sessionDetail(f.store, ids[i]);
-    assert.equal(item.revision, latest, '同时取保留 head 与最新 marker 的最大值');
+    assert.equal(item.treeRevision, latest, '同时取保留 head 与最新 marker 的最大值');
     assert.equal(item.lastActivityAt, before[i].lastActivityAt, '全树失效不把冷节点变成近期节点');
   }
 });

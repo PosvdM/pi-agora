@@ -77,22 +77,28 @@ export class ArchiveVerifier {
   }
 }
 
-/** 不跟随会话目录中的符号链接，磁盘统计也不能越出存档树。 */
+// 统计期间旁车临时文件重命名、存档删除都属正常并发，消失的条目不计入，不让状态查询失败。
+function vanished(error: NodeJS.ErrnoException): undefined {
+  if (error.code === "ENOENT" || error.code === "ENOTDIR") return undefined;
+  throw error;
+}
+
+/** 不跟随会话目录中的符号链接，磁盘统计也不能越出存档树。结果是统计时刻的近似值。 */
 export async function archiveStorageBytes(home: string): Promise<number> {
   let bytes = 0;
   const directories = [path.join(home, "sessions")];
   while (directories.length) {
     const directory = directories.pop()!;
-    const own = await lstat(directory).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return undefined; throw error; });
-    if (!own || own.isSymbolicLink()) continue;
-    const entries = await readdir(directory, { withFileTypes: true });
+    const own = await lstat(directory).catch(vanished);
+    if (!own || own.isSymbolicLink() || !own.isDirectory()) continue;
+    const entries = await readdir(directory, { withFileTypes: true }).catch(vanished) ?? [];
     for (const entry of entries) {
       if (entry.isSymbolicLink()) continue;
       const file = path.join(directory, entry.name);
       if (entry.isDirectory()) directories.push(file);
       else if (entry.isFile()) {
-        const info = await lstat(file);
-        if (info.isFile() && !info.isSymbolicLink()) bytes += info.size;
+        const info = await lstat(file).catch(vanished);
+        if (info?.isFile()) bytes += info.size;
       }
     }
   }
