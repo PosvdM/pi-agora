@@ -1,6 +1,6 @@
 # Harness 耦合清单
 
-本清单覆盖源码、测试、配置、CLI 输出及项目文档。当前运行时仅支持 pi 1.5.x。目录边界见 [总体架构的 Harness 适配层](architecture.md#harness-适配层)。
+本清单覆盖源码、测试、配置、CLI 输出及项目文档。当前运行时仅支持 pi 1.5.x 和 1.6.x。目录边界见 [总体架构的 Harness 适配层](architecture.md#harness-适配层)。
 
 代价指替换该项所依赖的 Harness 行为所需的改动范围：低表示适配层内的局部替换，中表示需要实现并验证一组能力，高表示涉及领域调用方、持久化、公开协议或扩展生命周期。整体迁移文件的代价与替换其行为的代价不同；本轮只收拢不改变调用方合同的代码，不实现其他 Harness。
 
@@ -80,13 +80,13 @@
 | `packages/protocol/src/index.ts`：`ThinkingLevel/EXPLORE_TOOLS/ReadyReport/spawnTaskSchema`；`tasks.ts/auth.ts` 的工具与模型策略 | thinking 枚举、`provider/id` 模型名、内置工具名、扩展版本及就绪字段。 | 做能力映射并确定协议兼容，不扩散新 Harness 原始字段到领域层。 | 高，仅记录 |
 | `packages/protocol/src/client.ts`：`agoraHome`；`packages/cli/src/index.ts`；`packages/daemon/src/main.ts` | 默认 `~/.pi/agora`，worktree 默认 `~/.pi/agora-worktrees`。client 自动启动的是 agora daemon，不是 pi。 | 确定目录兼容与旧数据发现，避免更换 Harness 后误开空数据目录。 | 中 |
 | `packages/cli/src/index.ts`：`HELP/runCli`；`server.ts`：`sessionView` | 帮助称“pi 协作引擎”；`ls/show` 原样输出含 `piSessionId` 的 HTTP JSON。 | 品牌文案可局部修改；字段需要版本兼容。当前 CLI 输出保持不变，连接错误仅补底层错误码。 | 文案低；字段高 |
-| 各 `package.json`、`package-lock.json`、`.github/workflows/ci.yml` | pi-agora 品牌和包描述、固定 pi-hostkit 依赖；CI 安装真实 pi 1.5.0。 | 核对平台包哪些 API 为 pi 专用；为新适配器提供独立运行时安装与矩阵。 | 中 |
+| 各 `package.json`、`package-lock.json`、`.github/workflows/ci.yml` | pi-agora 品牌和包描述、固定 pi-hostkit 依赖；CI 分别安装真实 pi 1.5.0 和 1.6.0。 | 核对平台包哪些 API 为 pi 专用；为新适配器提供独立运行时安装与矩阵。 | 中 |
 
 ## 测试与文档
 
 | 位置 | pi 依赖 | 更换 Harness 时的工作 | 代价 |
 | --- | --- | --- | --- |
-| `test/fixtures/driver-helpers.mjs`、`driver-host.mjs`、`driver-fault-worker.mjs`；`test/driver*.test.mjs` | 真实 pi 1.5.0、`PI_PACKAGE` 与 `PI_*` 环境、用户 settings、写锁和 RPC；D15 内存加载 pi 实现并替换 hostkit，旧 `dist/driver.js` 导入继续可用。 | 为新 Harness 保留相同故障语义和独立真实夹具；不要只替换 mock。 | 中 |
+| `test/fixtures/driver-helpers.mjs`、`driver-host.mjs`、`driver-fault-worker.mjs`；`test/driver*.test.mjs` | 真实 pi（pi-hostkit 支持范围内的版本）、`PI_PACKAGE`、`HOSTKIT_TEST_PI_VERSION` 与 `PI_*` 环境、用户 settings、写锁和 RPC；D15 内存加载 pi 实现并替换 hostkit，旧 `dist/driver.js` 导入继续可用。 | 为新 Harness 保留相同故障语义和独立真实夹具；不要只替换 mock。 | 中 |
 | `test/fixtures/*provider.ts`、`driver-extension.ts`、`notify-extension.ts`；`test/*e2e*.test.mjs`、`daemon*.test.mjs`、`cli.test.mjs`、`notification-clear-1b.test.mjs`、`claim-fork-1b.test.mjs` | pi Provider 注册、`@earendil-works/pi-ai/compat`、扩展工具与命令、`AgentSession/SessionManager`、真实会话格式和通知落盘。CLI 测试也有真实 pi 夹具。 | 替换模型假服务接入和运行夹具，保持不联网、HOME 隔离、正负控制、进程清理和通知证明。 | 高 |
 | `test/extension*.test.mjs`、`permissions-1b.test.mjs`、`notice-fork.test.mjs`、`notify-faults.test.mjs`；`experiments/p0/` | pi 扩展 API mock、生命周期、路径、消息字段和早期 pi 行为实测。 | 更新目标 Harness 的契约测试并独立实测；P0 文件属于历史证据，不能将其结果当作新 Harness 证据。 | 中—高 |
 | `test/task-1b.test.mjs`、`task-d15.test.mjs` | 假驱动构造 pi RPC 响应和事件，领域测试仍知道队列与会话格式。 | 随高成本任务层解耦统一替换，不只更新文件导入。 | 高 |

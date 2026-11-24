@@ -206,4 +206,4 @@ export interface Page<T> { items: T[]; nextCursor?: string }
 - adapter 不暴露 SQLite 表结构。数据库迁移时同步更新 adapter；`apiVersion` 只在返回结构不兼容时递增，旧版本保留至少一个大版本。
 - 不读取、不返回密封草稿。
 - `listBoardEntries`、`getMeeting` 保留为明确失败的占位接口，当前调用返回 `unsupported`，不伪造空结果。
-- `test/archive-parser-pi-1d.test.mjs` 用真实 pi 1.5.0 重新打开副本，核对 v1/v2/v3、分支和截断文件的条目与叶子；原文件哈希始终不变。`archive-e2e-1d.test.mjs` 验证真实流中途强杀后的三类块、退出诊断和完整落盘后的去重。
+- `test/archive-parser-pi-1d.test.mjs` 用真实 pi 重新打开副本，核对 v1/v2/v3、分支和截断文件的条目与叶子；原文件哈希始终不变。`archive-e2e-1d.test.mjs` 验证真实流中途强杀后的三类块、退出诊断和完整落盘后的去重。
