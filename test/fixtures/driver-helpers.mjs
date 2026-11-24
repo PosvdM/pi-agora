@@ -20,10 +20,16 @@ export async function until(fn, ms = 10_000, interval = 25) {
     await delay(interval);
   }
 }
+// 版本须在 pi-hostkit 的支持范围内；CI 设置 HOSTKIT_TEST_PI_VERSION 时还要求实际找到的正是该版本，防止矩阵装错版本仍然通过。
+export function assertTestPi(install) {
+  if (!install.supported) throw new Error(`驱动集成测试要求 pi-hostkit 支持的 pi 版本，当前为 ${install.version}`);
+  const expected = process.env.HOSTKIT_TEST_PI_VERSION;
+  if (expected && install.version !== expected) throw new Error(`HOSTKIT_TEST_PI_VERSION 要求 pi ${expected}，实际找到 ${install.version}（${install.packageDir}）`);
+  return install;
+}
 let pi;
 export async function piInstall() {
-  pi ??= await locatePi(process.env.PI_PACKAGE ? { piPath: process.env.PI_PACKAGE } : {});
-  if (pi.version !== "1.5.0") throw new Error(`驱动集成测试要求 pi 1.5.0，当前为 ${pi.version}`);
+  pi ??= assertTestPi(await locatePi(process.env.PI_PACKAGE ? { piPath: process.env.PI_PACKAGE } : {}));
   return pi;
 }
 export async function piFixture(script = { turns: [] }) {

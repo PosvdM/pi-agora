@@ -16,7 +16,7 @@ function normalize(entries, leafId) {
   return { entries: entries.map(entry => ({ ...entry, id: id(entry.id), parentId: id(entry.parentId), ...('firstKeptEntryId' in entry ? { firstKeptEntryId: id(entry.firstKeptEntryId) } : {}) })), leafId: id(leafId) };
 }
 
-test('真实 pi 1.5.0：v1/v2/v3 与截断文件的只读解析对齐重新打开语义', { timeout: 150_000 }, async t => {
+test('真实 pi：v1/v2/v3 与截断文件的只读解析对齐重新打开语义', { timeout: 150_000 }, async t => {
   const f = await piFixture({ turns: [{ segments: [{ type: 'text', text: '真实会话解析测试' }] }] });
   const driver = new RpcSubprocessDriver({ home: path.join(f.root, 'agora'), piPath: f.install.packageDir, extensionPath, extraExtensions: [providerPath], containment, stopOptions });
   const handles = [];
