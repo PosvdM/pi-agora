@@ -39,7 +39,7 @@ npm test
 | `packages/protocol/src/git.ts` | 共用 Git 安全调用层、配置与环境清理、字面路径和只读查询白名单 |
 | `packages/daemon/src/index.ts`、`main.ts` | 配置、单实例、启动恢复、排空与入口 |
 | `packages/daemon/src/server.ts`、`auth.ts` | HTTP、幂等记录、principal、租约、launch ticket |
-| `packages/daemon/src/store.ts`、`archive-schema.ts` | schema v6、一致性备份、迁移、条件更新、outbox、逐请求用量和归档证据 |
+| `packages/daemon/src/store.ts`、`archive-schema.ts` | schema v7、一致性备份、迁移、条件更新、outbox、逐请求用量和归档证据 |
 | `packages/daemon/src/acl.ts` | 任务、提问和会话的统一资源授权、可见会话分页、直接召集关系与接管边界 |
 | `packages/daemon/src/budgets.ts` | 有效预算配置、计数口径、祖先预算、共享日授予账本 |
 | `packages/daemon/src/security.ts` | JCS、设备签名、同步 / 异步确认、设置、离线锁、警告与审计 |

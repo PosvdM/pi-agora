@@ -314,7 +314,8 @@ test("健康检查只在缺少发现或传输不可达时返回离线", async ()
   } finally { server.closeAllConnections(); if (server.listening) await new Promise(resolve => server.close(resolve)); await rm(home, { recursive: true, force: true }); }
 });
 
-async function maintenanceFixture(version = 6) {
+// real 为 true 时按真实迁移建库；默认的 v6 夹具只建删除路径用到的表。
+async function maintenanceFixture(version = 6, real = version < 6) {
   const home = await mkdtemp(path.join(tmpdir(), "agora-cli-delete-")), id = "as_safe", directory = path.join(home, "sessions", id);
   await mkdir(directory, { recursive: true }); await mkdir(path.join(home, "run"));
   const file = path.join(directory, "session.jsonl"); await writeFile(file, "{}\n");
@@ -329,7 +330,7 @@ async function maintenanceFixture(version = 6) {
     throw error;
   }
   const db = new DatabaseSync(path.join(home, "agora.db"));
-  if (version < 6) {
+  if (real) {
     db.exec("CREATE TABLE schema_version(version INTEGER,migrated_at TEXT)");
     db.exec(schemaMigrations.slice(0, version).join("\n"));
     db.prepare("INSERT INTO schema_version VALUES(?,'测试')").run(version);
@@ -362,6 +363,29 @@ for (const version of [4, 5]) test(`离线删除真实 v${version} 旧库不依�
     assert.equal(f.db.prepare("SELECT version FROM schema_version").get().version, version);
     assert.equal(f.db.prepare("SELECT tombstone FROM changes ORDER BY seq DESC LIMIT 1").get().tombstone, 0);
     assert.deepEqual(f.db.prepare("PRAGMA table_info(agora_sessions)").all().map(row => row.name), columns);
+  } finally { await f.cleanup(); }
+});
+for (const version of [6, 7]) test(`离线删除真实迁移的 v${version} 库，写入归档诊断字段，不迁移数据库`, async () => {
+  const f = await maintenanceFixture(version, true);
+  try {
+    await releasedWriter(f.file);
+    f.db.prepare("UPDATE agora_sessions SET archive_error='旧错误' WHERE id=?").run(f.id);
+    assert.equal((await deleteArchiveOffline({ home: f.home, sessionId: f.id })).deleted, true);
+    await assert.rejects(access(f.directory));
+    const row = f.db.prepare("SELECT archive_state,archive_error FROM agora_sessions WHERE id=?").get(f.id);
+    assert.equal(row.archive_state, "missing"); assert.equal(row.archive_error, null);
+    assert.equal(f.db.prepare("SELECT version FROM schema_version").get().version, version);
+  } finally { await f.cleanup(); }
+});
+test("离线删除拒绝未知的更高 schema 版本，不删除文件也不改库", async () => {
+  const f = await maintenanceFixture(7, true);
+  try {
+    f.db.exec("UPDATE schema_version SET version=8");
+    await releasedWriter(f.file);
+    await assert.rejects(deleteArchiveOffline({ home: f.home, sessionId: f.id }), /维护接口核对/);
+    await access(f.file);
+    assert.equal(f.db.prepare("SELECT archive_state FROM agora_sessions").get().archive_state, "ok");
+    assert.equal(f.db.prepare("SELECT version FROM schema_version").get().version, 8);
   } finally { await f.cleanup(); }
 });
 test("离线删除持有两类锁、保留元数据并发布 upsert", async () => {

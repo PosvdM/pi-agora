@@ -30,7 +30,8 @@ function filterOf(conn: Connection, params: URLSearchParams): Filter {
   return { owner: conn.type === "agent:main" ? conn.principalId! : null, parent, snapshot, open, recent, legacy: parent === null && !snapshot };
 }
 
-// 原列表只列直接召集的任务；树查询允许读取同一召集人的任务子树。
+// allowed 与 AccessControl.sessions 的可见集合一致：主 Agent 召集的任务及其由 Agent 召集的下级任务；
+// 接管后的任务召集人为用户，连同子树不再对原召集人可见。普通列表和树查询都以它为准。
 function treeSql(): string {
   return `WITH RECURSIVE allowed(id) AS (
     SELECT id FROM tasks WHERE $owner IS NULL OR convener_id=$owner
@@ -105,7 +106,7 @@ export function listSessions(store: Store, conn: Connection, params: URLSearchPa
     }
     if (filter.snapshot && raw) invalid("树快照不接受分页游标");
     const resultLimit = filter.snapshot ? 10_000 : limit;
-    const args = { $owner: filter.owner, $legacy: filter.legacy ? 1 : 0, $after: after, $limit: resultLimit + 1, $parent: filter.parent };
+    const args = { $owner: filter.owner, $after: after, $limit: resultLimit + 1, $parent: filter.parent };
     let sql = treeSql();
     if (filter.snapshot) {
       sql += `, hot(id) AS (SELECT id FROM base WHERE effective_status IN ('created','running','waiting','paused','waiting_decision','waiting_children','quota_paused','budget_paused')
@@ -114,7 +115,6 @@ export function listSessions(store: Store, conn: Connection, params: URLSearchPa
     }
     sql += ` SELECT b.*,(SELECT COUNT(*) FROM base child WHERE child.parent_id='agora:session:' || b.id) AS child_count FROM base b
       WHERE b.cursor>$after AND ($parent IS NULL OR b.parent_id=$parent)
-        AND ($legacy=0 OR $owner IS NULL OR b.task_convener_id=$owner)
         ${filter.snapshot ? "AND b.id IN (SELECT id FROM wanted)" : ""} ORDER BY b.cursor LIMIT $limit`;
     const rows = store.db.prepare(sql).all({ ...args, ...(filter.snapshot ? { $open: JSON.stringify(filter.open), $recent: filter.recent } : {}) }) as unknown as ListedSession[];
     if (filter.snapshot && rows.length > resultLimit) throw new AgoraError(413, "snapshot_too_large", "热节点及祖先超过一万条，请减少打开的会话和最近时间范围");

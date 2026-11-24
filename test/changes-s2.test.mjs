@@ -136,8 +136,9 @@ test('按父节点分页绑定 parent、snapshot、openNodeId、recentSince 和�
   assert.throws(() => listSessions(store, host, params('parent=agora:session:a&cursor=1'), 1), /游标/);
   assert.deepEqual(listSessions(store, host, params('parent=agora:session:a'), 50).items.map(item => item.agoraSessionId), ['child']);
   assert.equal(listSessions(store, host, params('parent=agora:root:user-tasks'), 50).items[0].agoraSessionId, 'user');
+  // 普通列表等于 ACL 可见集合：主 Agent 召集的任务及其由 Agent 召集的下级任务，不含用户任务。
   const own = listSessions(store, { type: 'agent:main', principalId: 'main' }, params(''), 50);
-  assert.deepEqual(own.items.map(item => item.agoraSessionId), ['a', 'b']);
+  assert.deepEqual(own.items.map(item => item.agoraSessionId), ['a', 'b', 'child']);
   assert.equal(own.items[0].hasChildren, true);
   assert.equal(own.items[0].childCount, 1);
   const hot = listSessions(store, host, params('snapshot=1&openNodeId=agora:session:a&openNodeId=agora:session:b'), 1);

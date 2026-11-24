@@ -316,7 +316,7 @@ CLI `tail` 在连接凭证到期前续期，按最后收到的 `{ epoch, seq }` 
 - **保留与过期**：变更记录保留 7 天且至少保留最近 10 万条。请求的 `epoch` 不同、`afterSeq` 早于保留范围、或 `afterSeq` 大于当前 head 时，daemon 只返回一条 `event: reset`；客户端（pane 插件）丢弃本地状态，重新取快照。
 - **快照切点**：`GET /v1/sessions` 等列表接口的响应带 `changesCursor: { epoch, seq }`，与列表内容在同一个只读事务里读出，客户端用它订阅变更流即可不重不漏。
 
-会话列表的普通分页默认 50 条、最多 200 条；`parent=<nodeId>` 只返回直接子节点，游标绑定数据库 epoch、调用者和过滤条件，不能跨父节点复用。返回的 `parent?: SessionParent` 使用中立的 `task`、`main` 或 `user` 关系，节点 ID 由 pane 插件映射；无法确定主会话 ID 时省略关系，进入未归属。用户接管后 `convener = user` 的挂载优先于预算树的 `parentTaskId`，该任务连同子树移入用户任务根；预算和用量仍保留原父链，原召集人不能通过树查询继续读取接管子树。
+会话列表的普通分页默认 50 条、最多 200 条。不带 `parent` 时返回调用者可读取的全部会话：主 Agent 看到自己召集的任务及其由 Agent 召集的下级任务，不含已被用户接管的子树；与会话详情等接口的授权集合相同。`parent=<nodeId>` 只返回直接子节点，游标绑定数据库 epoch、调用者和过滤条件，不能跨父节点复用。返回的 `parent?: SessionParent` 使用中立的 `task`、`main` 或 `user` 关系，节点 ID 由 pane 插件映射；无法确定主会话 ID 时省略关系，进入未归属。用户接管后 `convener = user` 的挂载优先于预算树的 `parentTaskId`，该任务连同子树移入用户任务根；预算和用量仍保留原父链，原召集人不能通过树查询继续读取接管子树。
 
 `GET /v1/sessions?snapshot=1&openNodeId=<可重复>&recentSince=<ISO时间>` 在同一切点返回全部热节点及祖先。树快照不分页、不接受 `cursor`，最多一万条；超限返回 `413 snapshot_too_large`，不静默截断。`snapshot=1` 不能与 `parent` 同时使用。
 
