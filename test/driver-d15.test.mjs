@@ -6,10 +6,12 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import * as hostkit from "pi-hostkit";
+import { assertTestPi } from "./fixtures/driver-helpers.mjs";
 
 // 在内存中加载源文件，不生成 dist，也不启动 provider 或子进程。
-const pi = await hostkit.locatePi(process.env.D15_PI_PATH ? { piPath: process.env.D15_PI_PATH } : {});
-assert.equal(pi.supported, true);
+// D15_PI_PATH 只用于本文件，优先于其他真实 pi 测试共用的 PI_PACKAGE。
+const piPath = process.env.D15_PI_PATH || process.env.PI_PACKAGE;
+const pi = assertTestPi(await hostkit.locatePi(piPath ? { piPath } : {}));
 const launches = [];
 const processes = new Map();
 const processKey = (identity) => JSON.stringify([identity.pid, identity.startTime, identity.runId, identity.instanceId]);

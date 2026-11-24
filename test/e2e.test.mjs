@@ -11,7 +11,7 @@ import { piFixture, providerPath, containment, until } from "./fixtures/driver-h
 const extensionPath = fileURLToPath(new URL("../packages/extension/dist/index.js", import.meta.url));
 const mainProvider = fileURLToPath(new URL("./fixtures/e2e-main-provider.ts", import.meta.url));
 
-test("真实 pi 1.5.0 主会话派出只读子代理，收到持久通知后自动取回结果", { timeout: 120_000 }, async () => {
+test("真实 pi 主会话派出只读子代理，收到持久通知后自动取回结果", { timeout: 120_000 }, async () => {
   const f = await piFixture({ turns: [
     { usage: { input: 11, output: 3 }, segments: [{ type: "toolCall", name: "read", arguments: { path: "evidence.txt" } }] },
     { usage: { input: 13, output: 5 }, segments: [{ type: "text", text: "子代理结果：只读检查通过" }] },

@@ -7,7 +7,7 @@ pi-agora 是 [pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent)
 
 ## 使用
 
-需要 Node.js 24 及以上、pi 1.5.x，以及编译 pi-hostkit 原生模块的工具链（Python 3 和 C/C++ 编译器；Windows 使用 Visual Studio Build Tools）。仓库不发布到 npm，从源码安装：
+需要 Node.js 24 及以上、pi 1.5.x 或 1.6.x，以及编译 pi-hostkit 原生模块的工具链（Python 3 和 C/C++ 编译器；Windows 使用 Visual Studio Build Tools）。仓库不发布到 npm，从源码安装：
 
 ```sh
 npm install
@@ -132,17 +132,17 @@ packages/
   protocol/      协议类型与 schema
 ```
 
-运行环境：Node.js 24 及以上（使用内置 `node:sqlite`），pi 1.5.x；Windows、macOS、Linux 同时支持。pi 依次从配置项 `piPath`、pi 官方安装脚本的安装目录、全局 npm 目录查找，见 [pi-hostkit 的“定位 pi”](https://github.com/PosvdM/pi-hostkit/blob/main/docs/design.md#定位-pi)。
+运行环境：Node.js 24 及以上（使用内置 `node:sqlite`），pi 1.5.x 或 1.6.x；Windows、macOS、Linux 同时支持。pi 依次从配置项 `piPath`、pi 官方安装脚本的安装目录、全局 npm 目录查找，见 [pi-hostkit 的“定位 pi”](https://github.com/PosvdM/pi-hostkit/blob/main/docs/design.md#定位-pi)。
 
 ## 开发
 
 ```sh
 npm run build    # tsc project references 构建工作区
 
-npm test         # 构建后用 node --test 验证，真实 pi 测试要求 1.5.0
+npm test         # 构建后用 node --test 验证，真实 pi 测试要求 pi 1.5.x 或 1.6.x
 ```
 
-依赖 pi-hostkit 的固定提交 `b6659ea30a63e7b35b8c7f16cdfa22e7dd5442a6`。测试使用本地假 provider，不访问模型服务，并把 HOME、agent 配置、数据和锁目录隔离到临时目录。CI 覆盖 Windows、macOS、Linux（cgroup 和快照两种模式）。构建、测试映射和限制见 [docs/development.md](docs/development.md)。
+依赖 pi-hostkit 的固定提交 `ebb76757038e622f7d12b4da0cf2091f8a3c89e9`。测试使用本地假 provider，不访问模型服务，并把 HOME、agent 配置、数据和锁目录隔离到临时目录。CI 在 Windows、macOS、Linux（cgroup 和快照两种模式）上分别用 pi 1.5.0 和 1.6.0 测试。构建、测试映射和限制见 [docs/development.md](docs/development.md)。
 
 ## 文档
 

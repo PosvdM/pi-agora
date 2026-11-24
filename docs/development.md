@@ -16,8 +16,8 @@
 
 ## 环境与构建
 
-- Node.js 24 及以上、npm、pi 1.5.x。真实进程测试固定 pi 1.5.0。
-- pi-hostkit 固定为 git 提交 `b6659ea30a63e7b35b8c7f16cdfa22e7dd5442a6`，不引用相邻仓库工作区。安装会运行 prepare 构建；原生模块需要 Python 3 和 C/C++ 工具链，Windows 使用 Visual Studio Build Tools。
+- Node.js 24 及以上、npm、pi 1.5.x 或 1.6.x（pi-hostkit 的支持范围 `>=1.5.0 <1.7.0`）。
+- pi-hostkit 固定为 git 提交 `ebb76757038e622f7d12b4da0cf2091f8a3c89e9`，不引用相邻仓库工作区。安装会运行 prepare 构建；原生模块需要 Python 3 和 C/C++ 工具链，Windows 使用 Visual Studio Build Tools。
 - 数据库使用内置 `node:sqlite`、WAL 和 FULL 同步级别。
 
 ```sh
@@ -157,7 +157,7 @@ shutdown 默认排空，超时后保留 daemon；force 中断并清理运行。�
 
 ## 测试与 CI
 
-测试使用真实 pi 1.5.0 和本地假 provider，不访问模型服务。HOME、USERPROFILE、APPDATA、LOCALAPPDATA、agent 配置、会话、数据与锁全部隔离。公共夹具在真实 pi 或会话锁操作前核对四个用户目录都位于独立临时现场，缺失重定向或链接越界直接失败；假驱动必须等最终授权，而不是把内部 `markReady` 当作启动完成。PI_PACKAGE 可指定安装；KEEP_FIXTURES=1 可保留现场。
+测试使用真实 pi 和本地假 provider，不访问模型服务。HOME、USERPROFILE、APPDATA、LOCALAPPDATA、agent 配置、会话、数据与锁全部隔离。公共夹具在真实 pi 或会话锁操作前核对四个用户目录都位于独立临时现场，缺失重定向或链接越界直接失败；假驱动必须等最终授权，而不是把内部 `markReady` 当作启动完成。真实 pi 的版本必须在 pi-hostkit 的支持范围内，否则测试直接失败。`PI_PACKAGE` 可指定安装；`driver-d15.test.mjs` 优先读取 `D15_PI_PATH`，未设置时也使用 `PI_PACKAGE`。设置 `HOSTKIT_TEST_PI_VERSION` 时，测试要求实际找到的 pi 正是该版本。`KEEP_FIXTURES=1` 可保留现场。
 
 | 测试文件 | 验收与边界 |
 | --- | --- |
@@ -191,11 +191,11 @@ shutdown 默认排空，超时后保留 daemon；force 中断并清理运行。�
 | `test/changes-s2.test.mjs`、`pane-daemon-s2.test.mjs` | daemon 重启与变更流 reset、原子热快照、按父分页、持续鉴权和背压；真实 HTTP 插件树重新收敛 |
 | `test/pane-*-s2.test.mjs`、`pane-api-vendor.test.mjs` | 插件在线/离线映射、动态动作、持久表单、确认与横幅、重启幂等和生命周期；详细映射见 [pane-plugin.md](pane-plugin.md#测试) |
 
-CI 在 Windows、macOS、Linux auto / snapshot 四个组合执行 npm test。Linux auto 要求真实 cgroup 可用。Windows 完整测试后额外重复 shell 后代退出核对十次；每次在停止报告返回后立即查询独立 oracle 的已知身份，保留完整 StopReport 和单次观测诊断，不设置额外观察窗口，也不补杀。driver-faults 在 Windows 与 Linux 隔离 worker 中均断言单次核对、失败保锁及显式重试不重放底层停止。
+CI 在 Windows、macOS、Linux auto / snapshot 四个组合上，分别安装 pi 1.5.0 和 1.6.0 执行 npm test，共八个任务，并通过 `HOSTKIT_TEST_PI_VERSION` 断言测试实际使用的 pi 版本。Linux auto 要求真实 cgroup 可用。Windows 完整测试后额外重复 shell 后代退出核对十次；每次在停止报告返回后立即查询独立 oracle 的已知身份，保留完整 StopReport 和单次观测诊断，不设置额外观察窗口，也不补杀。driver-faults 在 Windows 与 Linux 隔离 worker 中均断言单次核对、失败保锁及显式重试不重放底层停止。
 
 macOS 完整测试后额外执行 25 次“忽略 abort 的 provider”真实用例；`CI` 环境下 `AGORA_STOP_PROVIDER_REPEATS` 控制该用例的注册次数（1–100，默认 1）。每次都保留原停止期限、报告校验和独立身份断言，单次失败即使后续成功也使测试失败。
 
-停止失败以完整 JSON 输出 `code`、`message`、`verificationPhase`、`status`、`attempts`、`timeoutMs`、`identity` 和 `stopReport`。driver 的 `stopFailure` 及 `stopTrace` 记录报告校验和身份复查阶段、清队列、底层停止和进程退出的时间点；`verificationPhase` 区分报告拒绝、有效报告后的身份复查与停止/锁错误。设置 `AGORA_DRIVER_DIAGNOSTICS_DIR` 时，测试在清理临时现场前将 driver 诊断写入该目录；CI 始终上传为 `driver-diagnostics-<平台>-<模式>` artifact。
+停止失败以完整 JSON 输出 `code`、`message`、`verificationPhase`、`status`、`attempts`、`timeoutMs`、`identity` 和 `stopReport`。driver 的 `stopFailure` 及 `stopTrace` 记录报告校验和身份复查阶段、清队列、底层停止和进程退出的时间点；`verificationPhase` 区分报告拒绝、有效报告后的身份复查与停止/锁错误。设置 `AGORA_DRIVER_DIAGNOSTICS_DIR` 时，测试在清理临时现场前将 driver 诊断写入该目录；CI 始终上传为 `driver-diagnostics-<平台>-pi<版本>-<模式>` artifact。
 
 ### Windows 本机实测
 

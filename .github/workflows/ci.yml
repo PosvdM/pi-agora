@@ -36,20 +36,25 @@ jobs:
         run: node --test --test-concurrency=1 test/git-1b.test.mjs test/git-contexts-review.test.mjs test/git-execution-review.test.mjs test/git-index-review.test.mjs test/git-paths-review.test.mjs test/git-security-review.test.mjs test/git-worktree-layout-review.test.mjs
 
   test:
-    name: test (${{ matrix.os }}, ${{ matrix.containment }})
+    name: test (${{ matrix.os }}, pi ${{ matrix.pi }}, ${{ matrix.containment }})
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        containment: [auto]
-        include:
-          # Linux 的第二轮覆盖进程快照模式。
-          - os: ubuntu-latest
+        # pi-hostkit 支持范围内的每个次版本各测一个。
+        pi: ["1.5.0", "1.6.0"]
+        # Linux 的第二轮覆盖进程快照模式。
+        containment: [auto, snapshot]
+        exclude:
+          - os: macos-latest
+            containment: snapshot
+          - os: windows-latest
             containment: snapshot
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     env:
       HOSTKIT_TEST_CONTAINMENT: ${{ matrix.containment }}
+      HOSTKIT_TEST_PI_VERSION: ${{ matrix.pi }}
       AGORA_DRIVER_DIAGNOSTICS_DIR: test-artifacts/driver
     steps:
       - uses: actions/checkout@v4
@@ -58,8 +63,8 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - name: 安装 pi 1.5.0
-        run: npm install -g @earendil-works/pi-coding-agent@1.5.0
+      - name: 安装 pi ${{ matrix.pi }}
+        run: npm install -g @earendil-works/pi-coding-agent@${{ matrix.pi }}
       - name: 启动 Linux 用户 systemd 实例
         if: runner.os == 'Linux'
         run: |
@@ -100,6 +105,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: driver-diagnostics-${{ matrix.os }}-${{ matrix.containment }}
+          name: driver-diagnostics-${{ matrix.os }}-pi${{ matrix.pi }}-${{ matrix.containment }}
           path: test-artifacts/driver/
           if-no-files-found: warn

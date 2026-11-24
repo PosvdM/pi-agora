@@ -16,7 +16,7 @@ pi-agora 是 pi 的协作引擎：一个每用户单实例的后台进程（daem
 
 ## 设计约束
 
-- **基座是 pi**（`@earendil-works/pi-coding-agent` 1.5.x）。不重写 Agent 循环、Provider、上下文压缩。pi 的定位方式和版本检查见 [pi-hostkit 设计文档的“定位 pi”](https://github.com/PosvdM/pi-hostkit/blob/main/docs/design.md#定位-pi)。文档中对 pi 行为的依据以 pi 1.5.0 的文件为准，路径相对于 pi 包目录。
+- **基座是 pi**（`@earendil-works/pi-coding-agent` 1.5.x 和 1.6.x）。不重写 Agent 循环、Provider、上下文压缩。pi 的定位方式和版本检查见 [pi-hostkit 设计文档的“定位 pi”](https://github.com/PosvdM/pi-hostkit/blob/main/docs/design.md#定位-pi)。文档中对 pi 行为的依据以 pi 1.5.0 的文件为准，路径相对于 pi 包目录。
 - **三个平台同时支持**：Windows、macOS、Linux。与平台相关的部分都放在共享包 pi-hostkit 里。
 - **每个会话一个 `pi --mode rpc` 子进程**。某个会话里的工具卡死或进程崩溃，不影响其他会话和 daemon。
 - **单一驱动**：MVP 只实现 RPC 子进程这一种会话驱动，保留 `SessionDriver` 接口，不同时维护进程内 SDK 驱动。
@@ -65,7 +65,7 @@ pi-agora 是 pi 的协作引擎：一个每用户单实例的后台进程（daem
 
 ## Harness 适配层
 
-当前只提供 pi 1.5.x 实现，不预先设计其他 Harness 的完整适配器。目录与边界如下：
+当前只提供 pi 实现（1.5.x 和 1.6.x），不预先设计其他 Harness 的完整适配器。目录与边界如下：
 
 - `packages/daemon/src/harness/types.ts` 定义与 Harness 无关的启动规格、技能解析结果及逐请求用量、额度事件，不依赖 pi 或 hostkit 类型。
 - `packages/daemon/src/harness/pi/driver.ts` 实现 pi 定位、skill 解析、RPC 驱动、会话写锁、心跳、UI 与进程清理；`launch.ts` 拼装 pi 参数，`events.ts` 将 pi usage 与额度错误转为中立派生事件；`archive-events.ts` 和 `archive-observation.ts` 负责只读条目刷新、流式块重建与最终消息观察。
@@ -118,7 +118,7 @@ MVP 的唯一实现是 `RpcSubprocessDriver`，用 pi-hostkit 的 `spawnManaged`
 
 ### 启动参数
 
-daemon 用 `process.execPath`（Node）直接运行 pi 的 JS 入口（`package.json` 的 `bin.pi`，1.5.0 中为 `dist/bundle/cli.js`），不经 shell。
+daemon 用 `process.execPath`（Node）直接运行 pi 的 JS 入口（`package.json` 的 `bin.pi`，1.5.x 和 1.6.x 中为 `dist/bundle/cli.js`），不经 shell。
 
 ```text
 node <pi>/dist/bundle/cli.js --mode rpc
