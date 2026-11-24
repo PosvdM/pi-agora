@@ -1,0 +1,24 @@
+{
+  "name": "@pi-agora/pane-plugin",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": "./dist/plugin.js",
+  "piPane": {
+    "entry": "./dist/plugin.js",
+    "paneProtocol": [
+      1,
+      1
+    ]
+  },
+  "dependencies": {
+    "@pi-agora/archive": "0.1.0",
+    "@pi-agora/protocol": "0.1.0"
+  },
+  "peerDependencies": {
+    "@pi-pane/plugin-api": "github:PosvdM/pi-pane#03f7916c1a7e3787fc4eaddbdfb10667a217fae7"
+  },
+  "devDependencies": {
+    "@pi-pane/plugin-api": "file:vendor/plugin-api"
+  }
+}

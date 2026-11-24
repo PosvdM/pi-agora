@@ -5,6 +5,7 @@ import { mkdtemp, mkdir, writeFile, readFile, readdir, access, rm, symlink } fro
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
+import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { acquireSessionWriterLock, isSessionWriterLock, currentProcessIdentity, sessionLocksDir } from 'pi-hostkit';
 import { startDaemon } from '../packages/daemon/dist/index.js';
 import { connectHost, AgoraHttpError } from '../packages/protocol/dist/client.js';
@@ -266,4 +267,120 @@ test('CLI 在线请求等待签名完成；401/403/业务错误不能降级离�
     });
     assert.equal(failed, 1); assert.equal(offline, 0); assert.equal(closed, 1);
   }
+});
+
+test('接管提交后产生的会话事件不发给原召集人已打开的 SSE', { timeout: 20000 }, async t => {
+  const f = await setup(t), root = await f.spawn();
+  const snap = await f.main.request('GET', root.base + '/snapshot');
+  assert.ok(snap.cursor.seq >= 1);
+  // 回放最后一个已有事件，使响应头立即送达。
+  const stream = await fetch(f.daemon.url + root.base + `/stream?epoch=${encodeURIComponent(snap.cursor.epoch)}&afterSeq=${snap.cursor.seq - 1}`, { headers: { 'Agora-Protocol': '1', Authorization: `Bearer ${f.main.token}` }, signal: AbortSignal.timeout(8000) });
+  assert.equal(stream.status, 200);
+  const reader = stream.body.getReader(), decoder = new TextDecoder();
+  let received = '', done = false;
+  const readUntil = async predicate => {
+    while (!done && !predicate(received)) {
+      const chunk = await reader.read();
+      if (chunk.done) done = true; else received += decoder.decode(chunk.value, { stream: true });
+    }
+  };
+  const delta = text => root.handle.emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: text } });
+  root.handle.emit({ type: 'message_start', message: { role: 'assistant', timestamp: Date.now(), content: [] } });
+  root.handle.emit({ type: 'message_update', assistantMessageEvent: { type: 'text_start', contentIndex: 0 } });
+  delta('接管前的内容');
+  await readUntil(text => text.includes('接管前的内容'));
+  assert.equal(done, false);
+  // 在接管事务提交后的同一同步段内产生事件，不给任何定时复查留出时间窗。
+  const takeOver = f.daemon.tasks.takeOver;
+  let emitted = 0;
+  f.daemon.tasks.takeOver = function (...args) {
+    const result = takeOver.apply(this, args);
+    delta('接管后的第一段'); emitted++;
+    return result;
+  };
+  try {
+    const taken = await f.host.request('POST', `/v1/tasks/${root.task.taskId}/takeover`, {});
+    assert.equal((await f.confirm(taken.confirmation)).status, 200);
+  } finally { f.daemon.tasks.takeOver = takeOver; }
+  assert.equal(emitted, 1);
+  delta('接管后的第二段');
+  await readUntil(() => false);
+  assert.equal(done, true, '失去权限的连接随即关闭');
+  assert.doesNotMatch(received, /接管后/);
+  const owned = await f.host.request('GET', root.base + '/snapshot');
+  assert.match(JSON.stringify(owned.inFlight), /接管前的内容接管后的第一段接管后的第二段/, '事件确实已产生，只是不发给原召集人');
+});
+
+test('SSE 在初始快照期间断开时不创建鉴权定时器', { timeout: 20000 }, async t => {
+  const f = await setup(t), root = await f.spawn();
+  const snap = await f.main.request('GET', root.base + '/snapshot');
+  const sessions = f.daemon.tasks.sessions, snapshot = sessions.snapshot, acl = f.daemon.tasks.acl, session = acl.session;
+  let entered, release;
+  const waiting = new Promise(resolve => { entered = resolve; }), barrier = new Promise(resolve => { release = resolve; });
+  sessions.snapshot = async function (...args) { entered(); await barrier; return snapshot.apply(this, args); };
+  let checks = 0, counting = false;
+  acl.session = function (conn, row) { if (counting && row.id === root.task.agoraSessionId) checks++; return session.call(this, conn, row); };
+  t.after(() => { sessions.snapshot = snapshot; acl.session = session; });
+  const controller = new AbortController();
+  const request = fetch(f.daemon.url + root.base + `/stream?epoch=${encodeURIComponent(snap.cursor.epoch)}&afterSeq=${snap.cursor.seq}`, { headers: { 'Agora-Protocol': '1', Authorization: `Bearer ${f.main.token}` }, signal: controller.signal }).catch(error => error);
+  await waiting;
+  controller.abort();
+  await request;
+  await delay(200);
+  sessions.snapshot = snapshot;
+  counting = true;
+  release();
+  await delay(2500);
+  assert.equal(checks, 0, '断开的连接不再复查授权，也没有每秒执行的定时器');
+});
+
+test('列表、详情和快照返回的 revision 可直接用于删除，其他任务的结构变化不影响', { timeout: 20000 }, async t => {
+  const f = await setup(t), item = await f.spawn(), other = await f.spawn();
+  await f.stop(item);
+  const listed = (await f.main.request('GET', '/v1/sessions')).items.find(row => row.agoraSessionId === item.task.agoraSessionId);
+  const detail = await f.main.request('GET', item.base), snapshot = await f.main.request('GET', item.base + '/snapshot');
+  const row = f.daemon.store.session(item.task.agoraSessionId);
+  assert.equal(listed.revision, row.revision);
+  assert.equal(detail.revision, row.revision);
+  assert.equal(snapshot.revision, row.revision);
+  assert.equal(detail.treeRevision, listed.treeRevision);
+  // 接管其他任务写入全局结构标记，所有会话的 treeRevision 推进，会话行 revision 不变。
+  const taken = await f.host.request('POST', `/v1/tasks/${other.task.taskId}/takeover`, {});
+  assert.equal((await f.confirm(taken.confirmation)).status, 200);
+  const after = await f.main.request('GET', item.base);
+  assert.ok(after.treeRevision > detail.treeRevision);
+  assert.equal(after.revision, listed.revision);
+  const pending = await f.http(f.main, 'POST', item.base + '/archive/delete', { expectedRevision: listed.revision });
+  assert.equal(pending.status, 202, JSON.stringify(pending.body));
+  const result = await f.confirm(pending.body.confirmation);
+  assert.equal(result.status, 200, JSON.stringify(result.body));
+  assert.equal(result.body.archiveState, 'missing');
+});
+
+test('/v1/status 统计存档字节期间文件被重命名、目录被删除时仍返回 200', { timeout: 20000 }, async t => {
+  const f = await setup(t), item = await f.spawn(); await f.stop(item);
+  const sessions = path.join(f.daemon.store.home, 'sessions');
+  const directory = path.join(sessions, 'vanishing-directory');
+  await mkdir(directory); await writeFile(path.join(directory, 'inner'), 'x');
+  const temporary = path.join(sessions, item.task.agoraSessionId, 'renaming.tmp');
+  await writeFile(temporary, 'abc');
+  const require = createRequire(import.meta.url), fsp = require('node:fs/promises');
+  const { lstat, readdir } = fsp;
+  let renamed = false, removed = false;
+  // 模拟旁车原子替换和存档删除恰好发生在 readdir 与 lstat 之间。
+  fsp.lstat = async function (target, ...rest) {
+    if (!renamed && path.basename(String(target)) === 'renaming.tmp') { renamed = true; await fsp.rename(target, `${target}.done`); }
+    return lstat.call(this, target, ...rest);
+  };
+  fsp.readdir = async function (target, ...rest) {
+    if (!removed && path.basename(String(target)) === 'vanishing-directory') { removed = true; await rm(target, { recursive: true }); }
+    return readdir.call(this, target, ...rest);
+  };
+  syncBuiltinESMExports();
+  let status;
+  try { status = await f.http(f.main, 'GET', '/v1/status'); }
+  finally { fsp.lstat = lstat; fsp.readdir = readdir; syncBuiltinESMExports(); }
+  assert.equal(renamed, true); assert.equal(removed, true);
+  assert.equal(status.status, 200, JSON.stringify(status.body));
+  assert.ok(Number.isSafeInteger(status.body.archiveBytes) && status.body.archiveBytes > 0);
 });

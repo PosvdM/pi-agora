@@ -77,23 +77,29 @@ export class ArchiveVerifier {
   }
 }
 
-/** 不跟随会话目录中的符号链接，磁盘统计也不能越出存档树。 */
+// 统计期间旁车临时文件重命名、存档删除都属正常并发，消失的条目不计入，不让状态查询失败。
+function vanished(error: NodeJS.ErrnoException): undefined {
+  if (error.code === "ENOENT" || error.code === "ENOTDIR") return undefined;
+  throw error;
+}
+
+/** 不跟随会话目录中的符号链接，磁盘统计也不能越出存档树。结果是统计时刻的近似值。 */
 export async function archiveStorageBytes(home: string): Promise<number> {
   let bytes = 0;
   const directories = [path.join(home, "sessions")];
   while (directories.length) {
     const directory = directories.pop()!;
-    const own = await lstat(directory).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return undefined; throw error; });
-    if (!own || own.isSymbolicLink()) continue;
-    const entries = await readdir(directory, { withFileTypes: true });
-    for (const entry of entries) {
-      if (entry.isSymbolicLink()) continue;
-      const file = path.join(directory, entry.name);
-      if (entry.isDirectory()) directories.push(file);
-      else if (entry.isFile()) {
-        const info = await lstat(file);
-        if (info.isFile() && !info.isSymbolicLink()) bytes += info.size;
-      }
+    const own = await lstat(directory).catch(vanished);
+    if (!own || own.isSymbolicLink() || !own.isDirectory()) continue;
+    // 只列名称、逐项 lstat：某些文件系统不返回目录项类型，withFileTypes 会在内部逐项补查，
+    // 一个条目消失就使整个目录枚举失败；逐项查询时只跳过消失的那一项。
+    const names = await readdir(directory).catch(vanished) ?? [];
+    for (const name of names) {
+      const file = path.join(directory, name);
+      const info = await lstat(file).catch(vanished);
+      if (!info || info.isSymbolicLink()) continue;
+      if (info.isDirectory()) directories.push(file);
+      else if (info.isFile()) bytes += info.size;
     }
   }
   return bytes;

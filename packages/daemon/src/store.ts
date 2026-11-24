@@ -6,7 +6,7 @@ import { AgoraError } from "./errors.js";
 import { archiveSchemaV6 } from "./archive-schema.js";
 import type { SessionMetadata, SessionParent } from "@pi-agora/protocol";
 
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 export const schemaMigrations: readonly string[] = [String.raw`
 CREATE TABLE principals (
   id TEXT PRIMARY KEY, type TEXT NOT NULL, label TEXT NOT NULL DEFAULT '',
@@ -143,7 +143,9 @@ CREATE TABLE security_audit (
   confirmation_id TEXT, outcome TEXT NOT NULL, reason TEXT, via TEXT NOT NULL,
   details TEXT, created_at TEXT NOT NULL
 );
-`, archiveSchemaV6];
+`, archiveSchemaV6, String.raw`
+CREATE INDEX IF NOT EXISTS changes_object ON changes(object_type,object_id,seq);
+`];
 
 export interface PrincipalRow {
   id: string; type: string; label: string; pi_session_id: string | null;
@@ -213,6 +215,15 @@ export class Store {
       throw error;
     }
   }
+  readTransaction<T>(fn: () => T): T {
+    this.db.exec("BEGIN");
+    try {
+      const result = fn();
+      if (result && typeof (result as { then?: unknown }).then === "function") throw new Error("数据库事务不能包含异步操作");
+      this.db.exec("COMMIT");
+      return result;
+    } catch (error) { this.db.exec("ROLLBACK"); throw error; }
+  }
   principal(principalId: string): PrincipalRow | undefined {
     return this.get<PrincipalRow>("SELECT * FROM principals WHERE id=?", principalId);
   }
@@ -239,8 +250,13 @@ export class Store {
     this.run("UPDATE outbox SET payload=json_set(payload,'$.triggerTurn',json('true')) WHERE dedupe_key=?", key);
     this.run("UPDATE tasks SET quota_notified_at=? WHERE id=?", at, task.id);
   }
-  change(kind: string, objectId: string): void {
-    this.run("INSERT INTO changes(epoch,object_type,object_id,created_at) VALUES((SELECT value FROM settings WHERE key='epoch'),?,?,?)", kind, objectId, now());
+  change(kind: string, objectId: string, tombstone = false): void {
+    this.run("INSERT INTO changes(epoch,object_type,object_id,tombstone,created_at) VALUES((SELECT value FROM settings WHERE key='epoch'),?,?,?,?)", kind, objectId, tombstone ? 1 : 0, now());
+  }
+  // 挂载关系或历史会话数量迁移须在写入事务内使全部树投影失效。
+  changeTreeStructure(): void {
+    if (!this.db.isTransaction) throw new Error("树结构失效必须与迁移处于同一事务");
+    this.change("tree", "all");
   }
   transition(task: TaskRow, status: string, resultText?: string, runId?: string, usage?: unknown, quota?: { resumeAt: string | null }): TaskRow {
     return this.transaction(() => {
@@ -281,9 +297,9 @@ export class Store {
   }
   sessionParent(sessionId: string): SessionParent | undefined {
     const row = this.get<{ parent_task_id: string | null; parent_session_id: string | null; owner: string | null; type: string | null; pi_session_id: string | null }>(`SELECT t.parent_task_id, parent.agora_session_id AS parent_session_id,
-      s.convener_id AS owner,p.type,p.pi_session_id FROM agora_sessions s
+      COALESCE(t.convener_id,s.convener_id) AS owner,p.type,p.pi_session_id FROM agora_sessions s
       LEFT JOIN tasks t ON t.id=s.task_id LEFT JOIN tasks parent ON parent.id=t.parent_task_id
-      LEFT JOIN principals p ON p.id=s.convener_id WHERE s.id=? LIMIT 1`, sessionId);
+      LEFT JOIN principals p ON p.id=COALESCE(t.convener_id,s.convener_id) WHERE s.id=? LIMIT 1`, sessionId);
     if (row?.owner === "user" || row?.type === "user") return { kind: "user" };
     if (row?.parent_task_id) return row.parent_session_id ? { kind: "task", taskId: row.parent_task_id, sessionId: row.parent_session_id } : undefined;
     if (row?.type === "host:cli" || row?.type === "host:pane") return { kind: "user" };
@@ -292,9 +308,10 @@ export class Store {
   }
   sessionMetadata(sessionId: string): SessionMetadata {
     const session = this.session(sessionId);
-    const task = session.task_id ? this.get<{ agora_session_id: string; taken_over_from: string | null; parent_task_id: string | null }>(
-      "SELECT agora_session_id,taken_over_from,parent_task_id FROM tasks WHERE id=?", session.task_id) : undefined;
-    const principal = session.convener_id ? this.principal(session.convener_id) : undefined;
+    const task = session.task_id ? this.get<{ agora_session_id: string; taken_over_from: string | null; parent_task_id: string | null; convener_id: string }>(
+      "SELECT agora_session_id,taken_over_from,parent_task_id,convener_id FROM tasks WHERE id=?", session.task_id) : undefined;
+    const owner = task?.convener_id ?? session.convener_id;
+    const principal = owner ? this.principal(owner) : undefined;
     const parent = this.sessionParent(sessionId);
     const diagnostic = task?.parent_task_id ? { kind: "parent_task_missing", message: "父任务缺少当前会话，无法确定会话父关系" } :
       principal?.type === "agent:main" ? { kind: "main_session_id_missing", message: "主 Agent 召集人的 pi 会话标识缺失" } :

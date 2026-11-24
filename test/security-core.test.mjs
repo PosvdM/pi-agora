@@ -409,7 +409,7 @@ test('v4 迁移到当前版本先备份 WAL，保留原数据、预算与答复�
   original.exec("CREATE TABLE schema_version(version INTEGER,migrated_at TEXT); INSERT INTO schema_version VALUES(4,'v4'); PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; INSERT INTO principals(id,type,created_at) VALUES('main','agent:main','time');");
   const migrated = await openStore(home);
   try {
-    assert.equal(SCHEMA_VERSION, 6); assert.equal(migrated.get('SELECT version FROM schema_version').version, SCHEMA_VERSION);
+    assert.equal(SCHEMA_VERSION, 7); assert.equal(migrated.get('SELECT version FROM schema_version').version, SCHEMA_VERSION);
     assert.equal(migrated.principal('main').type, 'agent:main'); assert.deepEqual(migrated.all('PRAGMA foreign_key_check'), []);
     assert.equal(migrated.all('PRAGMA table_info(tasks)').find(column => column.name === 'max_tokens').dflt_value, '50000000');
     assert.equal(migrated.all('PRAGMA table_info(requests)').find(column => column.name === 'answer_proof').notnull, 0);

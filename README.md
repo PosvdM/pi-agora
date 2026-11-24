@@ -2,7 +2,8 @@
 
 pi-agora 是 [pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) 编码智能体的协作引擎。主代理用它把任务派给子代理、召开多模型会议，所有协作会话的完整对话都会永久保存。
 
-> **当前状态：任务核心、安全与存档（切片 1b–1d）。** 提供 daemon、pi 扩展、CLI 和只读存档库，支持多层子代理、权限档位、worktree、提问、恢复、可靠通知、skill 白名单、用量、任务树软预算与资源访问控制。安全层提供待确认、设备签名、离线安全命令和审计；会话可在线查看与追踪，daemon 关闭后仍可只读查看。浏览器配对与确认界面在切片 2 接入，可选扩展 / MCP 白名单及 saved 项目信任隔离推迟至 [#10](https://github.com/PosvdM/pi-agora/issues/10)，board、会议和 pane 插件仍属后续范围。
+> **当前状态：任务核心、安全、存档与 pane 服务端数据插件。** 提供多层子代理、三个权限档位、worktree、返工、提问、恢复、可靠通知、用量、额度暂停、资源访问控制、任务树软预算、设备签名、离线安全命令和审计。`packages/pane-plugin` 提供声明式树、任务动作、表单和安全交互的数据层；1d 存档已合入，插件适配接入进行中，浏览器联调属于 pane M3。可选扩展 / MCP 白名单及 saved 项目信任的隔离推迟至 [#10](https://github.com/PosvdM/pi-agora/issues/10)，board 和会议属于后续范围。
+
 
 ## 使用
 
@@ -126,7 +127,8 @@ packages/
   cli/           agora 命令行
   archive/       只读存档读取库、活动分支与中断块投影
   harness-pi/    跨包共用的 pi 专有实现：只读会话文件解析
-  pane-plugin/   后续切片：pi-pane 插件
+  pane-plugin/   pi-pane 服务端数据插件（加载与边界见 docs/pane-plugin.md）
+
   protocol/      协议类型与 schema
 ```
 
@@ -135,7 +137,8 @@ packages/
 ## 开发
 
 ```sh
-npm run build    # tsc project references 构建六个工作区
+npm run build    # tsc project references 构建工作区
+
 npm test         # 构建后用 node --test 验证，真实 pi 测试要求 1.5.0
 ```
 
@@ -153,4 +156,5 @@ npm test         # 构建后用 node --test 验证，真实 pi 测试要求 1.5.
 | [docs/meetings.md](docs/meetings.md) | 会议：召集、定方案流程、认可、反对意见、阶段 fencing、僵局、预算、书记与纪要、插话、崩溃 |
 | [docs/archive.md](docs/archive.md) | 全量对话存档：存什么、存在哪、三种投影、继承关系、完整性校验、只读 adapter |
 | [docs/integration.md](docs/integration.md) | daemon HTTP API、会话视图与事件流、变更流、agora 到 pi-pane 插件接口的映射、离线存档读取、版本协商 |
+| [docs/pane-plugin.md](docs/pane-plugin.md) | pane 插件构建与加载、固定协议副本、模块、幂等、资源上限、安全横幅和测试边界 |
 | [docs/roadmap.md](docs/roadmap.md) | P0 验证项、MVP 切分、工程量、必须测试的故障、明确不做、主要风险 |

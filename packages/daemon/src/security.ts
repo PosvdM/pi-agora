@@ -315,7 +315,16 @@ export class Security {
       expiresAt: row.expires_at, createdAt: row.created_at, confirmedBy: row.confirmed_by,
       result: row.result === null ? null : JSON.parse(row.result), failureReason: row.failure_reason };
   }
-  listConfirmations(limit = 50, cursor = 0, requestedBy?: string) { this.expire(); return this.store.all<ConfirmationRow>("SELECT rowid AS cursor,* FROM pending_confirmations WHERE rowid>? AND (? IS NULL OR requested_by=?) ORDER BY rowid LIMIT ?", cursor, requestedBy ?? null, requestedBy ?? null, limit).map(row => ({ ...this.view(row), cursor: row.cursor! })); }
+  listConfirmations(limit = 50, cursor = 0, requestedBy?: string, states?: readonly string[]) {
+    const selected = states === undefined ? undefined : [...new Set(states)];
+    if (selected && (!selected.length || selected.some(state => !["pending", "executing", "confirmed", "failed", "cancelled", "expired"].includes(state)))) invalid("待确认状态无效");
+    this.expire();
+    const stateFilter = selected ? ` AND state IN (${selected.map(() => "?").join(",")})` : "";
+    return this.store.all<ConfirmationRow>(
+      `SELECT rowid AS cursor,* FROM pending_confirmations WHERE rowid>? AND (? IS NULL OR requested_by=?)${stateFilter} ORDER BY rowid LIMIT ?`,
+      cursor, requestedBy ?? null, requestedBy ?? null, ...(selected ?? []), limit,
+    ).map(row => ({ ...this.view(row), cursor: row.cursor! }));
+  }
   confirmation(confirmationId: string) {
     this.expire(); const row = this.store.get<ConfirmationRow>("SELECT * FROM pending_confirmations WHERE id=?", confirmationId);
     if (!row) fail("not_found", "待确认不存在", 404);

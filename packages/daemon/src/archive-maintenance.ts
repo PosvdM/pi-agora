@@ -119,7 +119,8 @@ export async function deleteArchiveOffline(options: { home: string; sessionId: s
     }
     db = new DatabaseSync(database, { enableForeignKeyConstraints: true });
     const version = Number((db.prepare("SELECT version FROM schema_version LIMIT 1").get() as { version?: number } | undefined)?.version);
-    if (![4, 5, 6].includes(version)) refuse("数据库版本未通过维护接口核对");
+    // v7 只为 changes 增加索引，删除使用的 SQL 与 v6 相同。
+    if (![4, 5, 6, 7].includes(version)) refuse("数据库版本未通过维护接口核对");
     // 在不可逆文件操作前验证诊断字段和变更流所需的 SQL。
     const metadata = db.prepare(version >= 6
       ? "UPDATE agora_sessions SET archive_state=?,archive_error=?,revision=revision+1 WHERE id=?"

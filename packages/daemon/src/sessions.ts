@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { openArchive, projectPartials, projectUserView, verifySessionFile, resolveArchivePath } from "@pi-agora/archive";
-import type { InFlightState, SessionStreamEvent } from "@pi-agora/protocol";
+import type { InFlightState, SessionSnapshot, SessionStreamEvent } from "@pi-agora/protocol";
 import { parseSessionFile, sessionMessages } from "@pi-agora/harness-pi";
 import type { SessionEntry } from "@pi-agora/protocol";
 import type { DriverHandle } from "./driver.js";
@@ -474,7 +474,7 @@ export class SessionViews {
     const start = Math.max(0, end - limit);
     return { leafId: state.leafId, entries: clone(entries.slice(start, end)), historyBefore: start > 0 ? entries[start]!.id : null };
   }
-  async snapshot(sessionId: string, limit?: number) {
+  async snapshot(sessionId: string, limit?: number): Promise<SessionSnapshot> {
     const count = pageLimit(limit, 100);
     const state = await this.ensure(sessionId);
     // 所有可变字段和游标在同一同步段内复制，绝不跨 await 读取流状态。
@@ -484,7 +484,7 @@ export class SessionViews {
       inFlight: { ...state.events.inFlight(state.entries, !!state.handle && !state.ended), phase: status.phase },
       unfinishedPartials: projectPartials(clone([...state.archivedPartials,
         ...state.events.unfinished(state.diskEntries, !!state.handle && !state.ended)])),
-      status: status.status, statusDetail: status.statusDetail,
+      status: status.status, statusDetail: status.statusDetail, revision: status.revision,
       usage: this.store.sessionUsage(sessionId),
     };
   }
@@ -540,7 +540,8 @@ export class SessionViews {
       client.finish();
     }
   }
-  stream(sessionId: string, request: IncomingMessage, response: ServerResponse, q: { epoch?: string; afterSeq?: number }): void {
+  /** `authorized` 在每批写出前同步调用；返回 false 时关闭连接，不再写出任何已排队或新产生的事件。 */
+  stream(sessionId: string, request: IncomingMessage, response: ServerResponse, q: { epoch?: string; afterSeq?: number; authorized?: () => boolean }): void {
     this.store.session(sessionId);
     const state = this.states.get(sessionId);
     response.writeHead(200, { "Content-Type": "text/event-stream; charset=utf-8", "Cache-Control": "no-cache", Connection: "keep-alive", "X-Accel-Buffering": "no" });
@@ -552,6 +553,7 @@ export class SessionViews {
     const pump = () => {
       if (closed || blocked) return;
       try {
+        if ((replayIndex < replay.length || queue.length) && q.authorized && !q.authorized()) { client.close(); return; }
         while (replayIndex < replay.length || queue.length) {
           if (response.destroyed || response.writableEnded) { client.close(); return; }
           let next: string;

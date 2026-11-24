@@ -103,6 +103,37 @@ async function setup(t, options = {}) {
   return { home, driver, daemon, client, async spawn(conn, extra = {}, key) { return conn.request('POST', '/v1/tasks', { ...spawnBody, cwd: home, ...extra }, key ? { idempotencyKey: key } : undefined); } };
 }
 
+test('提问列表按任务过滤且保留现有读取权限', async t => {
+  const f = await setup(t), main = await f.client();
+  const first = await f.spawn(main), second = await f.spawn(main);
+  const convener = f.daemon.store.task(first.taskId).convener_id;
+  const at = new Date().toISOString();
+  for (const [id, task] of [['request-one', first], ['request-two', second]]) {
+    f.daemon.store.run("INSERT INTO requests(id,asker_id,target_id,task_id,questions,state,answers,created_at,updated_at) VALUES(?,?,?,?,?,'answered',?,?,?)", id, 'asker', convener, task.taskId, '[{\"id\":\"q\",\"question\":\"选择\"}]', '[{\"id\":\"q\",\"selected\":[],\"custom\":\"答复\"}]', at, at);
+  }
+  const result = await main.request('GET', `/v1/requests?taskId=${first.taskId}&state=answered`);
+  assert.deepEqual(result.items.map(item => item.id), ['request-one']);
+  const other = await f.client('agent:main');
+  assert.deepEqual((await other.request('GET', `/v1/requests?taskId=${first.taskId}&state=answered`)).items, []);
+});
+
+test('工具卡片来源绑定召集人，子任务创建同步推进父节点修订号', async t => {
+  const f = await setup(t), main = await f.client('agent:main', 'origin-main');
+  const task = await f.spawn(main, { originToolCall: { sessionId: 'origin-main', toolCallId: 'call-main' } });
+  await until(() => f.driver.handles[0]?.commands.includes('prompt'));
+  const details = await main.request('GET', `/v1/sessions/${task.agoraSessionId}`);
+  assert.deepEqual(details.originToolCall, { sessionRef: { source: 'pane', id: 'origin-main' }, toolCallId: 'call-main' });
+  assert.deepEqual(details.parent, { kind: 'main', piSessionId: 'origin-main' });
+  await assert.rejects(f.spawn(main, { originToolCall: { sessionId: 'other-session', toolCallId: 'call-fake' } }), error => error.code === 'invalid_params');
+  const handle = f.driver.handles[0];
+  const nested = await http(main.url, handle.token, 'POST', '/v1/tasks', { ...spawnBody, cwd: f.home, originToolCall: { sessionId: 'mock-pi', toolCallId: 'call-child' } });
+  assert.equal(nested.status, 201);
+  const childDetails = await main.request('GET', `/v1/sessions/${nested.body.agoraSessionId}`);
+  assert.deepEqual(childDetails.originToolCall, { sessionRef: { source: 'agora', id: task.agoraSessionId }, toolCallId: 'call-child' });
+  assert.deepEqual(childDetails.parent, { kind: 'task', taskId: task.taskId, sessionId: task.agoraSessionId });
+  assert.ok(f.daemon.store.get("SELECT seq FROM changes WHERE object_type='session' AND object_id=? ORDER BY seq DESC LIMIT 1", task.agoraSessionId));
+});
+
 for (const expiredLease of [false, true]) test(`settle屏障后的stop在队列内核对${expiredLease ? '租约' : '版本'}，失败不修改运行标志`, async t => {
   const f = await setup(t), main = await f.client();
   const task = await f.spawn(main);
