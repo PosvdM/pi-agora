@@ -361,7 +361,7 @@ agora:root:user-tasks            〔用户任务〕   用户通过 CLI 或 pi-pa
 
 #### 同步与按需加载
 
-- **修订号**：pane 插件的来源级 `revision` 直接用变更流的 `seq`，`epoch` 用变更流的 `epoch`。普通对象变更对应一条 `TreeChange`：`upsert` 的 `revision` 和 `node.revision` 为该变更的 `seq`。提问、设备等非树对象以虚拟用户任务根的 `upsert` 推进来源水位，避免分页等待不会推送的修订号；`tree/all` 结构标记对应 `reset`，重建整棵来源树。
+- **修订号**：pane 插件的来源级 `revision` 直接用变更流的 `seq`，`epoch` 用变更流的 `epoch`。普通对象变更对应一条 `TreeChange`：`upsert` 的 `revision` 和 `node.revision` 为该变更的 `seq`，修订号按变更序号单调分配；节点数据是插件处理该变更时读到的最新详情，可能新于该条变更（例如回放时后面已提交的变更），但不会更旧。pi-pane 只应用修订号大于已知值的 upsert，同一节点之后的推送或分页只会带来同样新或更新的数据，因此不会出现旧数据覆盖新数据。提问、设备等非树对象以虚拟用户任务根的 `upsert` 推进来源水位，避免分页等待不会推送的修订号；`tree/all` 结构标记对应 `reset`，重建整棵来源树。
 - **删除**：`agora archive delete` 只删存档文件、保留元数据，节点仍可列出，插件发 `upsert`，节点的 `availability` 变为 `missing`。只有对象的元数据也被删除、不再能列出时，才发带 `revision` 的 `remove`（tombstone）；MVP 没有删除元数据的操作。
 - **订阅与重置**：`tree.subscribe` 以快照的 `{ epoch, revision }` 为起点（参数形状以 pi-pane `docs/plugin-api.md` 为准），插件用它作为变更流的 `epoch` 和 `afterSeq`。`epoch` 不符、`revision` 大于当前 head 或早于保留范围时，变更流返回 `reset`，插件向 pi-pane 发 `TreeChange` 的 `reset`。
 - **快照**：`tree.snapshot(req)` 只返回热节点及其祖先，热节点的定义以 pane 协议为准（`req.openNodeIds` 中的节点、`status` 为 `running`/`waiting`/`paused` 的节点、`lastActivityAt` 晚于 `req.recentSince` 的节点）。插件把这些条件转成 daemon 的列表查询，响应里的 `changesCursor.seq` 就是快照的 `revision`。

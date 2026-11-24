@@ -144,7 +144,7 @@ test('树串行读取任务会话，非树对象推进来源修订号', async t 
     if (path === '/v1/tasks/t1') return task.promise;
     if (path === '/v1/sessions/s1') return session.promise;
     if (path === '/v1/tasks/t2') return { status: 200, body: { agoraSessionId: 's2' } };
-    if (path === '/v1/sessions/s2') return { status: 200, body: item('s2', { revision: 999, treeRevision: 2 }) };
+    if (path === '/v1/sessions/s2') return { status: 200, body: item('s2', { revision: 999, treeRevision: 999 }) };
   });
   const emitted = [];
   h.views.tree.subscribe({ epoch: 'db', revision: 0 }, value => emitted.push(value));
@@ -158,16 +158,16 @@ test('树串行读取任务会话，非树对象推进来源修订号', async t 
   task.resolve({ status: 200, body: { agoraSessionId: 's1' } });
   await tick();
   assert.deepEqual(h.requests.map(req => req.path), ['/v1/tasks/t1', '/v1/sessions/s1']);
-  session.resolve({ status: 200, body: item('s1', { treeRevision: 1 }) });
+  session.resolve({ status: 200, body: item() });
   await tick();
   assert.deepEqual(emitted.map(value => [value.type, value.revision]), [['upsert', 1], ['upsert', 2], ['upsert', 3], ['remove', 4]]);
-  assert.equal(emitted[1].node.revision, 2, '节点修订号取树修订号，不取会话行 revision');
+  assert.equal(emitted[1].node.revision, 2, '订阅推送的节点修订号取变更 seq，不取会话行 revision 或数据的 treeRevision');
   assert.equal(emitted[2].node.id, 'agora:root:user-tasks');
   assert.equal(emitted[3].id, 'agora:session:s2');
   assert.equal(h.panels[0].nodeId, 'agora:session:s1');
 });
 
-test('从两次变更之前恢复订阅时，节点只以与数据版本一致的修订号推送', async t => {
+test('从两次变更之前恢复订阅时，每条变更都按 seq 推送，节点数据取最新', async t => {
   // 会话 s1 在 seq 1 和 seq 3 各变更一次，读到的详情已是 seq 3 的数据。
   const latest = item('s1', { status: 'completed', revision: 5, treeRevision: 3 });
   const h = setup(t, ({ path }) => path === '/v1/sessions/s1' ? { status: 200, body: latest } : undefined);
@@ -176,12 +176,35 @@ test('从两次变更之前恢复订阅时，节点只以与数据版本一致�
   change(h.streams[0], 1); change(h.streams[0], 2, 'device', 'd1'); change(h.streams[0], 3);
   for (let i = 0; i < 5; i++) await tick();
   assert.deepEqual(emitted.map(value => [value.type, value.revision, value.node.id, value.node.revision]), [
+    ['upsert', 1, 'agora:session:s1', 1],
     ['upsert', 2, 'agora:root:user-tasks', 2],
     ['upsert', 3, 'agora:session:s1', 3],
   ]);
-  assert.equal(emitted[1].node.status, 'done');
-  assert.deepEqual(h.panels.map(panel => [panel.nodeId, panel.revision]), [['agora:session:s1', 3]]);
+  assert.equal(emitted[0].node.status, 'done');
+  assert.equal(emitted[2].node.status, 'done');
+  assert.deepEqual(h.panels.map(panel => [panel.nodeId, panel.revision]), [['agora:session:s1', 1], ['agora:session:s1', 3]]);
   assert.equal(h.streams[0].closed, false);
+  assert.deepEqual(h.warnings, []);
+});
+
+test('回放时历史会话的存档删除照常推送，即使共享任务随后已有变更', async t => {
+  // 任务 T 重开后 A 是历史会话、B 是当前会话：先删除 A 的存档（seq 5），T 随后完成（seq 6）。
+  // 回放 seq 5 时 A 的详情因共享任务已带 treeRevision 6；seq 6 的任务详情只指向 B。
+  const a = item('A', { taskId: 'T', isCurrent: false, status: 'completed', archiveState: 'missing', treeRevision: 6 });
+  const b = item('B', { taskId: 'T', status: 'completed', archiveState: 'archived', treeRevision: 6 });
+  const h = setup(t, ({ path }) => {
+    if (path === '/v1/sessions/A') return { status: 200, body: a };
+    if (path === '/v1/sessions/B') return { status: 200, body: b };
+    if (path === '/v1/tasks/T') return { status: 200, body: { taskId: 'T', agoraSessionId: 'B' } };
+  });
+  const emitted = [];
+  h.views.tree.subscribe({ epoch: 'db', revision: 4 }, value => emitted.push(value));
+  change(h.streams[0], 5, 'session', 'A'); change(h.streams[0], 6, 'task', 'T');
+  for (let i = 0; i < 8; i++) await tick();
+  assert.deepEqual(emitted.map(value => [value.type, value.revision, value.node.id, value.node.revision, value.node.availability]), [
+    ['upsert', 5, 'agora:session:A', 5, 'missing'],
+    ['upsert', 6, 'agora:session:B', 6, 'archived'],
+  ]);
   assert.deepEqual(h.warnings, []);
 });
 
@@ -275,7 +298,7 @@ test('树映射积压同时限制总字节，未达到数量上限也会关闭',
 
 test('树映射完成后归还积压预算，持续变更仍按修订号串行映射', async t => {
   const h = setup(t, ({ path }) => path === '/v1/sessions/s1'
-    ? { status: 200, body: item('s1', { treeRevision: 1 }) } : undefined);
+    ? { status: 200, body: item() } : undefined);
   const emitted = [];
   h.views.tree.subscribe({ epoch: 'db', revision: 0 }, value => emitted.push(value));
   for (let batch = 0; batch < 3; batch++) {

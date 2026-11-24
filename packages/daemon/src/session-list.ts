@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { SessionKind, SessionSummary } from "@pi-agora/protocol";
+import type { SessionKind, SessionSummary, SessionsPage } from "@pi-agora/protocol";
 import type { Connection } from "./auth.js";
 import { AgoraError, invalid } from "./errors.js";
 import type { Store, SessionRow } from "./store.js";
@@ -85,7 +85,7 @@ export function sessionView(session: ListedSession, store: Store): SessionSummar
     ...(session.origin_call ? { originToolCall: JSON.parse(session.origin_call) } : {}) };
 }
 
-export function listSessions(store: Store, conn: Connection, params: URLSearchParams, limit: number) {
+export function listSessions(store: Store, conn: Connection, params: URLSearchParams, limit: number): SessionsPage {
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 200) invalid("分页大小超出范围");
   const filter = filterOf(conn, params);
   return store.readTransaction(() => {

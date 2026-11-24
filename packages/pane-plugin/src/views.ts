@@ -282,9 +282,9 @@ export function createViews(runtime: PluginRuntime): {
               const item = await get<SessionItem>(`/v1/sessions/${encoded(id)}`, stream!.signal);
               if (stopped || !stream!.active()) return;
               remember([item]);
-              // 详情总是最新数据。数据版本晚于本条变更时，之后必有该节点的变更（或 tree/all 触发 reset），
-              // 由那一条以一致的修订号推送；本条不推送，避免给新数据标上旧修订号。
-              if (treeRevision(item) > revision) { seq = revision; return; }
+              treeRevision(item);
+              // 每条变更都推送，修订号按变更 seq 分配；详情是读取时的最新数据，可能新于本条变更。
+              // pane 只应用修订号更大的 upsert，同一节点之后的推送或分页只会带来同样新或更新的数据。
               emit({ type: "upsert", revision, node: node(item, revision) });
             }
             runtime.context.panelChanged({ panelId: TASK_PANEL, revision, nodeId: nodeId(id) });
