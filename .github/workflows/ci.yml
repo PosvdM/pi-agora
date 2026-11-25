@@ -81,7 +81,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: PosvdM/pi-pane
-          ref: 03f7916c1a7e3787fc4eaddbdfb10667a217fae7
+          ref: 85be519f598b281129c484ff6a66ce05edf7913c
           path: .pi-tmp-pane-api
           token: ${{ secrets.PANE_SOURCE_TOKEN || github.token }}
       - name: 比对 pane 协议只读副本

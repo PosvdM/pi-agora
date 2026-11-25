@@ -1,6 +1,7 @@
 // 草案，P0 后冻结
 export interface PanePlugin {
-  id: string;                         // 即 TreeNode.source，如 "agora"；"pane" 保留给 pi-pane 自己
+  id: string;                         // 即 TreeNode.source，如 "agora"；须符合文档中的小写目录名规则
+  displayName?: string;               // 界面中显示的插件名称，1–64 个字符；省略时显示 id
   paneProtocol: [number, number];
   activate(ctx: PaneHostContext): Promise<void>;
   deactivate?(): Promise<void>;
@@ -163,6 +164,7 @@ export interface TreeSnapshot {
   epoch: string;               // 修订号序列的标识；插件重建修订号序列时更换
   revision: number;            // 快照对应的来源级修订号
   nodes: TreeNode[];
+  foreignChildCounts?: Record<string, number>;  // 挂在其他来源节点下的子节点总数，键为父节点 id
 }
 
 export interface TreeCursor {
