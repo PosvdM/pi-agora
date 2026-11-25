@@ -252,7 +252,11 @@ test('子会话流式输出时浏览器断网再恢复：只显示一份与 daem
   assert.equal(await page.evaluate(() => document.querySelector('[data-testid="streaming"]')?.textContent.trim() ?? ''), seen, '离线期间浏览器没有收到新内容');
   await context.setOffline(false);
   await until(async () => (await w.get(`/v1/sessions/${id}`)).status === 'completed', 30_000);
-  const final = await w.get(`/v1/sessions/${id}/snapshot`);
+  // 会话状态先于最后一条助手消息出现在快照中，等快照含有助手输出后再比对。
+  const final = await until(async () => {
+    const snapshot = await w.get(`/v1/sessions/${id}/snapshot`);
+    return assistantTexts(snapshot.entries).length > 0 && snapshot;
+  }, 20_000, 100);
   assert.deepEqual(assistantTexts(final.entries), [reply], 'daemon 记录一份完整输出');
   await page.waitForFunction(expected => {
     const view = document.querySelector('[data-testid="plugin-session"]');
@@ -294,7 +298,8 @@ const agoraOffline = w => until(() => { try { return w.server.plugins.runtime.ge
 const agoraOnline = w => until(() => { try { return w.server.plugins.runtime.get('agora').actions.list().length > 0; } catch { return false; } }, 40_000);
 
 test('三类安全横幅：所有标签页可见、不能关闭，跨 pi-pane 重启、daemon 重启、插件停用和加载失败保留；按规则消失，旧 revision 的知悉被拒', { timeout: 300_000, skip }, async t => {
-  const w = await createWorld(t, pane, { allowedErrors: [/status of 50[234]/, /status of 409/] }); if (!w) return;
+  // pi-pane 重启后旧凭证的请求返回 401，页面随后重新配对。
+  const w = await createWorld(t, pane, { allowedErrors: [/status of 50[234]/, /status of 409/, /status of 401/] }); if (!w) return;
   await w.startDaemon(); await w.startPane();
   const a = await namedDevice(w, '设备甲');
   await pair(w, a);
