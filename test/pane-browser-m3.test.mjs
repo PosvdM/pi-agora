@@ -594,3 +594,23 @@ test('主会话派出的子任务：树、工具卡片链接、通知卡片、�
   await later.locator('[data-testid="node-history"]').filter({ hasText: '历史（1）' }).click();
   await treeRow(later, longNode).waitFor();
 });
+
+test('排队中的任务：没有运行进程时会话视图仍有停止入口，停止后 daemon 记为已停止', { timeout: 150_000, skip }, async t => {
+  const w = await createWorld(t, pane, { childScript: { turns: [{ segments: [{ type: 'text', text: '占用唯一的运行名额' }, { type: 'hang' }] }], fallback: say('完成') } }); if (!w) return;
+  // 只允许一个运行中的任务：第二个任务停在 created，界面显示为“等待中”，节点只声明 abort。
+  await w.startDaemon({ maxConcurrentRuns: 1 }); await w.startPane();
+  const { page } = await w.device();
+  page.on('dialog', dialog => void dialog.accept());
+  const busy = await spawnTask(w, '占用名额的任务');
+  await until(async () => (await w.get(`/v1/tasks/${busy.taskId}`)).status === 'running', 30_000);
+  const queued = await spawnTask(w, '排队中的任务');
+  assert.equal((await w.get(`/v1/tasks/${queued.taskId}`)).status, 'created');
+  await treeRow(page, sessionNode(queued.agoraSessionId)).click();
+  await byId(page, 'plugin-title').filter({ hasText: '排队中的任务' }).waitFor();
+  await byId(page, 'plugin-status').filter({ hasText: '等待中' }).waitFor();
+  assert.equal(await byId(page, 'plugin-stop').count(), 1, '排队中的任务有且只有一个停止入口');
+  await byId(page, 'plugin-stop').click();
+  await until(async () => (await w.get(`/v1/tasks/${queued.taskId}`)).status === 'stopped', 30_000);
+  await byId(page, 'plugin-stop').waitFor({ state: 'detached' });
+  assert.equal((await w.get(`/v1/tasks/${busy.taskId}`)).status, 'running', '停止排队的任务不影响运行中的任务');
+});

@@ -81,6 +81,6 @@ HTTP JSON 响应最多 8 MiB，单个 SSE 事件最多 4 MiB。树变更映射�
 | `pane-identities-s2.test.mjs` | 跨重启完整调用身份、最终结果与并发登记 |
 | `pane-offline-s2.test.mjs`、`pane-archive-real-s2.test.mjs`、`schema-s2.test.mjs` | 离线热树与中立父关系、跨来源子节点数、分页、只读内容、缺失文件、扫描上限与取消 |
 | `pane-plugin-s2.test.mjs` | 生命周期、通知展示后确认、离线恢复、停用竞态、重启幂等和无效安全状态保留 |
-| `pane-browser-m3.test.mjs` | pi-pane 浏览器联调：真实 daemon、真实 pi 与假 provider、同进程的 pi-pane 服务端和本插件、真实 Chrome。覆盖子会话流式输出时断网再恢复后与 daemon 记录逐字一致；两个标签页同时答复同一提问只生效一次；确认被拒、超时和没有可接收确认的浏览器时 daemon 不执行；首台设备自签、新设备待批准、两台浏览器同时首次配对只有一台成功、离线重置后的单次 TOFU；三类安全横幅在所有标签页显示、不能关闭，跨 pi-pane 重启、daemon 重启、插件停用和加载失败保留，按规则消失，旧 revision 的知悉被拒；接管后打开的会话开放输入框、返工和停止；daemon 重启及变更流过期后侧栏与 daemon 一致；主会话下的子任务、工具卡片与通知卡片链接、唯一停止入口、冷历史和显示名称 |
+| `pane-browser-m3.test.mjs` | pi-pane 浏览器联调：真实 daemon、真实 pi 与假 provider、同进程的 pi-pane 服务端和本插件、真实 Chrome。覆盖子会话流式输出时断网再恢复后与 daemon 记录逐字一致；两个标签页同时答复同一提问只生效一次；确认被拒、超时和没有可接收确认的浏览器时 daemon 不执行；首台设备自签、新设备待批准、两台浏览器同时首次配对只有一台成功、离线重置后的单次 TOFU；三类安全横幅在所有标签页显示、不能关闭，跨 pi-pane 重启、daemon 重启、插件停用和加载失败保留，按规则消失，旧 revision 的知悉被拒；接管后打开的会话开放输入框、返工和停止；排队中的任务有停止入口并能停止；daemon 重启及变更流过期后侧栏与 daemon 一致；主会话下的子任务、工具卡片与通知卡片链接、唯一停止入口、冷历史和显示名称 |
 
 除 `pane-browser-m3.test.mjs` 外，这些测试在 agora 侧使用模拟主机，其中安全和接管测试通过真实 daemon HTTP 及 P-256 签名验证后台协议。浏览器中的流式恢复、多标签页交互、设备密钥与签名、横幅跨宿主重启及插件不可用提示由 `pane-browser-m3.test.mjs` 验收，运行方式见 [development.md](development.md#pane-浏览器联调)。
