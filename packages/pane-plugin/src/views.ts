@@ -33,9 +33,10 @@ function sessionId(ref: SessionRef): string {
   if (ref.source !== "agora" || !ref.id) throw new Error("会话不属于 agora");
   return encoded(ref.id);
 }
-function group(revision: number): TreeNode {
+// childCount 来自最近一次快照扫描；用户任务根不是 daemon 的会话行，没有扫描结果时不填写。
+function group(revision: number, childCount?: number): TreeNode {
   return { id: USER_TASKS, source: "agora", kind: "group", parentId: null, title: "用户任务",
-    status: "idle", availability: "online", hasChildren: true, sortKey: "", revision, capabilities: [] };
+    status: "idle", availability: "online", hasChildren: true, ...(childCount === undefined ? {} : { childCount }), sortKey: "", revision, capabilities: [] };
 }
 // 协议版本仍为 1；不返回 treeRevision 的是旧 daemon，不能拿会话行 revision 顶替节点修订号。
 function treeRevision(item: SessionItem): number {
@@ -45,8 +46,8 @@ function treeRevision(item: SessionItem): number {
   }
   return value;
 }
-function node(item: SessionItem, revision = treeRevision(item)): TreeNode {
-  if (item.agoraSessionId === USER_TASKS) return group(revision);
+function node(item: SessionItem, revision = treeRevision(item), userTasks?: number): TreeNode {
+  if (item.agoraSessionId === USER_TASKS) return group(revision, userTasks);
   const capabilities = ["open"];
   const historical = !!item.taskId && item.isCurrent === false;
   const userOwned = userTask(item);
@@ -149,19 +150,23 @@ export function createViews(runtime: PluginRuntime): {
     } while (cursor);
     return { epoch: epoch!, items };
   }
-  /** 统计挂在 pane 节点下的直接子节点总数，含历史会话；扫描期间来源重置时返回 undefined。 */
-  async function foreignChildCounts(epoch: string): Promise<Record<string, number> | undefined> {
+  // 用户任务根的子节点总数，供“历史（N）”使用；订阅推送的根节点沿用最近一次快照的数目。
+  let userTaskCount: number | undefined;
+  /** 统计挂在 pane 节点和用户任务根下的直接子节点总数，含历史会话；扫描期间来源重置时返回 undefined。 */
+  async function childCounts(epoch: string): Promise<{ foreign: Record<string, number>; userTasks: number } | undefined> {
     let scan;
     try { scan = await scanSessions(); }
     catch (error) { if (error instanceof TreeReset) return undefined; throw error; }
     // 来源已重置时快照的订阅会收到 reset，下一次快照再报告数目。
     if (!scan || scan.epoch !== epoch) return undefined;
-    const counts: Record<string, number> = {};
+    const foreign: Record<string, number> = {};
+    let userTasks = 0;
     for (const item of scan.items.values()) {
       const parent = parentNodeId(item);
-      if (parent?.startsWith("pane:")) counts[parent] = (counts[parent] ?? 0) + 1;
+      if (parent?.startsWith("pane:")) foreign[parent] = (foreign[parent] ?? 0) + 1;
+      else if (parent === USER_TASKS) userTasks++;
     }
-    return counts;
+    return { foreign, userTasks };
   }
   async function scanHolds() {
     if (disposed) return;
@@ -223,11 +228,12 @@ export function createViews(runtime: PluginRuntime): {
       const page = await get<SessionsPage>(`/v1/sessions?${params}`);
       remember(page.items);
       const revision = page.changesCursor.seq;
-      const nodes = page.items.map(item => node(item));
-      if (!nodes.some(item => item.id === USER_TASKS)) nodes.push(group(revision));
-      // 快照只含热节点，pane 主会话下的冷节点数目需要扫描全部会话才能得到。
-      const counts = await foreignChildCounts(page.changesCursor.epoch);
-      return { source: "agora", epoch: page.changesCursor.epoch, revision, nodes, ...(counts ? { foreignChildCounts: counts } : {}) };
+      // 快照只含热节点，用户任务根与 pane 主会话下的冷节点数目需要扫描全部会话才能得到。
+      const counts = await childCounts(page.changesCursor.epoch);
+      userTaskCount = counts?.userTasks;
+      const nodes = page.items.map(item => node(item, undefined, userTaskCount));
+      if (!nodes.some(item => item.id === USER_TASKS)) nodes.push(group(revision, userTaskCount));
+      return { source: "agora", epoch: page.changesCursor.epoch, revision, nodes, ...(counts ? { foreignChildCounts: counts.foreign } : {}) };
     },
     async children(parentId, page) {
       // 旧来源的游标可能在 daemon 返回 epoch 前被拒绝，先用有界读取核实来源。
@@ -316,7 +322,7 @@ export function createViews(runtime: PluginRuntime): {
             void refreshHolds();
           } else {
             // 非树对象也推进来源水位，避免分页等待一个永远不会推送的修订号。
-            emit({ type: "upsert", revision, node: group(revision) });
+            emit({ type: "upsert", revision, node: group(revision, userTaskCount) });
             if (change.objectType === "request" && !change.tombstone) {
               const request = await get(`/v1/requests/${encoded(change.objectId)}`, stream!.signal);
               if (stopped || !stream!.active()) return;

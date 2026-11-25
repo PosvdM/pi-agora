@@ -212,6 +212,19 @@ export default function createPlugin(options: PluginOptions = {}): PanePlugin {
     inProgress.set(key, operation);
     return operation;
   }
+  // daemon 刚退出时，变更流断开会先于定时检查触发 reset，宿主随即重取快照。在线读取失败时立即检查连接，
+  // 确认已离线就改读存档，避免把连接错误交给宿主；连接仍然正常时原样抛出业务错误。
+  async function read<T>(live: () => Promise<T>, archived: (reader: Awaited<ReturnType<typeof offline>>) => Promise<T>): Promise<T> {
+    active();
+    if (online) {
+      try { return await live(); }
+      catch (error) {
+        await probe().catch(() => {});
+        if (online || !activated) throw error;
+      }
+    }
+    return archived(await offline());
+  }
   function securityAction(actionId: string): string | undefined {
     return actionId === "agora.security.acknowledge" ? "devices-reset" : actionId === "agora.security.acknowledge-budget" ? "budget-config-changed" : undefined;
   }
@@ -245,8 +258,8 @@ export default function createPlugin(options: PluginOptions = {}): PanePlugin {
       if (archive) { await archive.then(value => value.dispose()).catch(() => {}); archive = undefined; }
     },
     tree: {
-      async snapshot(req) { active(); return online ? views.tree.snapshot(req) : (await offline()).tree.snapshot(req); },
-      async children(parentId, page) { active(); return online ? views.tree.children(parentId, page) : (await offline()).tree.children(parentId, page); },
+      snapshot: req => read(() => views.tree.snapshot(req), reader => reader.tree.snapshot(req)),
+      children: (parentId, page) => read(() => views.tree.children(parentId, page), reader => reader.tree.children(parentId, page)),
       subscribe(from, emit) {
         active();
         const subscription = { emit, stop: () => {} };
@@ -261,8 +274,8 @@ export default function createPlugin(options: PluginOptions = {}): PanePlugin {
       },
     },
     sessions: {
-      async snapshot(ref) { active(); return online ? views.sessions.snapshot(ref) : (await offline()).sessions.snapshot(ref); },
-      async history(ref, page) { active(); return online ? views.sessions.history(ref, page) : (await offline()).sessions.history(ref, page); },
+      snapshot: ref => read(() => views.sessions.snapshot(ref), reader => reader.sessions.snapshot(ref)),
+      history: (ref, page) => read(() => views.sessions.history(ref, page), reader => reader.sessions.history(ref, page)),
       subscribe(ref, after, emit) {
         active();
         const subscription = { ref, emit, stop: () => {} };
@@ -317,6 +330,8 @@ export default function createPlugin(options: PluginOptions = {}): PanePlugin {
           } else return actions.invoke(inv, origin);
           if (response.status === 202) return { status: "pending" };
           if (response.body?.error?.code === "idempotency_mismatch") return { status: "idempotencyConflict", message: "幂等键对应了不同操作" };
+          // 已有设备配对后，新设备的自签只登记为待批准，不能提示为已配对。
+          if (inv.actionId === "agora.device.pair" && response.status < 300 && response.body?.state === "pending") return { status: "ok", message: "已提交配对请求，请在已配对的设备上批准" };
           return response.status < 300 ? { status: "ok" } : { status: "failed", message: response.body?.error?.message ?? "操作未执行" };
         });
       },
