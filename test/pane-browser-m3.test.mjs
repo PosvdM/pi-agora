@@ -593,6 +593,17 @@ test('主会话派出的子任务：树、工具卡片链接、通知卡片、�
   assert.equal(await treeRow(later, longNode).count(), 0, '冷节点不在热快照中');
   await later.locator('[data-testid="node-history"]').filter({ hasText: '历史（1）' }).click();
   await treeRow(later, longNode).waitFor();
+  // 主会话下的快速子任务同样是冷节点，子节点数只能来自快照的 foreignChildCounts。八天后主会话本身也不在
+  // pi-pane 的热列表里，冷子任务先计入“未归属”；加载项目历史列出主会话后，数目回到主会话行，展开后从“历史（1）”加载。
+  assert.equal(await treeRow(later, quickNode).count(), 0, '主会话下的冷子任务不在热快照中');
+  await byId(later, 'unassigned-history').filter({ hasText: '历史（1）' }).waitFor();
+  await byId(later, 'project-history').click();
+  const laterMain = later.locator(`[data-testid="session-item"][data-node-id="pane:session:${mainId}"]`);
+  await laterMain.locator('[data-testid="child-count"]').filter({ hasText: '1 个子节点' }).waitFor();
+  assert.equal(await byId(later, 'unassigned').count(), 0, '主会话列出后冷子任务不再算作未归属');
+  await laterMain.locator('[data-testid="twisty"]').click();
+  await later.locator('[data-testid="node-history"]').filter({ hasText: '历史（1）' }).click();
+  await treeRow(later, quickNode).filter({ hasText: '快速子任务' }).waitFor();
 });
 
 test('排队中的任务：没有运行进程时会话视图仍有停止入口，停止后 daemon 记为已停止', { timeout: 150_000, skip }, async t => {
