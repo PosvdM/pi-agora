@@ -172,6 +172,9 @@ test('在场确认被拒绝、超时、没有可接收确认的设备：daemon �
   }
   const [timedOut, rejected, absent] = requests;
   const tabs = [a.page, await w.tab(a.context), await w.tab(a.context)];
+  // 提问表单关联发起任务的会话节点：待处理条目显示任务标题，树节点显示待处理标记。
+  await byId(tabs[0], 'pending-item').filter({ hasText: '提问：超时的提问？' }).filter({ hasText: '超时任务' }).waitFor();
+  await treeRow(tabs[0], sessionNode(timedOut.task.agoraSessionId)).locator('[data-testid="node-pending"]').waitFor();
 
   // 超时：确认框留在第一个标签页，直到宿主按插件给出的 120 秒期限结束确认。
   await fillQuestion(tabs[0], '提问：超时的提问？', '是');
@@ -193,10 +196,37 @@ test('在场确认被拒绝、超时、没有可接收确认的设备：daemon �
   await byId(tabs[2], 'form-submit').click();
   await byId(tabs[2], 'presence-dialog').filter({ hasText: 'agora.request.answer' }).waitFor();
   await tabs[2].close();
-  // 待确认留给 daemon 裁定，并以持久表单列在待处理区，供用户稍后确认。
-  await byId(tabs[1], 'pending-item').filter({ hasText: '待确认：agora.request.answer' }).first().waitFor();
+  const closedAt = Date.now();
   assert.equal(await byId(tabs[1], 'presence-dialog').count(), 0, '其他标签页没有收到这次确认');
+  // 待确认一经创建就以持久表单列在待处理区，与确认是否结束无关，所以表单出现不能区分 noDevice 和超时。
+  // 插件按 confirmationId 复用进行中的 confirm：宿主以 noDevice 结束后再提交这条待确认会发起新的确认，
+  // 超时那条在 120 秒期满前再提交则复用仍在第一个标签页等待的确认，不弹新的确认框。
+  const [absentConfirmation] = await until(async () => { const value = await confirmationsFor(w, absent.id); return value.length === 1 && value; });
+  const [timedOutConfirmation] = await until(async () => { const value = await confirmationsFor(w, timedOut.id); return value.length === 1 && value; });
+  const formItem = (page, id) => page.locator(`[data-testid="pending-item"][data-form-id="${id}"]`);
+  const absentForm = `agora:confirmation:${absentConfirmation.confirmationId}`, timedOutForm = `agora:confirmation:${timedOutConfirmation.confirmationId}`;
+  for (const id of [absentForm, timedOutForm]) await formItem(tabs[1], id).waitFor();
+  const probe = await w.tab(a.context);
+  await formItem(probe, absentForm).click();
+  await byId(probe, 'form-dialog').waitFor();
+  await byId(probe, 'form-submit').click();
+  await byId(probe, 'presence-dialog').filter({ hasText: 'agora.request.answer' }).waitFor({ timeout: 15_000 });
+  assert.ok(Date.now() - closedAt < 15_000, '关闭标签页后宿主远早于 120 秒期限以 noDevice 结束了确认');
+  // 关闭这个标签页同样以 noDevice 结束，待确认仍留给 daemon 裁定。
+  await probe.close();
+  // 对照：超时那条的确认仍在进行，提交它的待确认只得到处理中，任何其他标签页都不弹新的确认框。
+  await formItem(tabs[1], timedOutForm).click();
+  await byId(tabs[1], 'form-dialog').waitFor();
+  await byId(tabs[1], 'form-submit').click();
+  // 插件等待约 8 秒后返回 pending，宿主关闭弹窗并在待处理条目上显示处理中。
+  await formItem(tabs[1], timedOutForm).filter({ hasText: '操作等待确认或仍在处理' }).waitFor({ timeout: 20_000 });
+  await byId(tabs[1], 'form-dialog').waitFor({ state: 'detached' });
+  assert.equal(await byId(tabs[1], 'presence-dialog').count(), 0, '超时那条复用进行中的确认');
+  assert.equal(await byId(tabs[0], 'presence-dialog').count(), 1, '超时那条的确认框仍未结束');
 
+  const beforeDeadline = 115_000 - (Date.now() - timeoutStarted);
+  if (beforeDeadline > 0) await delay(beforeDeadline);
+  assert.equal(await byId(tabs[0], 'presence-dialog').count(), 1, '确认框在 120 秒期限前仍然保留');
   const remaining = 125_000 - (Date.now() - timeoutStarted);
   if (remaining > 0) await delay(remaining);
   await byId(tabs[0], 'presence-dialog').waitFor({ state: 'detached', timeout: 15_000 });
