@@ -55,6 +55,8 @@ const AUDIT_REASONS = new Set([
   "device_mismatch", "invalid_params", "invalid_action", "forbidden", "token_expired", "lease_required",
   "conflict", "confirmation_required", "invalid_proof", "transaction_active", "operation_interrupted",
 ]);
+// 签名执行时业务对象已被处理或版本已变，按同一签名参数重试不可能成功。
+const STALE_REASONS = new Set(["conflict", "already_handled"]);
 function auditReason(error: unknown): string {
   return error instanceof AgoraError && AUDIT_REASONS.has(error.code) ? error.code : "execution_failed";
 }
@@ -412,10 +414,21 @@ export class Security {
     const proof: DeviceProof = Object.freeze({ deviceId, confirmationId: row.id, requestedBy: row.requested_by, confirmedBy: "device" });
     return { params, proof };
   }
-  private rejected(conn: Connection, confirmationId: string, row: ConfirmationRow | undefined, error: unknown): void {
+  private rejected(conn: Connection, confirmationId: string, row: ConfirmationRow | undefined, error: unknown, executed?: DeviceProof): void {
     // 只保存拒绝码，不记录签名、凭证、回调错误文本或完整答复。
     const reason = auditReason(error);
     this.store.transaction(() => {
+      // 签名有效、执行时业务状态已变：签名参数固定，重试不可能成功，待确认在事务回滚之外结束为 failed，
+      // 等待它的操作得到同一错误。签名无效、设备不符等可以重签的拒绝保持 pending。
+      if (executed && error instanceof AgoraError && error.status === 409 && STALE_REASONS.has(reason)) {
+        const changed = this.store.run("UPDATE pending_confirmations SET state='failed',consumed_at=?,confirmed_by=?,failure_reason=? WHERE id=? AND state='pending'", now(), executed.deviceId, reason, confirmationId);
+        if (changed.changes && row) {
+          this.log(row.action, row.target, row.requested_by, "device", "failed", { proof: executed, reason });
+          this.settleOperations(confirmationId, "failed", undefined, reason);
+          this.store.change("confirmation", confirmationId);
+          return;
+        }
+      }
       this.log(row?.action ?? "confirmation.sign", row?.target ?? confirmationId, conn.principalId ?? conn.type, "none", "rejected", { reason, confirmationId });
       if (reason === "confirmation_expired") {
         this.store.run("UPDATE pending_confirmations SET state='expired' WHERE id=? AND state='pending'", confirmationId);
@@ -425,6 +438,7 @@ export class Security {
   }
   sign(conn: Connection, confirmationId: string, body: SignatureBody, execute: Execute): unknown {
     let row: ConfirmationRow | undefined;
+    let executed: DeviceProof | undefined;
     try {
       this.actor(conn); this.checkState();
       if (execute.constructor.name === "AsyncFunction") invalid("签名执行回调必须同步");
@@ -437,10 +451,12 @@ export class Security {
         const previousProof = this.activeProof, previousOperation = this.activeOperation;
         this.activeProof = proof; this.activeOperation = { action: row.action, target: row.target, params: jcs(params) };
         let result: unknown;
+        executed = proof;
         try {
           result = isInternalAction(row.action) ? this.apply(conn, row.action, row.target, params, proof) : execute(row.action, row.target, params, proof);
           if (result && typeof (result as { then?: unknown }).then === "function") invalid("签名执行回调必须同步");
         } finally { this.activeProof = previousProof; this.activeOperation = previousOperation; }
+        executed = undefined;
         this.store.run("UPDATE pending_confirmations SET state='confirmed',confirmed_by=?,result=? WHERE id=?", proof.deviceId, JSON.stringify(result) ?? "null", confirmationId);
         this.log(row.action, row.target, row.requested_by, "device", "confirmed", { proof });
         this.settleOperations(confirmationId, "confirmed", result);
@@ -448,7 +464,7 @@ export class Security {
         return result;
       });
     } catch (error) {
-      this.rejected(conn, confirmationId, row, error);
+      this.rejected(conn, confirmationId, row, error, executed);
       throw error;
     }
   }

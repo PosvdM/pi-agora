@@ -330,6 +330,63 @@ for (const mode of ['reopen', 'replace']) test(`F5：父任务 ${mode} 后现存
   assert.ok((await g.client.request('GET', '/v1/inbox')).items.some(n => n.kind === 'request:answered' && n.payload.requestId === deep.id));
 });
 
+// 父任务向用户提问后中断，返回提问、迁移前的 revision 和重开任务的函数。
+async function userQuestionBeforeMigration(f, main) {
+  const parent = await f.spawn(main), p = await f.handle(parent);
+  const question = await p.client.request('POST', '/v1/requests', { questions: [{ id: 'q', question: '由用户决定' }] });
+  const escalated = await main.request('POST', `/v1/requests/${question.id}/escalate`, {});
+  assert.equal(escalated.targetId, 'user');
+  p.emit({ type: 'agent_settled', aborted: true }); await f.daemon.tasks.flush();
+  const migrate = async mode => {
+    const reopened = await main.request('POST', `/v1/tasks/${parent.taskId}/recover`, { mode });
+    await f.handle(reopened);
+    assert.equal(f.daemon.store.get('SELECT revision FROM requests WHERE id=?', question.id).revision, escalated.revision + 1);
+  };
+  return { question, revision: escalated.revision, migrate };
+}
+const confirmationsOf = (f, requestId) => f.daemon.store.all('SELECT * FROM pending_confirmations WHERE target=?', requestId);
+
+for (const action of ['answer', 'cancel']) test(`任务换人迁移提问后，主机按旧 revision ${action} 直接返回 409，不建待确认`, async t => {
+  const f = await setup(t), main = await f.main(), cli = await f.main('host:cli');
+  const { question, revision, migrate } = await userQuestionBeforeMigration(f, main);
+  await migrate('replace');
+  const body = { expectedRevision: revision, ...(action === 'answer' ? { answers: [{ id: 'q', selected: [], custom: '旧表单' }] } : {}) };
+  await assert.rejects(cli.request('POST', `/v1/requests/${question.id}/${action}`, body, { idempotencyKey: randomUUID() }), e => e.code === 'conflict');
+  assert.equal(confirmationsOf(f, question.id).length, 0);
+  assert.equal((await cli.request('GET', '/v1/confirmations?state=pending')).items.length, 0);
+  // 已处理的提问同样在建待确认之前返回 409。
+  const current = await cli.request('GET', `/v1/requests/${question.id}`);
+  assert.equal(current.state, 'escalated');
+  await confirmUser(cli, await cli.request('POST', `/v1/requests/${question.id}/cancel`, { expectedRevision: current.revision }));
+  await assert.rejects(cli.request('POST', `/v1/requests/${question.id}/${action}`, { ...body, expectedRevision: current.revision + 1 }), e => e.code === 'already_handled');
+  assert.deepEqual(confirmationsOf(f, question.id).map(row => row.state), ['confirmed']);
+});
+
+test('待确认建立后提问被重开迁移，设备签名执行返回 409，待确认结束为 failed 且等待它的操作得到失败结果', async t => {
+  const f = await setup(t), main = await f.main(), cli = await f.main('host:cli');
+  const { question, revision, migrate } = await userQuestionBeforeMigration(f, main);
+  const key = randomUUID(), body = { expectedRevision: revision, answers: [{ id: 'q', selected: [], custom: '迁移前的答复' }] };
+  const waiting = await cli.request('POST', `/v1/requests/${question.id}/answer`, body, { idempotencyKey: key });
+  const confirmationId = waiting.confirmation.confirmationId;
+  assert.equal(confirmationsOf(f, question.id)[0].state, 'pending');
+  await migrate('reopen');
+  const head = f.daemon.store.get('SELECT COALESCE(MAX(seq),0) AS seq FROM changes').seq;
+  await assert.rejects(confirmUser(cli, waiting), e => e.code === 'conflict');
+  const row = f.daemon.store.get('SELECT * FROM pending_confirmations WHERE id=?', confirmationId);
+  assert.equal(row.state, 'failed'); assert.equal(row.failure_reason, 'conflict');
+  assert.equal((await cli.request('GET', '/v1/confirmations?state=pending')).items.some(item => item.confirmationId === confirmationId), false);
+  assert.ok(f.daemon.store.get("SELECT COUNT(*) AS n FROM changes WHERE object_type='confirmation' AND object_id=? AND seq>?", confirmationId, head).n >= 1, '插件据变更记录重读待处理列表');
+  const audit = f.daemon.store.all('SELECT outcome,reason,confirmed_by FROM security_audit WHERE confirmation_id=? ORDER BY seq', confirmationId);
+  assert.deepEqual({ ...audit.at(-1) }, { outcome: 'failed', reason: 'conflict', confirmed_by: 'device' });
+  // 提问保持迁移后的状态，同一待确认不能再次签名执行。
+  const current = await cli.request('GET', `/v1/requests/${question.id}`);
+  assert.equal(current.state, 'escalated'); assert.equal(current.revision, revision + 1);
+  await assert.rejects(confirmUser(cli, waiting), e => e.code === 'already_handled');
+  // 等待该待确认的幂等操作以 409 结束，不再停在 202。
+  await assert.rejects(cli.request('POST', `/v1/requests/${question.id}/answer`, body, { idempotencyKey: key }), e => e.code === 'conflict' && e.status === 409);
+  assert.equal(f.daemon.store.get("SELECT state FROM operations WHERE key=?", key).state, 'failed');
+});
+
 test('提问校验依赖与自定义答复；取消不算同意；等待答复可回收并由答案重新排队', async t => {
   const f = await setup(t, { idleReclaimMs: 20 }), main = await f.main(), parent = await f.spawn(main), p = await f.handle(parent);
   await assert.rejects(p.client.request('POST', '/v1/requests', { questions: [{ id: 'q', question: '错误依赖', dependsOn: { questionId: 'missing' } }] }), e => e.code === 'invalid_params');

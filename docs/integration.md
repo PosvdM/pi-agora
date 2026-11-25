@@ -105,7 +105,7 @@ cleanup 在有未提交改动且未指定 `discard` 时返回 `409 worktree_dirt
 
 host 可读取全部待确认，主 Agent 只能读取 `requestedBy` 为自己的记录。host 可取消其他 host 或主 Agent 发起的待确认，用于浏览器拒绝 CLI 请求；主 Agent 只能取消自己发起的待确认。取消与过期不等于同意。
 
-HTTP 签名入口的同步动作（包括 task takeover、limits、提问答复与取消）与 nonce、待确认状态及审计共用事务；spawn、recover 和 archive delete 使用异步确认，先提交 `executing` 并消费 nonce，再执行文件或进程操作。重启把遗留 `executing` 标为 `failed`、`operation_interrupted`，不重放。字段与回滚规则见 [security.md](security.md#验签)。
+HTTP 签名入口的同步动作（包括 task takeover、limits、提问答复与取消）与 nonce、待确认状态及审计共用事务；spawn、recover 和 archive delete 使用异步确认，先提交 `executing` 并消费 nonce，再执行文件或进程操作。重启把遗留 `executing` 标为 `failed`、`operation_interrupted`，不重放。同步动作执行时业务状态已变（`409 conflict`、`409 already_handled`）的待确认同样结束为 `failed`。字段与回滚规则见 [security.md](security.md#验签)。
 
 ### 主会话重连
 
@@ -119,7 +119,7 @@ HTTP 签名入口的同步动作（包括 task takeover、limits、提问答复�
 - **不重复执行**：同一 key 的请求只执行一次。
 - **重复请求返回当前状态**：同一 key 再次请求时，操作已结束则返回最终结果（成功或失败，与第一次结束时相同）；尚未结束则返回 `202` 和当前状态（如 `{ "operation": { "id": "op_…", "state": "awaiting_confirmation", "confirmation": { … } } }`），不返回旧的中间响应。只有最终结果被缓存。
 - **参数不同**：同一 key、请求指纹不同，返回 `409 idempotency_mismatch`，不执行，也不返回原操作的结果。
-- **后台完成**：用户级操作在待确认被签名、执行之后，daemon 把操作记录更新为最终结果；之后用同一 key 查询得到的就是这个结果。待确认被拒绝或过期时，操作记录的最终结果为失败（`confirmation_cancelled`、`confirmation_expired`）。
+- **后台完成**：用户级操作在待确认被签名、执行之后，daemon 把操作记录更新为最终结果；之后用同一 key 查询得到的就是这个结果。待确认被拒绝或过期时，操作记录的最终结果为失败（`confirmation_cancelled`、`confirmation_expired`）；待确认因执行失败结束为 `failed` 时为其失败原因，如业务状态已变时为 `409 conflict` 或 `409 already_handled`。
 - **pane 插件侧**：把 `ActionInvocation.idempotencyKey` 原样作为该头的值，每次 `invoke` 都把请求转给 daemon，不在插件里缓存中间结果；按 daemon 返回的当前状态映射 `ActionResult`（见“动作”）。`needsInput` 之后的再次提交使用 pi-pane 生成的 `<原 key>/<n>`，是另一次操作。与 pane 协议的约定一致：同一 key 只执行一次，还在处理时返回 `pending`，结束后返回最终结果。
 
 ### 任务预算、额度与用量字段
@@ -501,7 +501,7 @@ pi-pane 只有一个“待处理”区，承载所有插件的持久表单。ago
 
 - **标题前缀**：`title` 以事项类型开头，pi-pane 的待处理区据此区分类型。提问的标题取首个问题的文字，去掉 Markdown 标记（强调、链接和图片只留文字，行内代码只去掉反引号、内容原样保留（如 `obj.__init__()`、`a * b`），标题、引用和列表标记删去）并合并空白，尖括号按普通文字保留（如 `Promise<string>`），超过 40 个字符时保留前 40 个字符并加“…”；去掉标记后为空时标题为“提问”。无法归类的事项使用兜底标题“待处理事项”，不加前缀。
 - `FormSpec.revision` 取 daemon 中对象的 `revision`；`expiresAt` 只用于显示。
-- **关联节点**：`nodeId` 填相关的树节点，pi-pane 据此在树节点上显示待处理数，并在子会话顶部显示“待处理：…”和“处理”。转给用户的提问填发起提问的任务当前会话节点 `agora:session:<agoraSessionId>`，插件按提问的 `taskId` 读取 `GET /v1/tasks/:id` 得到；答复或取消提问的待确认（`action` 为 `agora.request.answer`、`agora.request.cancel`，`target` 为提问 ID）填同一节点。提问没有 `taskId` 或任务读取失败时省略 `nodeId`，待处理区照常列出。中断任务的决策填该任务的当前会话节点；待批准设备不填。pi-pane 只接受同一表单更高的 `revision`，首次列出时省略的 `nodeId` 要等该事项的 `revision` 变化或 pi-pane 重启后才会显示。任务重开或换人后当前会话改变，daemon 迁移该任务的未答提问时递增其 `revision`（见 [tasks.md](tasks.md#提问答复与转交)），表单因此以新 `revision` 和新会话节点重新推送；用户按迁移前的 `revision` 提交时 daemon 返回 `409 conflict`，插件映射为 `stale` 并附新表单。离线时表单来自上次在线时写入的缓存，保留当时的 `nodeId`。
+- **关联节点**：`nodeId` 填相关的树节点，pi-pane 据此在树节点上显示待处理数，并在子会话顶部显示“待处理：…”和“处理”。转给用户的提问填发起提问的任务当前会话节点 `agora:session:<agoraSessionId>`，插件按提问的 `taskId` 读取 `GET /v1/tasks/:id` 得到；答复或取消提问的待确认（`action` 为 `agora.request.answer`、`agora.request.cancel`，`target` 为提问 ID）填同一节点。提问没有 `taskId` 或任务读取失败时省略 `nodeId`，待处理区照常列出。中断任务的决策填该任务的当前会话节点；待批准设备不填。pi-pane 只接受同一表单更高的 `revision`，首次列出时省略的 `nodeId` 要等该事项的 `revision` 变化或 pi-pane 重启后才会显示。任务重开或换人后当前会话改变，daemon 迁移该任务的未答提问时递增其 `revision`（见 [tasks.md](tasks.md#提问答复与转交)），表单因此以新 `revision` 和新会话节点重新推送；用户按迁移前的 `revision` 提交时 daemon 不生成待确认，直接返回 `409 conflict`，插件映射为 `stale` 并附新表单。待确认生成后提问才被迁移时，签名执行返回 `409`，待确认结束为 `failed`，插件重读列表后移除该待确认表单，提问表单以新 `revision` 留在“待处理”中。离线时表单来自上次在线时写入的缓存，保留当时的 `nodeId`。
 - **提交**：`forms.submit(submission, origin)` 中，用户级事项先用 `origin` 调 `ctx.userPresence.confirm()`（确认框出现在提交的标签页），再把签名交给 daemon。结果映射（`FormSubmitResult`）：成功为 `accepted`；`202` 且尚未结束（等待用户确认、处理中）为 `pending`；`409 already_handled` 为 `alreadyHandled`；`revision` 落后为 `stale`（附新表单）；`409 idempotency_mismatch` 为 `idempotencyConflict`；其他错误为 `failed`。
 - **关闭显示与取消**：用户关闭弹窗（dismiss）不通知插件，事项仍待处理。用户点 `cancel` 按钮提交的 `{ status: "cancelled" }` 是明确的业务结果：提问被取消且不视为同意，待确认变为 `cancelled`，设备批准变为拒绝。取消提问同样是用户级操作。
 - **过期与移除**：由 daemon 统一裁定。事项被处理、取消、过期或撤回（如召集人已答复、CLI 已确认）后，daemon 推送变更，插件调用 `ctx.formRemoved(id, reason)`，`reason` 对应 `handled`、`cancelled`、`expired`、`withdrawn`。插件启动或重连时 `forms.pending()` 从 daemon 重新列出。
