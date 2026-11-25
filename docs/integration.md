@@ -407,7 +407,7 @@ Agent 管理的当前任务在状态说明里显示“由 Agent 管理，接管�
 
 - `send`：用户管理的任务当前会话节点同时填 `composer: { actionId: "agora.task.steer", placeholder: "对子代理补充说明或返工", images: false }`。pi-pane 把聊天输入框的提交转成该动作（文字在 `input.fields.message`），不附动作表单的 id 或 revision；该受限通路只接受文字并固定 `interrupt: false`，仍保存固定请求快照。菜单里的返工表单保留版本校验，`interrupt` 由 checkbox 选择。两条通路都调用 `POST /v1/tasks/:id/steer`，保证有记录、有代数；`sessions.send` 也复用同一请求机制。`isCurrent: false` 的历史任务会话只有 `open` 能力，不能误控任务的当前运行。
 - `abort`：插件实现 `sessions.abort(ref, { clearQueue, origin })`，调用 `POST /v1/tasks/:id/stop`，语义是取消（先 `clear_queue` 再 `abort`，见 [tasks.md](tasks.md#agora_task-接口)）。`AbortResult.clearedText` 填被清掉的返工消息原文（去掉 agora 加的标注行），pi-pane 放回输入框。
-- 停止入口只出现一个：`abort` 与 `action:agora.task.stop` 调用同一端点，pi-pane 对声明了 `abort` 的节点总是显示停止按钮（含排队中、还没有运行进程的任务），因此未结束的任务能 `abort` 时不再声明 `action:agora.task.stop`。额度或预算暂停的任务没有运行可中止，不声明 `abort`，改为声明 `action:agora.task.stop`。
+- 停止入口只出现一个：`abort` 与 `action:agora.task.stop` 调用同一端点，pi-pane 对声明了 `abort` 的节点总是显示停止按钮，只有会话视图已显示结束状态时不显示；这包括排队中（`created`）、等待决策（`waiting_decision`）和等待子任务（`waiting_children`）等映射为 `waiting`、可能没有运行进程的任务。因此未结束的任务能 `abort` 时不再声明 `action:agora.task.stop`。额度或预算暂停的任务没有运行可中止，不声明 `abort`，改为声明 `action:agora.task.stop`。
 - 参会者和书记不带 `send`：会议中对参会者说话一律通过会议插话，进入 board。
 
 ### 会话

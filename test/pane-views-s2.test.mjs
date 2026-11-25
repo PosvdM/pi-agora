@@ -604,6 +604,21 @@ test('能 abort 的任务不再声明停止动作，不能 abort 的未结束任
   assert.ok(!capabilities('finished').includes('action:agora.task.stop'));
 });
 
+test('每个未结束的任务恰好有一个停止入口：排队和等待状态声明 abort，暂停状态声明停止动作', async t => {
+  const abortable = ['created', 'running', 'waiting_decision', 'waiting_children'];
+  const paused = ['quota_paused', 'budget_paused'];
+  const terminal = ['completed', 'failed', 'stopped', 'interrupted'];
+  const rows = [...abortable, ...paused, ...terminal].map(status => item(status, { status, parent: { kind: 'user' } }));
+  const h = setup(t, ({ url }) => url.pathname === '/v1/sessions' ? { status: 200, body: page(rows) } : undefined);
+  const nodes = new Map((await h.views.tree.snapshot({ openNodeIds: [], recentSince: '2026-01-01T00:00:00Z' })).nodes.map(node => [node.id, node]));
+  const stops = status => nodes.get(`agora:session:${status}`).capabilities.filter(value => value === 'abort' || value === 'action:agora.task.stop');
+  for (const status of abortable) assert.deepEqual(stops(status), ['abort'], status);
+  for (const status of paused) assert.deepEqual(stops(status), ['action:agora.task.stop'], status);
+  for (const status of terminal) assert.deepEqual(stops(status), [], status);
+  // created 与两种等待状态在 pane 中同为 waiting，停止按钮依赖 abort 能力出现。
+  for (const status of ['created', 'waiting_decision', 'waiting_children']) assert.equal(nodes.get(`agora:session:${status}`).status, 'waiting', status);
+});
+
 test('在线快照扫描全部会话，在 foreignChildCounts 中报告 pane 节点下的直接子节点总数', async t => {
   const all = [
     item('hot', { parent: { kind: 'main', piSessionId: 'main' } }),
