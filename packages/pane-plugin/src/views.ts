@@ -33,7 +33,7 @@ function sessionId(ref: SessionRef): string {
   if (ref.source !== "agora" || !ref.id) throw new Error("会话不属于 agora");
   return encoded(ref.id);
 }
-// childCount 来自最近一次快照扫描；用户任务根不是 daemon 的会话行，没有扫描结果时不填写。
+// childCount 来自快照扫描和订阅中的增减；用户任务根不是 daemon 的会话行，没有扫描结果时不填写。
 function group(revision: number, childCount?: number): TreeNode {
   return { id: USER_TASKS, source: "agora", kind: "group", parentId: null, title: "用户任务",
     status: "idle", availability: "online", hasChildren: true, ...(childCount === undefined ? {} : { childCount }), sortKey: "", revision, capabilities: [] };
@@ -150,21 +150,22 @@ export function createViews(runtime: PluginRuntime): {
     } while (cursor);
     return { epoch: epoch!, items };
   }
-  // 用户任务根的子节点总数，供“历史（N）”使用；订阅推送的根节点沿用最近一次快照的数目。
-  let userTaskCount: number | undefined;
-  /** 统计挂在 pane 节点和用户任务根下的直接子节点总数，含历史会话；扫描期间来源重置时返回 undefined。 */
-  async function childCounts(epoch: string): Promise<{ foreign: Record<string, number>; userTasks: number } | undefined> {
+  // 最近一次快照扫描得到的用户任务根直接子节点 ID，含历史会话。根节点的 childCount 供“历史（N）”使用，
+  // 订阅以它为起点，按会话移入、移出或删除增减。
+  let userTasks: { epoch: string; ids: ReadonlySet<string> } | undefined;
+  /** 统计挂在 pane 节点下的直接子节点总数，收集用户任务根的直接子节点，含历史会话；扫描期间来源重置时返回 undefined。 */
+  async function childCounts(epoch: string): Promise<{ foreign: Record<string, number>; userTasks: Set<string> } | undefined> {
     let scan;
     try { scan = await scanSessions(); }
     catch (error) { if (error instanceof TreeReset) return undefined; throw error; }
     // 来源已重置时快照的订阅会收到 reset，下一次快照再报告数目。
     if (!scan || scan.epoch !== epoch) return undefined;
     const foreign: Record<string, number> = {};
-    let userTasks = 0;
-    for (const item of scan.items.values()) {
+    const userTasks = new Set<string>();
+    for (const [id, item] of scan.items) {
       const parent = parentNodeId(item);
       if (parent?.startsWith("pane:")) foreign[parent] = (foreign[parent] ?? 0) + 1;
-      else if (parent === USER_TASKS) userTasks++;
+      else if (parent === USER_TASKS) userTasks.add(id);
     }
     return { foreign, userTasks };
   }
@@ -230,7 +231,8 @@ export function createViews(runtime: PluginRuntime): {
       const revision = page.changesCursor.seq;
       // 快照只含热节点，用户任务根与 pane 主会话下的冷节点数目需要扫描全部会话才能得到。
       const counts = await childCounts(page.changesCursor.epoch);
-      userTaskCount = counts?.userTasks;
+      userTasks = counts ? { epoch: page.changesCursor.epoch, ids: counts.userTasks } : undefined;
+      const userTaskCount = counts?.userTasks.size;
       const nodes = page.items.map(item => node(item, undefined, userTaskCount));
       if (!nodes.some(item => item.id === USER_TASKS)) nodes.push(group(revision, userTaskCount));
       return { source: "agora", epoch: page.changesCursor.epoch, revision, nodes, ...(counts ? { foreignChildCounts: counts.foreign } : {}) };
@@ -266,12 +268,20 @@ export function createViews(runtime: PluginRuntime): {
       let pendingBytes = 0;
       let stopped = false;
       let stream: ReturnType<typeof listen> | undefined;
+      // 扫描在快照页之后读取，可能已含回放中的会话；按 ID 增减，重复的变更不会重复计数。
+      const userTaskIds = userTasks?.epoch === from.epoch ? new Set(userTasks.ids) : undefined;
       function reset(epoch = from.epoch) {
         if (stopped || disposed) return;
         stopped = true;
         stream?.stop();
         taskSessions.clear();
         emit({ type: "reset", epoch });
+      }
+      /** 节点移入、移出用户任务根或被删除时更新子节点集合，并推送带新 childCount 的根节点。 */
+      function trackUserTask(id: string, parent: string | null, revision: number) {
+        if (!userTaskIds || (parent === USER_TASKS) === userTaskIds.has(id)) return;
+        if (parent === USER_TASKS) userTaskIds.add(id); else userTaskIds.delete(id);
+        emit({ type: "upsert", revision, node: group(revision, userTaskIds.size) });
       }
       stream = listen(query("/v1/changes", { epoch: from.epoch, afterSeq: from.revision }), event => {
         if (event.type === "reset") { reset(event.data.epoch); return; }
@@ -309,6 +319,7 @@ export function createViews(runtime: PluginRuntime): {
             if (change.tombstone) {
               for (const [taskId, known] of taskSessions) if (known === id) taskSessions.delete(taskId);
               emit({ type: "remove", revision, id: nodeId(id) });
+              trackUserTask(nodeId(id), null, revision);
             } else {
               const item = await get<SessionItem>(`/v1/sessions/${encoded(id)}`, stream!.signal);
               if (stopped || !stream!.active()) return;
@@ -316,13 +327,15 @@ export function createViews(runtime: PluginRuntime): {
               treeRevision(item);
               // 每条变更都推送，修订号按变更 seq 分配；详情是读取时的最新数据，可能新于本条变更。
               // pane 只应用修订号更大的 upsert，同一节点之后的推送或分页只会带来同样新或更新的数据。
-              emit({ type: "upsert", revision, node: node(item, revision) });
+              const mapped = node(item, revision, userTaskIds?.size);
+              emit({ type: "upsert", revision, node: mapped });
+              trackUserTask(mapped.id, mapped.parentId, revision);
             }
             runtime.context.panelChanged({ panelId: TASK_PANEL, revision, nodeId: nodeId(id) });
             void refreshHolds();
           } else {
             // 非树对象也推进来源水位，避免分页等待一个永远不会推送的修订号。
-            emit({ type: "upsert", revision, node: group(revision, userTaskCount) });
+            emit({ type: "upsert", revision, node: group(revision, userTaskIds?.size) });
             if (change.objectType === "request" && !change.tombstone) {
               const request = await get(`/v1/requests/${encoded(change.objectId)}`, stream!.signal);
               if (stopped || !stream!.active()) return;

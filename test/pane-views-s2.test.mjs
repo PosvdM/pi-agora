@@ -637,3 +637,73 @@ test('在线快照扫描全部会话，在 foreignChildCounts 中报告 pane 节
   assert.equal(reset.epoch, 'db');
   assert.deepEqual(reset.nodes.map(node => node.id), ['agora:session:hot', 'agora:root:user-tasks']);
 });
+
+test('订阅按用户任务根子节点集合增减根节点 childCount，修订号取变更 seq', async t => {
+  const cold = item('cold', { status: 'completed', parent: { kind: 'user' } });
+  // late 在快照页之后创建，已出现在扫描结果中；回放它的变更不能重复计数。
+  const late = item('late', { parent: { kind: 'user' } });
+  const sessions = new Map([
+    ['fresh', item('fresh', { parent: { kind: 'user' } })],
+    ['late', late],
+    ['moved', item('moved', { parent: { kind: 'main', piSessionId: 'main' } })],
+    ['cold', cold],
+  ]);
+  const h = setup(t, ({ path, url }) => {
+    if (url.pathname === '/v1/sessions') return { status: 200, body: page(url.searchParams.get('snapshot') === '1' ? [] : [cold, late]) };
+    const id = /^\/v1\/sessions\/([^/]+)$/.exec(path)?.[1];
+    if (id && sessions.has(id)) return { status: 200, body: sessions.get(id) };
+  });
+  const snapshot = await h.views.tree.snapshot({ openNodeIds: [], recentSince: '2026-01-01T00:00:00Z' });
+  assert.equal(snapshot.nodes.find(node => node.id === 'agora:root:user-tasks').childCount, 2);
+  const emitted = [];
+  h.views.tree.subscribe({ epoch: 'db', revision: 10 }, value => emitted.push(value));
+  const stream = h.streams[0];
+  change(stream, 11, 'session', 'late');
+  change(stream, 12, 'session', 'fresh');
+  change(stream, 13, 'session', 'fresh');
+  change(stream, 14, 'device', 'd1');
+  // 接管等父节点变化：cold 移出用户任务根，moved 移入。
+  change(stream, 15, 'session', 'moved');
+  change(stream, 16, 'session', 'cold');
+  change(stream, 17, 'session', 'fresh', { tombstone: true });
+  change(stream, 18, 'session', 'unknown', { tombstone: true });
+  sessions.set('moved', item('moved', { parent: { kind: 'user' } }));
+  sessions.set('cold', item('cold', { status: 'completed', parent: { kind: 'main', piSessionId: 'main' } }));
+  for (let i = 0; i < 20; i++) await tick();
+  const root = 'agora:root:user-tasks';
+  assert.deepEqual(emitted.map(value => value.type === 'remove' ? ['remove', value.revision, value.id]
+    : [value.revision, value.node.id, value.node.revision, value.node.id === root ? value.node.childCount : undefined]), [
+    [11, 'agora:session:late', 11, undefined],
+    [12, 'agora:session:fresh', 12, undefined],
+    [12, root, 12, 3],
+    [13, 'agora:session:fresh', 13, undefined],
+    [14, root, 14, 3],
+    [15, 'agora:session:moved', 15, undefined],
+    [15, root, 15, 4],
+    [16, 'agora:session:cold', 16, undefined],
+    [16, root, 16, 3],
+    ['remove', 17, 'agora:session:fresh'],
+    [17, root, 17, 2],
+    ['remove', 18, 'agora:session:unknown'],
+  ]);
+  assert.deepEqual(h.warnings, []);
+});
+
+test('快照扫描失败或来源不符时，订阅推送的用户任务根不填 childCount', async t => {
+  let epoch = 'db';
+  const h = setup(t, ({ path, url }) => {
+    if (url.pathname === '/v1/sessions') {
+      if (url.searchParams.get('snapshot') === '1') return { status: 200, body: page([]) };
+      return { status: 200, body: page([], { changesCursor: { epoch, seq: 10 } }) };
+    }
+    if (path === '/v1/sessions/fresh') return { status: 200, body: item('fresh', { parent: { kind: 'user' } }) };
+  });
+  epoch = 'db-2';
+  await h.views.tree.snapshot({ openNodeIds: [], recentSince: '2026-01-01T00:00:00Z' });
+  const emitted = [];
+  h.views.tree.subscribe({ epoch: 'db', revision: 10 }, value => emitted.push(value));
+  change(h.streams[0], 11, 'session', 'fresh'); change(h.streams[0], 12, 'device', 'd1');
+  for (let i = 0; i < 6; i++) await tick();
+  assert.deepEqual(emitted.map(value => [value.revision, value.node.id, value.node.childCount]), [
+    [11, 'agora:session:fresh', undefined], [12, 'agora:root:user-tasks', undefined]]);
+});
