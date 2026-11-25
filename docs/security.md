@@ -156,7 +156,7 @@ daemon 收到签名后依次检查，任何一步失败都拒绝并写审计：
 
 同步动作（提问答复与取消、任务 limits 与 takeover、租约接管、设备和安全设置）在同一事务内完成业务写入、nonce 消费、待确认的 `confirmed` 状态和审计；失败时共同回滚，拒绝审计另行保存。接管通知也在事务内写 outbox，提交后才唤醒。不能在事务回滚前触发停止等外部副作用。
 
-验签通过后，同步动作执行时发现业务状态已变、返回 `409 conflict` 或 `409 already_handled`（如提问在生成待确认后被迁移或已在别处处理）时，签名参数固定，重试不可能成功。业务写入回滚后，daemon 在另一事务里把该待确认标为 `failed`，`failure_reason` 取该错误码，记录签名设备并写 `failed` 审计，把等待它的幂等操作结束为同一错误，并写 `confirmation` 变更记录，客户端据此重读待处理列表。再次签名该待确认返回 `409 already_handled`。签名无效、设备不符、挑战不匹配等拒绝只写拒绝审计，待确认保持 `pending`，可以重新签名。
+验签通过后，同步动作执行时发现业务状态已变、返回 `409 conflict` 或 `409 already_handled`（如提问在生成待确认后被迁移或已在别处处理）时，签名参数固定，重试不可能成功。业务写入回滚后，daemon 在另一事务里把该待确认标为 `failed`，`failure_reason` 取该错误码，记录签名设备并写 `failed` 审计，把等待它的幂等操作结束为同一错误，并写 `confirmation` 变更记录，客户端据此重读待处理列表。再次签名该待确认返回 `409 already_handled`。签名无效、设备不符、挑战不匹配等拒绝只写拒绝审计，待确认保持 `pending`，可以重新签名。执行时返回 `lease_required`（发起确认的主会话暂时失去租约）同样保持 `pending`：主会话重连并重新取得租约后，同一签名参数仍可能执行成功，待确认按过期或取消结束。
 
 spawn、recover 和 archive delete 涉及异步文件或进程操作，HTTP 签名入口使用 `signAsync`：先在短事务内验签、消费 nonce 并写 `executing`，再在事务外执行，最后持久化 `confirmed` 与结果或 `failed` 与受控失败原因。nonce 消费后，即使执行失败也不能重放；daemon 重启将遗留的 `executing` 标为 `failed`、`operation_interrupted`，不自动执行。同步动作使用 `sign`，不把异步回调放入 SQLite 事务。
 

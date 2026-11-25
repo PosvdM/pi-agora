@@ -234,7 +234,9 @@ export function createForms(runtime: PluginRuntime, security: Security) {
       if (refresh) await refresh;
       const latest = (await pending()).find(form => form.id === req.formId);
       if (latest && latest.revision !== req.revision) return { status: "stale", form: latest };
-      if (!latest) return { status: "alreadyHandled", message: "该事项已在其他标签页处理" };
+      // 待确认签名后执行时 409：所确认的事项（如提问转到任务的新会话）已经变化，daemon 把这条待确认结束为 failed。
+      if (!latest) return { status: "alreadyHandled", message: req.formId.startsWith("agora:confirmation:")
+        ? "所确认的事项已经变化，这次确认已作废；如仍需处理，请在待处理区重新打开该事项" : "该事项已在其他标签页处理" };
     }
     return { status: "failed", message: message(response) };
   }

@@ -384,6 +384,7 @@ test("待确认建立后提问被迁移，签名执行返回 409 后待确认结
   tab.onConfirm = request => tab.device.proof(request.payload);
   const result = await f.confirmPending(tab, confirmation);
   assert.equal(result.status, "alreadyHandled", JSON.stringify(result));
+  assert.match(result.message, /所确认的事项已经变化，这次确认已作废/, "提示与实际一致，不说成在其他标签页处理");
   assert.deepEqual(post(f, `/v1/confirmations/${confirmation.confirmationId}/sign`).map(call => [call.status, call.reply.error?.code]), [[409, "conflict"]]);
   const ended = (await f.api.request("GET", `/v1/confirmations/${confirmation.confirmationId}`)).body;
   assert.equal(ended.state, "failed"); assert.equal(ended.failureReason, "conflict");
