@@ -34,7 +34,7 @@ pi-hostkit        ◄── daemon、extension（pi-pane 服务端也依赖它�
 
 - `daemon`、`extension`、`cli`、`archive`、`protocol` 都不依赖 pi-pane。不装 pi-pane 时 pi-agora 完整可用。
 - 只有 `packages/pane-plugin` 把 `@pi-pane/plugin-api` 作为 peer 依赖，负责把 agora 的数据翻译成 pane 协议。pane 协议升级时只需改这个包。
-- 插件固定使用 pi-pane 提交 `8538cc0348c2b0887265e61284aa28e87f3798f8` 的协议源码。monorepo 子包通过只读 `vendor/plugin-api` 副本参与离线构建；来源记录、哈希、CI 比对和升级步骤见 [pane-plugin.md](pane-plugin.md#协议副本)。禁止手工修改副本。
+- 插件固定使用 pi-pane 提交 `337c1740b92647bd0240199903051a4327668b1f` 的协议源码。monorepo 子包通过只读 `vendor/plugin-api` 副本参与离线构建；来源记录、哈希、CI 比对和升级步骤见 [pane-plugin.md](pane-plugin.md#协议副本)。禁止手工修改副本。
 - `packages/archive` 提供 `projectUserView` 和 `projectPartials`，在线与离线共用用户聊天分支和中断块投影（见 [archive.md](archive.md#三种投影)）。pi 专有文件解析位于共享的 `packages/harness-pi`，archive 不依赖 daemon。
 
 
