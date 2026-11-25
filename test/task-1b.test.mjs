@@ -289,17 +289,35 @@ test('主代理与子代理同时提问不互相阻塞；孙代理提问逐级�
   assert.equal((await confirmUser(cli, await cli.request('POST', `/v1/requests/${rootQ.id}/answer`, answer))).answeredVia.confirmedBy, 'device');
 });
 
-for (const mode of ['reopen', 'replace']) test(`F5：父任务 ${mode} 后现存下级 ask 与更深下级 escalate 路由当前 principal`, async t => {
+for (const mode of ['reopen', 'replace']) test(`F5：父任务 ${mode} 后现存下级 ask 与更深下级 escalate 路由当前 principal，迁移的提问递增 revision`, async t => {
   const f = await setup(t, { maxTaskDepth: 3 }), main = await f.main(), parent = await f.spawn(main), p = await f.handle(parent);
   const child = await f.spawn(p.client), c = await f.handle(child), grand = await f.spawn(c.client), g = await f.handle(grand);
   const questions = [{ id: 'q', question: '由当前父代理决定' }];
   const existing = await c.client.request('POST', '/v1/requests', { questions });
+  // 父任务自己的未答提问：一条由主 Agent 答复，一条转给用户。
+  const own = await p.client.request('POST', '/v1/requests', { questions });
+  const toUser = await p.client.request('POST', '/v1/requests', { questions });
+  assert.equal((await main.request('POST', `/v1/requests/${toUser.id}/escalate`, {})).targetId, 'user');
   const oldPrincipal = f.daemon.store.session(parent.agoraSessionId).principal_id;
+  const before = id => f.daemon.store.get('SELECT revision,updated_at FROM requests WHERE id=?', id);
+  const revisions = Object.fromEntries([existing.id, own.id, toUser.id].map(id => [id, before(id)]));
   p.emit({ type: 'agent_settled', aborted: true }); await f.daemon.tasks.flush();
+  const head = f.daemon.store.get("SELECT COALESCE(MAX(seq),0) AS seq FROM changes").seq;
   const reopened = await main.request('POST', `/v1/tasks/${parent.taskId}/recover`, { mode });
   const p2 = await f.handle(reopened), current = f.daemon.store.session(reopened.agoraSessionId).principal_id;
   assert.notEqual(current, oldPrincipal);
   assert.equal(f.daemon.store.get('SELECT target_id FROM requests WHERE id=?', existing.id).target_id, current);
+  // 迁移改动的提问各递增一次 revision、更新时间并写变更记录，客户端据此重读提问及其关联节点。
+  for (const [id, { revision, updated_at }] of Object.entries(revisions)) {
+    const row = f.daemon.store.get('SELECT revision,updated_at,asker_id,target_id FROM requests WHERE id=?', id);
+    assert.equal(row.revision, revision + 1, id);
+    assert.ok(row.updated_at >= updated_at, id);
+    assert.ok(f.daemon.store.get("SELECT COUNT(*) AS n FROM changes WHERE object_type='request' AND object_id=? AND seq>?", id, head).n >= 1, id);
+  }
+  assert.equal(f.daemon.store.get('SELECT asker_id FROM requests WHERE id=?', toUser.id).asker_id, current);
+  // 按迁移前 revision 提交的答复返回冲突，按新 revision 答复成功。
+  await assert.rejects(main.request('POST', `/v1/requests/${own.id}/answer`, { expectedRevision: revisions[own.id].revision, answers: [{ id: 'q', selected: [], custom: '旧版本' }] }), e => e.code === 'conflict');
+  assert.equal((await main.request('POST', `/v1/requests/${own.id}/answer`, { expectedRevision: revisions[own.id].revision + 1, answers: [{ id: 'q', selected: [], custom: '新版本' }] })).state, 'answered');
   const asked = await c.client.request('POST', '/v1/requests', { questions }); assert.equal(asked.targetId, current);
   const deep = await g.client.request('POST', '/v1/requests', { questions });
   const forwarded = await c.client.request('POST', `/v1/requests/${deep.id}/escalate`, {});

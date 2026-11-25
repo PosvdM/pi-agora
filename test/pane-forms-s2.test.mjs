@@ -454,6 +454,32 @@ test("提问及其待确认填发起任务的当前会话节点，任务读取�
   controller.dispose(); offline.dispose();
 });
 
+test("任务重开或换人迁移提问后，表单以新 revision 和新会话节点推送，按旧 revision 提交返回 stale", async t => {
+  const f = fixture(await directory(t));
+  const base = f.runtime.api.request;
+  let session = "as-old";
+  f.runtime.api.request = async (method, path, body) => path === "/v1/tasks/tk-a"
+    ? { status: 200, body: { taskId: "tk-a", agoraSessionId: session } } : base(method, path, body);
+  const migrated = { ...structuredClone(request), id: "rq-one", taskId: "tk-a" };
+  f.setRequests([migrated]);
+  const controller = createForms(f.runtime, f.security);
+  await controller.forms.pending();
+  assert.deepEqual(f.added.map(form => [form.revision, form.nodeId]), [[1, "agora:session:as-old"]]);
+  // 只换当前会话、提问 revision 不变时，宿主会忽略同 revision 的表单，插件也不重复推送。
+  session = "as-new";
+  await controller.forms.pending();
+  assert.equal(f.added.length, 1);
+  // daemon 迁移提问时递增 revision，表单随之以新 revision 和新节点推送。
+  migrated.revision = 2;
+  const forms = await controller.forms.pending();
+  assert.deepEqual(f.added.map(form => [form.revision, form.nodeId]), [[1, "agora:session:as-old"], [2, "agora:session:as-new"]]);
+  assert.equal(forms.find(form => form.id === "agora:request:rq-one").nodeId, "agora:session:as-new");
+  const result = await controller.forms.submit(submission("before-migration"), origin);
+  assert.equal(result.status, "stale");
+  assert.equal(result.form.revision, 2); assert.equal(result.form.nodeId, "agora:session:as-new");
+  controller.dispose();
+});
+
 test("列表读取进行中再次请求待处理表单时另读一轮，不返回早于这次请求的列表", async () => {
   const f = fixture(), controller = createForms(f.runtime, f.security);
   const original = f.runtime.api.request;

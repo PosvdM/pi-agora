@@ -76,7 +76,7 @@ HTTP JSON 响应最多 8 MiB，单个 SSE 事件最多 4 MiB。树变更映射�
 | `pane-transport-s2.test.mjs` | 相对端点、协议与幂等头、受控重试、分片 SSE 与取消 |
 | `pane-views-s2.test.mjs`、`pane-cursor-s2.test.mjs`、`pane-history-race-s2.test.mjs`、`tree-projection-s2.test.mjs` | 树水位、串行映射、结构迁移重建、跨周期分页、跨来源子节点数、会话流、composer/abort 及停止入口去重、历史只读及会话重开竞态、条件停止、任务用量和保活 |
 | `pane-actions-s2.test.mjs`、`pane-action-store-s2.test.mjs`、`pane-action-daemon-s2.test.mjs` | 六个任务动作、动态表单、显式签名接管、分步换人、pending 查询、跨重启固定请求、损坏和容量拒绝；真实 daemon 路径、创建目录及重复查询只执行一次 |
-| `pane-forms-s2.test.mjs`、`pane-form-cache-s2.test.mjs`、`pane-form-states-s2.test.mjs` | 表单排序、标题前缀、并发提交、取消、旧 revision、结果未知、读取进行中的再次请求、跨插件重启的离线保留、容量、写入故障和停用竞态 |
+| `pane-forms-s2.test.mjs`、`pane-form-cache-s2.test.mjs`、`pane-form-states-s2.test.mjs` | 表单排序、标题前缀、并发提交、取消、旧 revision、任务重开后提问以新 revision 和新节点推送、结果未知、读取进行中的再次请求、跨插件重启的离线保留、容量、写入故障和停用竞态 |
 | `pane-security-s2.test.mjs`、`pane-security-daemon-s2.test.mjs`、`pane-takeover-s2.test.mjs`、`pane-takeover-action-s2.test.mjs` | 用户拒绝/超时/缺少设备、去重确认、设备自签、旧警告 revision 和持久横幅；真实 HTTP 与 P-256 签名、双标签答复、接管后权限/父链/预算和事务 marker |
 | `pane-identities-s2.test.mjs` | 跨重启完整调用身份、最终结果与并发登记 |
 | `pane-offline-s2.test.mjs`、`pane-archive-real-s2.test.mjs`、`schema-s2.test.mjs` | 离线热树与中立父关系、跨来源子节点数、分页、只读内容、缺失文件、扫描上限与取消 |

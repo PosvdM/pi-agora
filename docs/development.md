@@ -171,7 +171,7 @@ shutdown 默认排空，超时后保留 daemon；force 中断并清理运行。�
 | `test/security-core.test.mjs` | JCS 与 P-256 验签、挑战绑定、重放拒绝、同步事务与回滚、异步 nonce 消费及重启 failed、TOFU / reTOFU、设备撤销与重置、离线锁、持久警告、严格设置与审计脱敏、v4→v5 WAL 一致性备份和 DDL 回滚 |
 | `test/security-http-1c.test.mjs` | 真实 daemon / HTTP / CLI 的设备签名答复、host.key 与伪造身份不能冒充用户、幂等结果随确认更新、参数和 revision 变化拒绝、租约接管、在线签名关闭与终端离线关闭 / 重启 / 直接答复 / 重新开启的闭环；不依赖浏览器界面 |
 | `test/task-security-1c.test.mjs` | main / child / host 资源矩阵、提问 ACL 与证明、可达召集人显式接管及 none 通路、接管边界 / 排队复核 / task_busy / outbox 回滚与重投、祖先替换保留接管；共享日授予与增额差额、settings 优先级和计数口径、整子树预算暂停与尾量去重、同代逐次暂停事件及分别确认、回滚立即重试、单名额与回收后的上级唤醒、quota 自动恢复门禁、逐项显式恢复及重启账本 |
-| `test/task-1b.test.mjs` | generation、幂等 steer / answer、送达追踪、中断旧代结果与用量、D14 七项规则、失败与额度通知唤醒、静默投递、直接停止孙任务、恢复后的提问路由、父提交 worktree、回收、看门狗、配置及 v2 旧库至当前版本迁移 |
+| `test/task-1b.test.mjs` | generation、幂等 steer / answer、送达追踪、中断旧代结果与用量、D14 七项规则、失败与额度通知唤醒、静默投递、直接停止孙任务、恢复后的提问路由及迁移提问的 revision 递增、父提交 worktree、回收、看门狗、配置及 v2 旧库至当前版本迁移 |
 | `test/task-d15.test.mjs`、`driver-d15.test.mjs`、`d15-e2e.test.mjs` | 子代理标记、skill 白名单与只读授权、同项目双主会话的提问路由、任务 / 代 / 树用量及 stop / interrupt 收尾记账、静默终态唤醒与未知重置时间提示的持久化恢复、相同重置时间下同代多次暂停通知、额度暂停与通知 / 自动恢复、v3 旧库备份和迁移回滚；真实 pi 的本地 429 与 skill 加载 |
 | `test/budget-wake-e2e.test.mjs` | 真实 pi 单名额预算循环：silent 下级触发父真实回合，agora_task limits 增额后显式恢复，同代第二次耗尽再次通知并停止；覆盖父进程复用及回收重拉、两条事件各自落盘确认 |
 | `test/tree-e2e.test.mjs` | 真实子代理调用 agora_task 再派下级；单名额下静默下级通知真正启动父回合，覆盖父进程未回收及回收重拉、通知落盘；恶意 MCP / 扩展不启动；Windows 原生 PowerShell 实际工具调用 |
