@@ -498,7 +498,6 @@ test('主会话派出的子任务：树、工具卡片链接、通知卡片、�
     childScript: { turns: [say('快速完成'), { segments: [{ type: 'text', text: '长时间处理中' }, { type: 'hang' }] }], fallback: say('返工完成') } }); if (!w) return;
   await w.startDaemon(); await w.startPane();
   const { page } = await w.device();
-  page.on('dialog', dialog => void dialog.accept());
   const self = await deviceId(page);
   await globalAction(page, '配对当前浏览器'); await confirmPresence(page);
   await until(async () => await deviceState(w, self) === 'paired');
@@ -556,6 +555,8 @@ test('主会话派出的子任务：树、工具卡片链接、通知卡片、�
 
   // 接管：确认、表单、设备签名；已打开的会话随后开放输入框和返工动作，停止入口仍只有一个。
   await byId(page, 'node-head-action').filter({ hasText: '接管任务' }).click();
+  // 动作的 confirm 由 pi-pane 的应用内确认框承载。
+  await byId(page, 'choice-dialog').filter({ hasText: '确定接管此任务' }).locator('[data-choice="ok"]').click();
   await byId(page, 'form-dialog').filter({ hasText: '原 Agent 将不能再管理' }).waitFor();
   await byId(page, 'form-submit').click();
   await confirmPresence(page);
@@ -611,7 +612,6 @@ test('排队中的任务：没有运行进程时会话视图仍有停止入口�
   // 只允许一个运行中的任务：第二个任务停在 created，界面显示为“等待中”，节点只声明 abort。
   await w.startDaemon({ maxConcurrentRuns: 1 }); await w.startPane();
   const { page } = await w.device();
-  page.on('dialog', dialog => void dialog.accept());
   const busy = await spawnTask(w, '占用名额的任务');
   await until(async () => (await w.get(`/v1/tasks/${busy.taskId}`)).status === 'running', 30_000);
   const queued = await spawnTask(w, '排队中的任务');
