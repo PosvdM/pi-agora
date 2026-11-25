@@ -40,17 +40,18 @@ function removedReason(kind: string, object: any): FormRemovedReason {
   return "handled";
 }
 const QUESTION_TITLE_LENGTH = 40;
+/** 链接和图片的目标部分，允许一层平衡括号，如 `https://example.com/a(b)`。 */
+const LINK_TARGET = String.raw`\((?:[^()]|\([^()]*\))*\)`;
 /** 去掉常见的 Markdown 标记并合并空白，用于表单标题。 */
 function plainText(markdown: string): string {
   return markdown
     .replace(/```[^\n]*\n?/g, " ")
-    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
-    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(new RegExp(String.raw`!?\[([^\]]*)\]${LINK_TARGET}`, "g"), "$1")
     .replace(/<[^>]+>/g, " ")
     .replace(/^\s{0,3}(?:#{1,6}\s+|>\s?|[-*+]\s+|\d+[.)]\s+)/gm, "")
     .replace(/[`*]+|~~/g, "")
-    // 只去掉词边界上的下划线，保留 snake_case 标识符。
-    .replace(/(^|\s)_+|_+(?=\s|$)/g, "$1")
+    // 只去掉前面或后面不是字母、数字的下划线（开头、结尾、空白或标点），保留 snake_case 这类词内下划线。
+    .replace(/(?<![\p{L}\p{N}\p{M}_])_+|_+(?![\p{L}\p{N}\p{M}_])/gu, "")
     .replace(/\s+/g, " ")
     .trim();
 }

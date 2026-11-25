@@ -392,3 +392,19 @@ test("持久表单标题按事项类型加前缀，提问标题取首个问题�
   assert.equal(titles["agora:decision:tk"], "决策：处理中断任务：中断任务");
   controller.dispose();
 });
+
+test("提问标题去掉链接时允许 URL 中一层平衡括号，紧挨标点的强调下划线也去掉", async () => {
+  const f = fixture();
+  const cases = {
+    link: ["请选 [选项](https://example.com/a(b)) 后继续", "提问：请选 选项 后继续"],
+    image: ["![示意图](https://example.com/p(1).png)说明", "提问：示意图说明"],
+    emphasis: ["_确认_？", "提问：确认？"],
+    punctuated: ["（_重要_）请看 __说明__。", "提问：（重要）请看 说明。"],
+    identifier: ["字段 snake_case 与 my__field 保留", "提问：字段 snake_case 与 my__field 保留"],
+  };
+  f.setRequests(Object.entries(cases).map(([id, [question]]) => ({ ...request, id, questions: [{ id: "q", question }] })));
+  const controller = createForms(f.runtime, f.security);
+  const titles = Object.fromEntries((await controller.forms.pending()).map(form => [form.id, form.title]));
+  for (const [id, [, title]] of Object.entries(cases)) assert.equal(titles[`agora:request:${id}`], title, id);
+  controller.dispose();
+});
