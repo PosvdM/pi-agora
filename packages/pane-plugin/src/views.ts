@@ -1,11 +1,13 @@
 import type {
-  PanePlugin, NodeStatus, TreeNode, TreeChange, SessionRef, SessionSnapshot, HistoryPage,
+  PanePlugin, NodeStatus, TreeNode, TreeChange, TreeSnapshotRequest, SessionRef, SessionSnapshot, HistoryPage,
   SessionStreamEvent, PanelContent,
 } from "@pi-pane/plugin-api";
 import { AgoraReplyError, encoded, message, parentNodeId, statusDetail, userTask, type PluginRuntime, type SessionItem, type SessionsPage, type ApiEvent } from "./contracts.js";
 
 const USER_TASKS = "agora:root:user-tasks";
 const TASK_PANEL = "agora.task";
+/** pane 协议中使节点成为热节点的状态（“按需加载”一节）。 */
+const HOT = new Set<NodeStatus>(["running", "waiting", "paused"]);
 const TERMINAL = new Set(["completed", "done", "failed", "stopped", "interrupted"]);
 const STEERABLE = new Set(["running", "waiting_decision", "waiting_children", "completed", "failed"]);
 const MAX_PAGES = 10_000;
@@ -185,19 +187,29 @@ export function createViews(runtime: PluginRuntime): {
    * 最新变更序号；之后的结构标记或来源切换使集合作废，直到下一次快照重新扫描。
    */
   let userTasks: { epoch: string; ids: Set<string>; seq: number } | undefined;
-  /** 统计挂在 pane 节点下的直接子节点总数，收集用户任务根的直接子节点，含历史会话；扫描期间来源重置时返回 undefined。 */
-  async function childCounts(epoch: string): Promise<{ foreign: Record<string, number>; userTasks: Set<string> } | undefined> {
+  /**
+   * 统计挂在 pane 节点下的直接子节点总数，收集用户任务根的直接子节点，含历史会话；扫描期间来源重置时返回 undefined。
+   * 扫描晚于快照页，可能读到切点之后才出现或变热的会话。pane 对其他来源父节点的“历史（N）”只扣除经快照或分页取到的
+   * 子节点，订阅推来的不扣除；这类会话由订阅回放推送，且是热节点时宿主会直接显示，因此不计入 foreignChildCounts，
+   * 否则同一个任务既显示为子节点又算进历史。冷的照常计入，宿主不显示订阅推来的冷节点，要靠“历史”分页取到。
+   */
+  async function childCounts(epoch: string, cut: number, snapshotIds: ReadonlySet<string>, req: TreeSnapshotRequest): Promise<{ foreign: Record<string, number>; userTasks: Set<string> } | undefined> {
     let scan;
     try { scan = await scanSessions(); }
     catch (error) { if (error instanceof TreeReset) return undefined; throw error; }
     // 来源已重置时快照的订阅会收到 reset，下一次快照再报告数目。
     if (!scan || scan.epoch !== epoch) return undefined;
+    const recentSince = Date.parse(req.recentSince);
+    const hot = (id: string, item: SessionItem) => HOT.has(status(item.status)) || req.openNodeIds.includes(id)
+      || Date.parse(item.lastActivityAt) > recentSince;
     const foreign: Record<string, number> = {};
     const userTasks = new Set<string>();
     for (const [id, item] of scan.items) {
       const parent = parentNodeId(item);
-      if (parent?.startsWith("pane:")) foreign[parent] = (foreign[parent] ?? 0) + 1;
-      else if (parent === USER_TASKS) userTasks.add(id);
+      if (parent?.startsWith("pane:")) {
+        if (!snapshotIds.has(id) && treeRevision(item) > cut && hot(id, item)) continue;
+        foreign[parent] = (foreign[parent] ?? 0) + 1;
+      } else if (parent === USER_TASKS) userTasks.add(id);
     }
     return { foreign, userTasks };
   }
@@ -262,7 +274,7 @@ export function createViews(runtime: PluginRuntime): {
       remember(page.items);
       const revision = cutRevision(page.changesCursor.seq);
       // 快照只含热节点，用户任务根与 pane 主会话下的冷节点数目需要扫描全部会话才能得到。
-      const counts = await childCounts(page.changesCursor.epoch);
+      const counts = await childCounts(page.changesCursor.epoch, revision, new Set(page.items.map(item => nodeId(item.agoraSessionId))), req);
       userTasks = counts ? { epoch: page.changesCursor.epoch, ids: counts.userTasks, seq: page.changesCursor.seq } : undefined;
       const userTaskCount = counts?.userTasks.size;
       const nodes = page.items.map(item => node(item, undefined, userTaskCount));

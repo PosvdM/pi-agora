@@ -886,3 +886,31 @@ test('多个订阅共用用户任务集合，各自推送宿主未见过的根�
   assert.deepEqual(rootCounts(four), [[rev(14, 1), 3]]);
   assert.deepEqual(h.warnings, []);
 });
+
+test('快照之后才出现或变热的主会话子任务由订阅推送，不再计入 foreignChildCounts', async t => {
+  const main = { kind: 'main', piSessionId: 'main' };
+  const hot = item('hot', { parent: main });
+  const scanned = [
+    hot,
+    item('cold', { status: 'completed', parent: main }),
+    // 热快照页（seq 10）之后、计数扫描之前新建并运行的子任务：订阅会回放它，宿主直接显示，不能再算进历史。
+    item('late', { parent: main, treeRevision: 11 }),
+    // 同一时段内已结束、也不在最近活动范围内的子任务：订阅推来时是冷节点，宿主不显示，仍算进历史。
+    item('lateCold', { status: 'completed', parent: main, treeRevision: 12, lastActivityAt: '2025-06-01T00:00:00Z' }),
+    // 切点之后最近有活动的已结束任务同样会被宿主当作热节点显示。
+    item('recent', { status: 'completed', parent: main, treeRevision: 12, lastActivityAt: '2026-06-01T00:00:00Z' }),
+    // 浏览器打开着的节点总是热节点。
+    item('opened', { status: 'completed', parent: main, treeRevision: 12 }),
+    // 在快照页中的节点由快照抵扣，切点之后又有变更也照常计入。
+    item('both', { parent: main, treeRevision: 12 }),
+  ];
+  const h = setup(t, ({ url }) => {
+    if (url.pathname !== '/v1/sessions') return undefined;
+    if (url.searchParams.get('snapshot') === '1') return { status: 200, body: page([hot, { ...scanned.at(-1), treeRevision: 9 }]) };
+    return { status: 200, body: page(scanned, { changesCursor: { epoch: 'db', seq: 12 } }) };
+  });
+  const snapshot = await h.views.tree.snapshot({ openNodeIds: ['agora:session:opened'], recentSince: '2026-01-01T00:00:00Z' });
+  assert.equal(snapshot.revision, cut(10));
+  assert.deepEqual(snapshot.nodes.map(node => node.id), ['agora:session:hot', 'agora:session:both', 'agora:root:user-tasks']);
+  assert.deepEqual(snapshot.foreignChildCounts, { 'pane:session:main': 4 }, 'hot、both 由快照抵扣，cold、lateCold 留在历史里');
+});
