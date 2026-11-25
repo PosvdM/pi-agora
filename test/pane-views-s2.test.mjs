@@ -1,6 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createViews } from '../packages/pane-plugin/dist/views.js';
+import { createViews, REVISION_SLOTS } from '../packages/pane-plugin/dist/views.js';
+
+/** 变更 seq 的第 slot 帧对应的树修订号；cut 为快照、分页切点的修订号，包含该 seq 的全部帧。 */
+const rev = (seq, slot = 0) => seq * REVISION_SLOTS + slot;
+const cut = seq => rev(seq, REVISION_SLOTS - 1);
 
 const tick = () => new Promise(resolve => setImmediate(resolve));
 function deferred() {
@@ -118,7 +122,7 @@ test('树映射热快照、虚拟根、状态与子节点分页 epoch', async t 
   assert.equal(params.get('snapshot'), '1');
   assert.deepEqual(params.getAll('openNodeId'), ['agora:session:s?1', 'pane:session:main']);
   assert.equal(params.get('recentSince'), '2026-01-01');
-  assert.equal(snapshot.epoch, 'db'); assert.equal(snapshot.revision, 10);
+  assert.equal(snapshot.epoch, 'db'); assert.equal(snapshot.revision, cut(10));
   const [created, paused, done, interrupted, seat, root] = snapshot.nodes;
   assert.equal(created.status, 'waiting'); assert.equal(created.parentId, 'agora:root:user-tasks');
   assert.equal(created.statusDetail, '已由用户接管；排队中');
@@ -133,7 +137,7 @@ test('树映射热快照、虚拟根、状态与子节点分页 epoch', async t 
   const reset = await h.views.tree.children('pane:session:main', { epoch: 'old', limit: 2, cursor: 'cursor?' });
   assert.deepEqual(reset, { reset: true, epoch: 'db' });
   const children = await h.views.tree.children('pane:session:main', { epoch: 'db', limit: 2, cursor: 'cursor?' });
-  assert.equal(children.revision, 10); assert.equal(children.nodes.length, 5);
+  assert.equal(children.revision, cut(10)); assert.equal(children.nodes.length, 5);
   const childParams = new URL(h.requests.at(-1).path, 'http://agora').searchParams;
   assert.equal(childParams.get('parent'), 'pane:session:main'); assert.equal(childParams.get('cursor'), 'cursor?');
 });
@@ -160,8 +164,8 @@ test('树串行读取任务会话，非树对象推进来源修订号', async t 
   assert.deepEqual(h.requests.map(req => req.path), ['/v1/tasks/t1', '/v1/sessions/s1']);
   session.resolve({ status: 200, body: item() });
   await tick();
-  assert.deepEqual(emitted.map(value => [value.type, value.revision]), [['upsert', 1], ['upsert', 2], ['upsert', 3], ['remove', 4]]);
-  assert.equal(emitted[1].node.revision, 2, '订阅推送的节点修订号取变更 seq，不取会话行 revision 或数据的 treeRevision');
+  assert.deepEqual(emitted.map(value => [value.type, value.revision]), [['upsert', rev(1)], ['upsert', rev(2)], ['upsert', rev(3)], ['remove', rev(4)]]);
+  assert.equal(emitted[1].node.revision, rev(2), '订阅推送的节点修订号取变更 seq，不取会话行 revision 或数据的 treeRevision');
   assert.equal(emitted[2].node.id, 'agora:root:user-tasks');
   assert.equal(emitted[3].id, 'agora:session:s2');
   assert.equal(h.panels[0].nodeId, 'agora:session:s1');
@@ -176,13 +180,13 @@ test('从两次变更之前恢复订阅时，每条变更都按 seq 推送，节
   change(h.streams[0], 1); change(h.streams[0], 2, 'device', 'd1'); change(h.streams[0], 3);
   for (let i = 0; i < 5; i++) await tick();
   assert.deepEqual(emitted.map(value => [value.type, value.revision, value.node.id, value.node.revision]), [
-    ['upsert', 1, 'agora:session:s1', 1],
-    ['upsert', 2, 'agora:root:user-tasks', 2],
-    ['upsert', 3, 'agora:session:s1', 3],
+    ['upsert', rev(1), 'agora:session:s1', rev(1)],
+    ['upsert', rev(2), 'agora:root:user-tasks', rev(2)],
+    ['upsert', rev(3), 'agora:session:s1', rev(3)],
   ]);
   assert.equal(emitted[0].node.status, 'done');
   assert.equal(emitted[2].node.status, 'done');
-  assert.deepEqual(h.panels.map(panel => [panel.nodeId, panel.revision]), [['agora:session:s1', 1], ['agora:session:s1', 3]]);
+  assert.deepEqual(h.panels.map(panel => [panel.nodeId, panel.revision]), [['agora:session:s1', rev(1)], ['agora:session:s1', rev(3)]]);
   assert.equal(h.streams[0].closed, false);
   assert.deepEqual(h.warnings, []);
 });
@@ -198,12 +202,12 @@ test('回放时历史会话的存档删除照常推送，即使共享任务随�
     if (path === '/v1/tasks/T') return { status: 200, body: { taskId: 'T', agoraSessionId: 'B' } };
   });
   const emitted = [];
-  h.views.tree.subscribe({ epoch: 'db', revision: 4 }, value => emitted.push(value));
+  h.views.tree.subscribe({ epoch: 'db', revision: cut(4) }, value => emitted.push(value));
   change(h.streams[0], 5, 'session', 'A'); change(h.streams[0], 6, 'task', 'T');
   for (let i = 0; i < 8; i++) await tick();
   assert.deepEqual(emitted.map(value => [value.type, value.revision, value.node.id, value.node.revision, value.node.availability]), [
-    ['upsert', 5, 'agora:session:A', 5, 'missing'],
-    ['upsert', 6, 'agora:session:B', 6, 'archived'],
+    ['upsert', rev(5), 'agora:session:A', rev(5), 'missing'],
+    ['upsert', rev(6), 'agora:session:B', rev(6), 'archived'],
   ]);
   assert.deepEqual(h.warnings, []);
 });
@@ -306,7 +310,7 @@ test('树映射完成后归还积压预算，持续变更仍按修订号串行�
     await tick();
   }
   assert.equal(h.streams[0].closed, false);
-  assert.deepEqual(emitted.map(value => value.revision), Array.from({ length: 768 }, (_, i) => i + 1));
+  assert.deepEqual(emitted.map(value => value.revision), Array.from({ length: 768 }, (_, i) => rev(i + 1)));
   assert.ok(emitted.every(value => value.type === 'upsert'));
 });
 
@@ -323,10 +327,10 @@ test('HTTP 失败触发重置，仅 tombstone 删除节点', async t => {
     ? { status: 200, body: page([item()]) } : undefined);
   await known.views.tree.snapshot({ openNodeIds: [], recentSince: '' });
   const removed = [];
-  known.views.tree.subscribe({ epoch: 'db', revision: 10 }, value => removed.push(value));
+  known.views.tree.subscribe({ epoch: 'db', revision: cut(10) }, value => removed.push(value));
   change(known.streams[0], 11, 'task', 't-s1', { tombstone: true });
   await tick();
-  assert.deepEqual(removed, [{ type: 'remove', revision: 11, id: 'agora:session:s1' }]);
+  assert.deepEqual(removed, [{ type: 'remove', revision: rev(11), id: 'agora:session:s1' }]);
 });
 
 test('会话视图透传条目与历史，仅映射 agora 协议事件', async t => {
@@ -659,7 +663,7 @@ test('在线快照扫描全部会话，在 foreignChildCounts 中报告 pane 节
   await assert.rejects(h.views.tree.snapshot(req), /分页游标与查询条件不符/);
 });
 
-test('订阅按用户任务根子节点集合增减根节点 childCount，修订号取变更 seq', async t => {
+test('订阅按用户任务根子节点集合增减根节点 childCount，根节点与节点本身各取该变更的一个修订号', async t => {
   const cold = item('cold', { status: 'completed', parent: { kind: 'user' } });
   // late 在快照页之后创建，已出现在扫描结果中；回放它的变更不能重复计数。
   const late = item('late', { parent: { kind: 'user' } });
@@ -677,7 +681,7 @@ test('订阅按用户任务根子节点集合增减根节点 childCount，修订
   const snapshot = await h.views.tree.snapshot({ openNodeIds: [], recentSince: '2026-01-01T00:00:00Z' });
   assert.equal(snapshot.nodes.find(node => node.id === 'agora:root:user-tasks').childCount, 2);
   const emitted = [];
-  h.views.tree.subscribe({ epoch: 'db', revision: 10 }, value => emitted.push(value));
+  h.views.tree.subscribe({ epoch: 'db', revision: snapshot.revision }, value => emitted.push(value));
   const stream = h.streams[0];
   change(stream, 11, 'session', 'late');
   change(stream, 12, 'session', 'fresh');
@@ -694,18 +698,18 @@ test('订阅按用户任务根子节点集合增减根节点 childCount，修订
   const root = 'agora:root:user-tasks';
   assert.deepEqual(emitted.map(value => value.type === 'remove' ? ['remove', value.revision, value.id]
     : [value.revision, value.node.id, value.node.revision, value.node.id === root ? value.node.childCount : undefined]), [
-    [11, 'agora:session:late', 11, undefined],
-    [12, 'agora:session:fresh', 12, undefined],
-    [12, root, 12, 3],
-    [13, 'agora:session:fresh', 13, undefined],
-    [14, root, 14, 3],
-    [15, 'agora:session:moved', 15, undefined],
-    [15, root, 15, 4],
-    [16, 'agora:session:cold', 16, undefined],
-    [16, root, 16, 3],
-    ['remove', 17, 'agora:session:fresh'],
-    [17, root, 17, 2],
-    ['remove', 18, 'agora:session:unknown'],
+    [rev(11), 'agora:session:late', rev(11), undefined],
+    [rev(12), 'agora:session:fresh', rev(12), undefined],
+    [rev(12, 1), root, rev(12, 1), 3],
+    [rev(13), 'agora:session:fresh', rev(13), undefined],
+    [rev(14), root, rev(14), 3],
+    [rev(15), 'agora:session:moved', rev(15), undefined],
+    [rev(15, 1), root, rev(15, 1), 4],
+    [rev(16), 'agora:session:cold', rev(16), undefined],
+    [rev(16, 1), root, rev(16, 1), 3],
+    ['remove', rev(17), 'agora:session:fresh'],
+    [rev(17, 1), root, rev(17, 1), 2],
+    ['remove', rev(18), 'agora:session:unknown'],
   ]);
   assert.deepEqual(h.warnings, []);
 });
@@ -722,9 +726,61 @@ test('快照扫描失败或来源不符时，订阅推送的用户任务根不�
   epoch = 'db-2';
   await h.views.tree.snapshot({ openNodeIds: [], recentSince: '2026-01-01T00:00:00Z' });
   const emitted = [];
-  h.views.tree.subscribe({ epoch: 'db', revision: 10 }, value => emitted.push(value));
+  h.views.tree.subscribe({ epoch: 'db', revision: cut(10) }, value => emitted.push(value));
   change(h.streams[0], 11, 'session', 'fresh'); change(h.streams[0], 12, 'device', 'd1');
   for (let i = 0; i < 6; i++) await tick();
   assert.deepEqual(emitted.map(value => [value.revision, value.node.id, value.node.childCount]), [
-    [11, 'agora:session:fresh', undefined], [12, 'agora:root:user-tasks', undefined]]);
+    [rev(11), 'agora:session:fresh', undefined], [rev(12), 'agora:root:user-tasks', undefined]]);
+});
+
+test('同一变更推送的节点与根节点各有递增的修订号，断在两帧之间续订时重放第二帧', async t => {
+  const cold = item('cold', { status: 'completed', parent: { kind: 'user' } });
+  let head = 10;
+  const h = setup(t, ({ path, url }) => {
+    if (url.pathname === '/v1/sessions') {
+      if (url.searchParams.get('limit') === '1') return { status: 200, body: page([], { changesCursor: { epoch: 'db', seq: head } }) };
+      return { status: 200, body: page(url.searchParams.get('snapshot') === '1' ? [] : [cold]) };
+    }
+    if (path === '/v1/sessions/a') return { status: 200, body: item('a', { parent: { kind: 'user' } }) };
+  });
+  const snapshot = await h.views.tree.snapshot({ openNodeIds: [], recentSince: '2026-01-01T00:00:00Z' });
+  assert.equal(snapshot.revision, cut(10));
+  const first = [];
+  const off = h.views.tree.subscribe({ epoch: 'db', revision: snapshot.revision }, value => first.push(value));
+  assert.equal(h.streams[0].path, '/v1/changes?epoch=db&afterSeq=10', '切点在 seq 末尾时从下一条变更开始');
+  head = 11; change(h.streams[0], 11, 'session', 'a');
+  for (let i = 0; i < 6; i++) await tick();
+  assert.deepEqual(first.map(value => [value.revision, value.node.id, value.node.childCount]), [
+    [rev(11), 'agora:session:a', undefined], [rev(11, 1), 'agora:root:user-tasks', 2]]);
+  assert.ok(first[0].revision < first[1].revision);
+  // 宿主只收到第一帧就断开，从它的修订号续订：重新读取 seq 11，只推送根节点这一帧。
+  off();
+  const second = [];
+  h.views.tree.subscribe({ epoch: 'db', revision: rev(11) }, value => second.push(value));
+  assert.equal(h.streams[1].path, '/v1/changes?epoch=db&afterSeq=10');
+  change(h.streams[1], 11, 'session', 'a');
+  for (let i = 0; i < 8; i++) await tick();
+  assert.deepEqual(second.map(value => [value.revision, value.node.id, value.node.childCount]), [[rev(11, 1), 'agora:root:user-tasks', 2]]);
+  // 两帧都已收到时续订不重复推送。
+  const third = [];
+  h.views.tree.subscribe({ epoch: 'db', revision: rev(11, 1) }, value => third.push(value));
+  change(h.streams[2], 11, 'session', 'a');
+  for (let i = 0; i < 8; i++) await tick();
+  assert.deepEqual(third, []);
+  assert.deepEqual(h.warnings, []);
+});
+
+test('续订切点落在当前 head 之后的 seq 中间时先发 reset，不推送其他变更', async t => {
+  const h = setup(t, ({ path, url }) => {
+    if (url.pathname === '/v1/sessions' && url.searchParams.get('limit') === '1') return { status: 200, body: page([], { changesCursor: { epoch: 'db', seq: 11 } }) };
+    if (path === '/v1/sessions/s1') return { status: 200, body: item() };
+  });
+  const emitted = [];
+  h.views.tree.subscribe({ epoch: 'db', revision: rev(13) }, value => emitted.push(value));
+  assert.equal(h.streams[0].path, '/v1/changes?epoch=db&afterSeq=12');
+  change(h.streams[0], 13);
+  for (let i = 0; i < 6; i++) await tick();
+  assert.deepEqual(emitted, [{ type: 'reset', epoch: 'db' }]);
+  assert.equal(h.streams[0].closed, true);
+  assert.ok(!h.requests.some(request => request.path === '/v1/sessions/s1'));
 });

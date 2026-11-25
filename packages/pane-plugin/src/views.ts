@@ -1,5 +1,5 @@
 import type {
-  PanePlugin, NodeStatus, TreeNode, SessionRef, SessionSnapshot, HistoryPage,
+  PanePlugin, NodeStatus, TreeNode, TreeChange, SessionRef, SessionSnapshot, HistoryPage,
   SessionStreamEvent, PanelContent,
 } from "@pi-pane/plugin-api";
 import { AgoraReplyError, encoded, message, parentNodeId, statusDetail, userTask, type PluginRuntime, type SessionItem, type SessionsPage, type ApiEvent } from "./contracts.js";
@@ -12,6 +12,24 @@ const MAX_PAGES = 10_000;
 const RESULT_LIMIT = 20;
 const MAX_PENDING_CHANGES = 256;
 const MAX_PENDING_CHANGE_BYTES = 8 * 1024 * 1024;
+
+/**
+ * 每个变更 seq 占用的来源级修订号个数。pane 协议要求每条 upsert/remove 各分配一个新修订号，同一条变更可能推送
+ * 节点本身和用户任务根两帧，因此修订号为 `seq × REVISION_SLOTS + 子序号`。快照和分页的切点包含该 seq 的全部推送，
+ * 取最后一个子序号；订阅切点落在某个 seq 中间时，插件从该 seq 重新读取，只推送修订号更大的帧。
+ */
+export const REVISION_SLOTS = 4;
+/** 节点本身的 upsert/remove，以及非树对象推进来源水位的根节点 upsert。 */
+const NODE_SLOT = 0;
+/** 同一条变更引起的用户任务根 childCount 更新。 */
+const ROOT_SLOT = 1;
+function revisionOf(seq: number, slot: number): number {
+  const value = seq * REVISION_SLOTS + slot;
+  if (!Number.isSafeInteger(value)) throw new Error("变更序号超出树修订号的范围");
+  return value;
+}
+/** 快照或分页切点对应的修订号：包含该 seq 的全部推送。 */
+function cutRevision(seq: number): number { return revisionOf(seq, REVISION_SLOTS - 1); }
 
 class TreeReset extends Error {
   constructor() { super("任务树来源已重置，请重新扫描"); }
@@ -44,7 +62,7 @@ function treeRevision(item: SessionItem): number {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
     throw new Error("agora 后台版本过旧，会话缺少 treeRevision，请运行 agora shutdown 后重新启动后台");
   }
-  return value;
+  return revisionOf(value, NODE_SLOT);
 }
 function node(item: SessionItem, revision = treeRevision(item), userTasks?: number): TreeNode {
   if (item.agoraSessionId === USER_TASKS) return group(revision, userTasks);
@@ -238,7 +256,7 @@ export function createViews(runtime: PluginRuntime): {
       for (const id of req.openNodeIds) params.append("openNodeId", id);
       const page = await get<SessionsPage>(`/v1/sessions?${params}`);
       remember(page.items);
-      const revision = page.changesCursor.seq;
+      const revision = cutRevision(page.changesCursor.seq);
       // 快照只含热节点，用户任务根与 pane 主会话下的冷节点数目需要扫描全部会话才能得到。
       const counts = await childCounts(page.changesCursor.epoch);
       userTasks = counts ? { epoch: page.changesCursor.epoch, ids: counts.userTasks } : undefined;
@@ -268,11 +286,14 @@ export function createViews(runtime: PluginRuntime): {
       const result: SessionsPage = reply.body;
       if (result.changesCursor.epoch !== page.epoch) return { reset: true, epoch: result.changesCursor.epoch };
       remember(result.items);
-      return { epoch: result.changesCursor.epoch, revision: result.changesCursor.seq,
+      return { epoch: result.changesCursor.epoch, revision: cutRevision(result.changesCursor.seq),
         nodes: result.items.map(item => node(item)), ...(result.nextCursor ? { nextCursor: result.nextCursor } : {}) };
     },
     subscribe(from, emit) {
-      let seq = from.revision;
+      // 切点落在某个 seq 的中间（例如连接断在同一条变更的两帧之间）时，从该 seq 重新读取，只推送修订号更大的帧。
+      const fromSeq = Math.floor(from.revision / REVISION_SLOTS);
+      const partial = from.revision % REVISION_SLOTS !== REVISION_SLOTS - 1 && fromSeq > 0;
+      let seq = partial ? fromSeq - 1 : fromSeq;
       let queue = Promise.resolve();
       let pendingChanges = 0;
       let pendingBytes = 0;
@@ -287,13 +308,25 @@ export function createViews(runtime: PluginRuntime): {
         taskSessions.clear();
         emit({ type: "reset", epoch });
       }
+      /** 推送一帧；重新读取切点所在的 seq 时，跳过宿主已收到的帧（修订号不大于切点）。 */
+      function push(change: Exclude<TreeChange, { type: "reset" }>) {
+        if (change.revision > from.revision) emit(change);
+      }
       /** 节点移入、移出用户任务根或被删除时更新子节点集合，并推送带新 childCount 的根节点。 */
       function trackUserTask(id: string, parent: string | null, revision: number) {
         if (!userTaskIds || (parent === USER_TASKS) === userTaskIds.has(id)) return;
         if (parent === USER_TASKS) userTaskIds.add(id); else userTaskIds.delete(id);
-        emit({ type: "upsert", revision, node: group(revision, userTaskIds.size) });
+        push({ type: "upsert", revision, node: group(revision, userTaskIds.size) });
       }
-      stream = listen(query("/v1/changes", { epoch: from.epoch, afterSeq: from.revision }), event => {
+      // 变更流只能核对 seq：切点落在 head 之后的 seq 中间时，按协议先 reset，不推送其他变更。核对排在所有变更之前。
+      if (partial) queue = queue.then(async () => {
+        if (stopped || !stream?.active()) return;
+        const head = await get<SessionsPage>("/v1/sessions?limit=1", stream.signal);
+        if (stopped || !stream.active()) return;
+        if (head.changesCursor.epoch !== from.epoch) reset(head.changesCursor.epoch);
+        else if (from.revision > cutRevision(head.changesCursor.seq)) reset();
+      }).catch(error => { if (!stopped && stream?.active()) { warn(error); reset(); } });
+      stream = listen(query("/v1/changes", { epoch: from.epoch, afterSeq: seq }), event => {
         if (event.type === "reset") { reset(event.data.epoch); return; }
         if (event.type !== "change" || stopped) return;
         const change = event.data;
@@ -309,7 +342,7 @@ export function createViews(runtime: PluginRuntime): {
           if (stopped || !stream!.active()) return;
           if (change.cursor.epoch !== from.epoch) { reset(change.cursor.epoch); return; }
           if (change.cursor.seq <= seq) return;
-          const revision = change.cursor.seq;
+          const revision = revisionOf(change.cursor.seq, NODE_SLOT), rootRevision = revisionOf(change.cursor.seq, ROOT_SLOT);
           if (change.objectType === "tree" && change.objectId === "all") { reset(); return; }
           if (change.objectType === "task" || change.objectType === "session") {
             let id = change.objectId as string;
@@ -328,8 +361,8 @@ export function createViews(runtime: PluginRuntime): {
             if (stopped || !stream!.active()) return;
             if (change.tombstone) {
               for (const [taskId, known] of taskSessions) if (known === id) taskSessions.delete(taskId);
-              emit({ type: "remove", revision, id: nodeId(id) });
-              trackUserTask(nodeId(id), null, revision);
+              push({ type: "remove", revision, id: nodeId(id) });
+              trackUserTask(nodeId(id), null, rootRevision);
             } else {
               const item = await get<SessionItem>(`/v1/sessions/${encoded(id)}`, stream!.signal);
               if (stopped || !stream!.active()) return;
@@ -338,14 +371,14 @@ export function createViews(runtime: PluginRuntime): {
               // 每条变更都推送，修订号按变更 seq 分配；详情是读取时的最新数据，可能新于本条变更。
               // pane 只应用修订号更大的 upsert，同一节点之后的推送或分页只会带来同样新或更新的数据。
               const mapped = node(item, revision, userTaskIds?.size);
-              emit({ type: "upsert", revision, node: mapped });
-              trackUserTask(mapped.id, mapped.parentId, revision);
+              push({ type: "upsert", revision, node: mapped });
+              trackUserTask(mapped.id, mapped.parentId, rootRevision);
             }
             runtime.context.panelChanged({ panelId: TASK_PANEL, revision, nodeId: nodeId(id) });
             void refreshHolds();
           } else {
             // 非树对象也推进来源水位，避免分页等待一个永远不会推送的修订号。
-            emit({ type: "upsert", revision, node: group(revision, userTaskIds?.size) });
+            push({ type: "upsert", revision, node: group(revision, userTaskIds?.size) });
             if (change.objectType === "request" && !change.tombstone) {
               const request = await get(`/v1/requests/${encoded(change.objectId)}`, stream!.signal);
               if (stopped || !stream!.active()) return;
@@ -355,7 +388,7 @@ export function createViews(runtime: PluginRuntime): {
               }
             }
           }
-          seq = revision;
+          seq = change.cursor.seq;
         }).catch(error => { if (!stopped && stream!.active()) { warn(error); reset(); } })
           .finally(() => { pendingChanges--; pendingBytes -= bytes; });
       }, error => { warn(error); reset(); });

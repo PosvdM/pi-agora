@@ -8,7 +8,7 @@ import { openStore } from '../packages/daemon/dist/store.js';
 import { TaskManager } from '../packages/daemon/dist/tasks.js';
 import { changesCursor, readChanges, pruneChanges, streamChanges } from '../packages/daemon/dist/changes.js';
 import { listSessions, sessionDetail } from '../packages/daemon/dist/session-list.js';
-import { createViews } from '../packages/pane-plugin/dist/views.js';
+import { createViews, REVISION_SLOTS } from '../packages/pane-plugin/dist/views.js';
 
 const host = { type: 'host:pane', principalId: 'user' };
 const OLD = '2020-01-01T00:00:00.000Z';
@@ -61,7 +61,7 @@ function viewsFixture(t, store) {
     },
   });
   t.after(() => views.dispose());
-  function subscribe(cursor) { return views.tree.subscribe({ epoch: cursor.epoch, revision: cursor.seq }, event => events.push(event)); }
+  function subscribe(cursor) { return views.tree.subscribe({ epoch: cursor.epoch, revision: cursor.seq * REVISION_SLOTS + REVISION_SLOTS - 1 }, event => events.push(event)); }
   async function replay(cursor) {
     const batch = readChanges(store, cursor.epoch, cursor.seq);
     assert.equal(batch.reset, false);
@@ -76,7 +76,7 @@ function viewsFixture(t, store) {
 }
 
 function projection(item) {
-  return { id: item.agoraSessionId, parentId: item.parentId, childCount: item.childCount, hasChildren: item.hasChildren, revision: item.treeRevision };
+  return { id: item.agoraSessionId, parentId: item.parentId, childCount: item.childCount, hasChildren: item.hasChildren, revision: item.treeRevision * REVISION_SLOTS };
 }
 async function snapshotMatchesSql(views, store, ids) {
   const request = { openNodeIds: ids.map(nodeId), recentSince: '2999-01-01T00:00:00.000Z' };
@@ -85,7 +85,7 @@ async function snapshotMatchesSql(views, store, ids) {
   ids.forEach(id => params.append('openNodeId', nodeId(id)));
   const sql = listSessions(store, host, params, 50);
   assert.equal(snapshot.epoch, sql.changesCursor.epoch);
-  assert.equal(snapshot.revision, sql.changesCursor.seq);
+  assert.equal(snapshot.revision, sql.changesCursor.seq * REVISION_SLOTS + REVISION_SLOTS - 1);
   assert.deepEqual(snapshot.nodes.filter(node => node.kind === 'session').map(node => ({
     id: node.sessionRef.id, parentId: node.parentId, childCount: node.childCount, hasChildren: node.hasChildren, revision: node.revision,
   })), sql.items.map(projection));

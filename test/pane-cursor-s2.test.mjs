@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createViews } from '../packages/pane-plugin/dist/views.js';
+import { createViews, REVISION_SLOTS } from '../packages/pane-plugin/dist/views.js';
 import { createOfflineViews } from '../packages/pane-plugin/dist/offline.js';
 
 const PARENT = 'agora:root:user-tasks';
@@ -131,8 +131,8 @@ test('合法第二页保留 parent、limit、游标和分页结果', async t => 
   assert.equal(params.get('limit'), '1');
   assert.equal(params.get('cursor'), first.nextCursor);
   assert.equal(second.epoch, 'db');
-  assert.equal(second.revision, 10);
-  assert.deepEqual(second.nodes.map(node => [node.id, node.parentId, node.revision]), [['agora:session:second', PARENT, 7]]);
+  assert.equal(second.revision, 10 * REVISION_SLOTS + REVISION_SLOTS - 1, '分页切点包含 seq 10 的全部推送');
+  assert.deepEqual(second.nodes.map(node => [node.id, node.parentId, node.revision]), [['agora:session:second', PARENT, 7 * REVISION_SLOTS]]);
   assert.equal(second.nextCursor, undefined);
 });
 
