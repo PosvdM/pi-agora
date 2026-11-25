@@ -580,3 +580,60 @@ test('任务面板显示任务树用量、上下文和有界各代结果', async
   assert.equal(h.requests.filter(request => request.path.includes('/result?')).length, 20);
   await assert.rejects(h.views.panels.content('agora.meeting', 'agora:session:s1'), /任务面板/);
 });
+
+test('能 abort 的任务不再声明停止动作，不能 abort 的未结束任务保留停止动作', async t => {
+  const rows = [
+    item('owned', { parent: { kind: 'user' } }),
+    item('managed', { parent: { kind: 'main', piSessionId: 'main' } }),
+    item('quota', { status: 'quota_paused', parent: { kind: 'user' } }),
+    item('budget', { status: 'budget_paused', parent: { kind: 'main', piSessionId: 'main' } }),
+    item('finished', { status: 'completed', parent: { kind: 'user' } }),
+  ];
+  const h = setup(t, ({ url }) => url.pathname === '/v1/sessions' ? { status: 200, body: page(rows) } : undefined);
+  const nodes = new Map((await h.views.tree.snapshot({ openNodeIds: [], recentSince: '2026-01-01T00:00:00Z' })).nodes.map(node => [node.id, node]));
+  const capabilities = id => nodes.get(`agora:session:${id}`).capabilities;
+  for (const id of ['owned', 'managed']) {
+    assert.ok(capabilities(id).includes('abort'), id);
+    assert.ok(!capabilities(id).includes('action:agora.task.stop'), id);
+  }
+  for (const id of ['quota', 'budget']) {
+    assert.ok(!capabilities(id).includes('abort'), id);
+    assert.ok(capabilities(id).includes('action:agora.task.stop'), id);
+  }
+  assert.ok(!capabilities('finished').includes('abort'));
+  assert.ok(!capabilities('finished').includes('action:agora.task.stop'));
+});
+
+test('在线快照扫描全部会话，在 foreignChildCounts 中报告 pane 节点下的直接子节点总数', async t => {
+  const all = [
+    item('hot', { parent: { kind: 'main', piSessionId: 'main' } }),
+    item('cold', { status: 'completed', parent: { kind: 'main', piSessionId: 'main' } }),
+    item('old', { status: 'completed', isCurrent: false, parent: { kind: 'main', piSessionId: 'main' } }),
+    item('legacy', { status: 'completed', parent: undefined, parentId: 'pane:session:legacy' }),
+    item('child', { status: 'completed', parent: { kind: 'task', taskId: 't-cold', sessionId: 'cold' } }),
+    item('other', { status: 'completed', parent: { kind: 'main', piSessionId: 'other' } }),
+    item('user', { status: 'completed', parent: { kind: 'user' } }),
+  ];
+  let epoch = 'db';
+  const h = setup(t, ({ url }) => {
+    if (url.pathname !== '/v1/sessions') return undefined;
+    if (url.searchParams.get('snapshot') === '1') return { status: 200, body: page([all[0]]) };
+    // 扫描分两页，第二页之前可以切换来源 epoch。
+    if (!url.searchParams.get('cursor')) return { status: 200, body: page(all.slice(0, 4), { nextCursor: 'p2' }) };
+    return { status: 200, body: page(all.slice(4), { changesCursor: { epoch, seq: 11 } }) };
+  });
+  const req = { openNodeIds: [], recentSince: '2026-01-01T00:00:00Z' };
+  const snapshot = await h.views.tree.snapshot(req);
+  assert.deepEqual(snapshot.nodes.map(node => node.id), ['agora:session:hot', 'agora:root:user-tasks']);
+  assert.deepEqual(snapshot.foreignChildCounts, { 'pane:session:main': 3, 'pane:session:legacy': 1, 'pane:session:other': 1 });
+  const scans = h.requests.filter(request => request.path.startsWith('/v1/sessions?') && !request.path.includes('snapshot=1'));
+  assert.equal(scans.length, 2);
+  assert.equal(new URL(scans[0].path, 'http://agora').searchParams.get('limit'), '200');
+  assert.equal(new URL(scans[1].path, 'http://agora').searchParams.get('cursor'), 'p2');
+  // 扫描中途来源重置时省略数目，快照本身照常返回，订阅随后收到 reset。
+  epoch = 'db-2';
+  const reset = await h.views.tree.snapshot(req);
+  assert.equal(reset.foreignChildCounts, undefined);
+  assert.equal(reset.epoch, 'db');
+  assert.deepEqual(reset.nodes.map(node => node.id), ['agora:session:hot', 'agora:root:user-tasks']);
+});

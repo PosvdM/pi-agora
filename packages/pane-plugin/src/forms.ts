@@ -39,6 +39,28 @@ function removedReason(kind: string, object: any): FormRemovedReason {
   if (kind === "decision" && state === "interrupted") throw new Error("事项仍待处理，保留待处理表单");
   return "handled";
 }
+const QUESTION_TITLE_LENGTH = 40;
+/** 去掉常见的 Markdown 标记并合并空白，用于表单标题。 */
+function plainText(markdown: string): string {
+  return markdown
+    .replace(/```[^\n]*\n?/g, " ")
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/^\s{0,3}(?:#{1,6}\s+|>\s?|[-*+]\s+|\d+[.)]\s+)/gm, "")
+    .replace(/[`*]+|~~/g, "")
+    // 只去掉词边界上的下划线，保留 snake_case 标识符。
+    .replace(/(^|\s)_+|_+(?=\s|$)/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+/** 提问表单的标题：首个问题的纯文本，超过 40 个字符时截断并加省略号。 */
+function questionTitle(questions: unknown): string {
+  const first = Array.isArray(questions) ? questions[0]?.question : undefined;
+  const text = typeof first === "string" ? Array.from(plainText(first)) : [];
+  if (!text.length) return "提问";
+  return `提问：${text.slice(0, QUESTION_TITLE_LENGTH).join("")}${text.length > QUESTION_TITLE_LENGTH ? "…" : ""}`;
+}
 function ok(reply: ApiReply): boolean { return reply.status >= 200 && reply.status < 300 && reply.status !== 202; }
 export function createForms(runtime: PluginRuntime, security: Security) {
   const current = new Map<string, FormRecord>();
@@ -105,18 +127,18 @@ export function createForms(runtime: PluginRuntime, security: Security) {
       next.set(item.form.id, item);
     };
     for (const request of requests) if (request.targetId === "user" && ["open", "escalated"].includes(request.state)) {
-      add(record("request", request.id, request, { title: "答复提问", description: request.context ?? undefined,
+      add(record("request", request.id, request, { title: questionTitle(request.questions), description: request.context ?? undefined,
         questions: request.questions, cancel: { label: "不答复，取消提问" }, expiresAt: request.expiresAt ?? undefined }));
     }
     for (const confirmation of confirmations) if (["pending", "executing"].includes(confirmation.state)) {
-      add(record("confirmation", confirmation.confirmationId ?? confirmation.id, confirmation, { title: confirmation.title,
+      add(record("confirmation", confirmation.confirmationId ?? confirmation.id, confirmation, { title: `待确认：${confirmation.title}`,
         description: `${confirmation.summary}\n\n发起方：${confirmation.requestedBy ?? "未知"}`, expiresAt: confirmation.expiresAt, cancel: { label: "拒绝" } }));
     }
     for (const device of devices) if (device.state === "pending") {
-      add(record("device", device.deviceId, device, { title: "批准设备", description: `设备：${device.label}\n\n公钥指纹：${device.fingerprint}\n\n请求时间：${device.createdAt}`, cancel: { label: "拒绝" } }));
+      add(record("device", device.deviceId, device, { title: `待批准设备：${device.label}`, description: `设备：${device.label}\n\n公钥指纹：${device.fingerprint}\n\n请求时间：${device.createdAt}`, cancel: { label: "拒绝" } }));
     }
     for (const task of decisions) if (task.status === "interrupted") {
-      add(record("decision", task.taskId, task, { title: `处理中断任务：${task.title}`, nodeId: `agora:session:${task.agoraSessionId}`,
+      add(record("decision", task.taskId, task, { title: `决策：处理中断任务：${task.title}`, nodeId: `agora:session:${task.agoraSessionId}`,
         fields: [{ id: "mode", label: "处理方式", type: "select", required: true, options: ["resume", "reopen", "replace", "abandon"] },
           { id: "model", label: "换人时的模型", type: "text" }, { id: "profile", label: "换人时的权限档位", type: "select", options: ["explore", "review", "implement"] }] }));
     }

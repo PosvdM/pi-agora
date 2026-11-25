@@ -186,6 +186,7 @@ async function activated(t, handler) {
 test("在线启用拉取安全警告、持久表单与保活，并从 changes 游标订阅领域变更", { timeout: 5_000 }, async t => {
   const { h, a, plugin } = await activated(t);
   assert.equal(plugin.id, "agora");
+  assert.equal(plugin.displayName, "pi-agora");
   assert.deepEqual(plugin.paneProtocol, [1, 1]);
   for (const endpoint of ["security/alerts", "requests", "confirmations", "devices", "tasks", "sessions"]) {
     assert.ok(a.calls.some(call => call.method === "GET" && call.url.pathname === `/v1/${endpoint}`), `启用时应读取 ${endpoint}`);

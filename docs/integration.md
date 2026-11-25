@@ -366,6 +366,7 @@ agora:root:user-tasks            〔用户任务〕   用户通过 CLI 或 pi-pa
 - **订阅与重置**：`tree.subscribe` 以快照的 `{ epoch, revision }` 为起点（参数形状以 pi-pane `docs/plugin-api.md` 为准），插件用它作为变更流的 `epoch` 和 `afterSeq`。`epoch` 不符、`revision` 大于当前 head 或早于保留范围时，变更流返回 `reset`，插件向 pi-pane 发 `TreeChange` 的 `reset`。
 - **快照**：`tree.snapshot(req)` 只返回热节点及其祖先，热节点的定义以 pane 协议为准（`req.openNodeIds` 中的节点、`status` 为 `running`/`waiting`/`paused` 的节点、`lastActivityAt` 晚于 `req.recentSince` 的节点）。插件把这些条件转成 daemon 的列表查询，响应里的 `changesCursor.seq` 就是快照的 `revision`。
 - **子节点**：`tree.children(parentId, page)` 对应 `GET /v1/sessions?parent=<nodeId>&cursor=&limit=`，响应带 `changesCursor`，插件把其中的 `epoch` 和 `seq` 作为分页结果的 `epoch` 和 `revision`；`epoch` 与当前订阅不同时，pi-pane 按 pane 协议重置。`parentId` 为 `pane:session:<piSessionId>` 时返回该主会话召集的任务和会议。节点都填 `hasChildren`，已知时填 `childCount`。
+- **其他来源父节点的子节点数**：插件不能为 pi-pane 的节点填写 `childCount`，因此 `tree.snapshot` 在 `foreignChildCounts` 中报告：键为 `pane:` 开头的父节点 ID，值为 agora 挂在它下面的直接子节点总数，含不热的已完成任务和 `isCurrent: false` 的历史会话，与 `tree.children(parentId)` 能分页取到的节点一致；没有子节点的父节点不列出。插件按前缀统计全部 `pane:` 父节点；agora 的节点只挂在主会话 `pane:session:<piSessionId>` 下，父主会话列不出时改挂“未归属”分组由 pi-pane 完成，插件不知道哪些主会话列不出，所以不报告 `pane:group:unassigned`。热快照只含热节点，在线时插件另外以 `GET /v1/sessions?limit=200&cursor=` 分页读取全部可见会话，按节点的 `parentId` 计数。扫描期间或快照与扫描之间 `epoch` 改变时省略该字段，订阅随后收到 `reset`，下一次快照再报告。离线时直接从 archive reader 已读取的元数据索引计算；会议分组算作召集人主会话的一个直接子节点。数目以最近一次快照为准，订阅推送的新节点不更新它。
 - 订阅推送 agora 来源全部节点的变更，pi-pane 负责只更新已加载部分和补取祖先。
 
 #### 状态映射
@@ -391,11 +392,11 @@ agora:root:user-tasks            〔用户任务〕   用户通过 CLI 或 pi-pa
 
 | 节点 | daemon 在线 | daemon 不在线 |
 | --- | --- | --- |
-| 用户管理的运行任务 | `open`、`subscribe`、`send`、`abort`、`action:agora.task.steer`、`action:agora.task.stop` | `open` |
+| 用户管理的运行任务 | `open`、`subscribe`、`send`、`abort`、`action:agora.task.steer` | `open` |
 | 用户管理的已完成、失败任务 | `open`、`send`、`action:agora.task.steer`（返工）、`action:agora.task.cleanup` | `open` |
 | 用户管理的中断任务 | `open`、`action:agora.task.recover` | `open` |
 | 用户管理的额度或预算暂停任务 | `open`、`action:agora.task.recover`（resume）、`action:agora.task.stop` | `open` |
-| Agent 管理的当前任务 | `open`、`action:agora.task.takeover`；按状态保留订阅、停止和清理，不提供 `send`、steer 或 recover | `open` |
+| Agent 管理的当前任务 | `open`、`action:agora.task.takeover`；按状态保留订阅、停止（`abort`，暂停时为 `action:agora.task.stop`）和清理，不提供 `send`、steer 或 recover | `open` |
 | 历史任务会话 | `open`，`availability: archived` | `open` |
 | 参会者、书记 | `open`、`subscribe` | `open` |
 | 会议 | `action:agora.meeting.interject`、`action:agora.meeting.decide`、`action:agora.meeting.limits`、`action:agora.meeting.stop` | 无 |
@@ -405,6 +406,7 @@ Agent 管理的当前任务在状态说明里显示“由 Agent 管理，接管�
 
 - `send`：用户管理的任务当前会话节点同时填 `composer: { actionId: "agora.task.steer", placeholder: "对子代理补充说明或返工", images: false }`。pi-pane 把聊天输入框的提交转成该动作（文字在 `input.fields.message`），不附动作表单的 id 或 revision；该受限通路只接受文字并固定 `interrupt: false`，仍保存固定请求快照。菜单里的返工表单保留版本校验，`interrupt` 由 checkbox 选择。两条通路都调用 `POST /v1/tasks/:id/steer`，保证有记录、有代数；`sessions.send` 也复用同一请求机制。`isCurrent: false` 的历史任务会话只有 `open` 能力，不能误控任务的当前运行。
 - `abort`：插件实现 `sessions.abort(ref, { clearQueue, origin })`，调用 `POST /v1/tasks/:id/stop`，语义是取消（先 `clear_queue` 再 `abort`，见 [tasks.md](tasks.md#agora_task-接口)）。`AbortResult.clearedText` 填被清掉的返工消息原文（去掉 agora 加的标注行），pi-pane 放回输入框。
+- 停止入口只出现一个：`abort` 与 `action:agora.task.stop` 调用同一端点，pi-pane 已为 `abort` 显示停止按钮，因此未结束的任务能 `abort` 时不再声明 `action:agora.task.stop`。额度或预算暂停的任务没有运行可中止，不声明 `abort`，改为声明 `action:agora.task.stop`。
 - 参会者和书记不带 `send`：会议中对参会者说话一律通过会议插话，进入 board。
 
 ### 会话
@@ -486,16 +488,17 @@ pane 插件通过 `renderers.customMessages` 声明 agora 自定义消息的渲�
 
 pi-pane 只有一个“待处理”区，承载所有插件的持久表单。agora 需要用户处理的事项都以持久表单呈现（`ctx.formAdded()`），不另做面板：
 
-| 事项 | `FormSpec.id` | 内容 | `cancel` 按钮 | 提交后 |
-| --- | --- | --- | --- | --- |
-| 转给用户的提问（含召集人不可达时的提问） | `agora:request:<requestId>` | 由提问的题目生成（`RequestQuestion` 的字段与 pane 协议 v1 的 `FormQuestion` 相同，见 [tasks.md](tasks.md#数据模型)） | “不答复，取消提问” | `answer` 或 `cancel`（用户级） |
-| 发给用户的决策请求（会议、中断任务） | `agora:decision:<id>` | 选项来自决策请求 | 无 | `decide` 或 `recover`（用户级） |
-| CLI 等发起的待确认 | `agora:confirmation:<confirmationId>` | 操作内容、发起方、过期时间 | “拒绝” | 签名后执行；取消为 `cancel` |
-| 待批准设备 | `agora:device:<deviceId>` | 新设备标签、公钥指纹、请求时间 | “拒绝” | `approve` 或拒绝（用户级） |
-| 子会话的扩展对话框（`childUiPolicy = "pending"` 时） | `agora:ui:<runId>:<uiRequestId>` | 原对话框的标题和选项 | “取消” | 回应该对话框 |
+| 事项 | `FormSpec.id` | `title` | 内容 | `cancel` 按钮 | 提交后 |
+| --- | --- | --- | --- | --- | --- |
+| 转给用户的提问（含召集人不可达时的提问） | `agora:request:<requestId>` | `提问：<首个问题>` | 由提问的题目生成（`RequestQuestion` 的字段与 pane 协议 v1 的 `FormQuestion` 相同，见 [tasks.md](tasks.md#数据模型)） | “不答复，取消提问” | `answer` 或 `cancel`（用户级） |
+| 发给用户的决策请求（会议、中断任务） | `agora:decision:<id>` | `决策：<说明>`，中断任务为 `决策：处理中断任务：<任务标题>` | 选项来自决策请求 | 无 | `decide` 或 `recover`（用户级） |
+| CLI 等发起的待确认 | `agora:confirmation:<confirmationId>` | `待确认：<待确认的标题>` | 操作内容、发起方、过期时间 | “拒绝” | 签名后执行；取消为 `cancel` |
+| 待批准设备 | `agora:device:<deviceId>` | `待批准设备：<设备标签>` | 新设备标签、公钥指纹、请求时间 | “拒绝” | `approve` 或拒绝（用户级） |
+| 子会话的扩展对话框（`childUiPolicy = "pending"` 时） | `agora:ui:<runId>:<uiRequestId>` | 原对话框的标题，不加前缀 | 原对话框的标题和选项 | “取消” | 回应该对话框 |
 
 规则：
 
+- **标题前缀**：`title` 以事项类型开头，pi-pane 的待处理区据此区分类型。提问的标题取首个问题的文字，去掉 Markdown 标记（强调、行内代码、链接和图片只留文字，标题、引用和列表标记删去）并合并空白，超过 40 个字符时保留前 40 个字符并加“…”；去掉标记后为空时标题为“提问”。无法归类的事项使用兜底标题“待处理事项”，不加前缀。
 - `FormSpec.revision` 取 daemon 中对象的 `revision`；`nodeId` 填相关的树节点；`expiresAt` 只用于显示。
 - **提交**：`forms.submit(submission, origin)` 中，用户级事项先用 `origin` 调 `ctx.userPresence.confirm()`（确认框出现在提交的标签页），再把签名交给 daemon。结果映射（`FormSubmitResult`）：成功为 `accepted`；`202` 且尚未结束（等待用户确认、处理中）为 `pending`；`409 already_handled` 为 `alreadyHandled`；`revision` 落后为 `stale`（附新表单）；`409 idempotency_mismatch` 为 `idempotencyConflict`；其他错误为 `failed`。
 - **关闭显示与取消**：用户关闭弹窗（dismiss）不通知插件，事项仍待处理。用户点 `cancel` 按钮提交的 `{ status: "cancelled" }` 是明确的业务结果：提问被取消且不视为同意，待确认变为 `cancelled`，设备批准变为拒绝。取消提问同样是用户级操作。

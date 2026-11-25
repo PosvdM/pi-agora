@@ -221,7 +221,7 @@ export default function createPlugin(options: PluginOptions = {}): PanePlugin {
       description: `警告类型：${alert.kind}\n\n警告版本：${alert.revision}\n\n${JSON.stringify(alert.details ?? {})}`, createdAt: alert.createdAt ?? new Date(0).toISOString(), submitLabel: "我已知悉" } : null;
   }
   const plugin: PanePlugin = {
-    id: "agora", paneProtocol: [1, 1],
+    id: "agora", displayName: "pi-agora", paneProtocol: [1, 1],
     async activate(ctx) {
       if (activated) throw new Error("agora 插件已经启用");
       context = ctx; activated = true; generation++;

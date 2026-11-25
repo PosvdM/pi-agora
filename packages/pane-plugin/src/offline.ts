@@ -234,8 +234,13 @@ export function createOfflineViews(reader: ArchiveReader, epoch = `offline:${ran
             current = current.parentId ? data.nodes.get(current.parentId) : undefined;
           }
         }
+        // pane 节点不在索引里，挂在它们下面的直接子节点数另在 foreignChildCounts 中报告。
+        const foreignChildCounts: Record<string, number> = {};
+        for (const [parentId, siblings] of data.children) {
+          if (parentId?.startsWith("pane:")) foreignChildCounts[parentId] = siblings.length;
+        }
         return { source: "agora", epoch, revision: data.revision,
-          nodes: [...selected].map(id => copyNode(data.nodes.get(id)!)) };
+          nodes: [...selected].map(id => copyNode(data.nodes.get(id)!)), foreignChildCounts };
       }),
       children: (parentId, page) => run(async () => {
         if (page.epoch !== epoch) return { reset: true, epoch };

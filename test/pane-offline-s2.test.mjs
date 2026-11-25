@@ -451,3 +451,26 @@ test("budget_paused 映射为暂停状态，并将自身及祖先保留为热节
   assert.equal((await views.sessions.snapshot(ref("budget"))).status, "paused");
   views.dispose();
 });
+
+test("快照在 foreignChildCounts 中报告 pane 节点下的直接子节点总数，含冷节点", async () => {
+  const { reader } = mock([
+    summary("hot", { convenerId: "main", parent: { kind: "main", piSessionId: "main" }, status: "running" }),
+    summary("cold", { convenerId: "main", parent: { kind: "main", piSessionId: "main" } }),
+    summary("seat", { kind: "meeting-seat", meetingId: "mt_1", convenerId: "main", parent: { kind: "main", piSessionId: "main" } }),
+    summary("secretary", { kind: "secretary", meetingId: "mt_1", convenerId: "main", parent: { kind: "main", piSessionId: "main" } }),
+    summary("grandchild", { convenerId: "cold", parent: { kind: "task", taskId: "cold-task", sessionId: "cold" } }),
+    summary("other", { convenerId: "other", parent: { kind: "main", piSessionId: "other" } }),
+    summary("user"),
+  ]);
+  const views = createOfflineViews(reader, "foreign");
+  const cold = await views.tree.snapshot(request());
+  // 会议分组计为主会话的一个直接子节点；孙节点和用户任务不计入。
+  assert.deepEqual(cold.foreignChildCounts, { "pane:session:main": 3, "pane:session:other": 1 });
+  assert.deepEqual(cold.nodes.map(node => node.id), [nodeId("hot")]);
+  const children = await views.tree.children("pane:session:main", { epoch: "foreign", limit: 10 });
+  assert.equal(children.nodes.length, cold.foreignChildCounts["pane:session:main"]);
+  const empty = createOfflineViews(mock([summary("user")]).reader);
+  assert.deepEqual((await empty.tree.snapshot(request())).foreignChildCounts, {});
+  empty.dispose();
+  views.dispose();
+});

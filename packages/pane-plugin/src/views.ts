@@ -13,6 +13,10 @@ const RESULT_LIMIT = 20;
 const MAX_PENDING_CHANGES = 256;
 const MAX_PENDING_CHANGE_BYTES = 8 * 1024 * 1024;
 
+class TreeReset extends Error {
+  constructor() { super("任务树来源已重置，请重新扫描"); }
+}
+
 function status(value: string): NodeStatus {
   const mapped: Record<string, NodeStatus> = {
     created: "waiting", waiting_decision: "waiting", waiting_children: "waiting",
@@ -50,10 +54,8 @@ function node(item: SessionItem, revision = treeRevision(item)): TreeNode {
   const paused = ["quota_paused", "budget_paused"].includes(item.status);
   if (!historical && (!item.taskId || !TERMINAL.has(item.status) && !paused)) capabilities.push("subscribe");
   if (steerable) capabilities.push("send", "action:agora.task.steer");
-  if (item.taskId && !historical && !TERMINAL.has(item.status)) {
-    if (!paused) capabilities.push("abort");
-    capabilities.push("action:agora.task.stop");
-  }
+  // abort 与停止动作调用同一端点；pane 已为 abort 显示停止按钮，只在不能 abort 时提供停止动作。
+  if (item.taskId && !historical && !TERMINAL.has(item.status)) capabilities.push(paused ? "action:agora.task.stop" : "abort");
   if (item.taskId && !historical && ["completed", "failed"].includes(item.status)) capabilities.push("action:agora.task.cleanup");
   if (item.taskId && !historical && userOwned && ["quota_paused", "budget_paused", "interrupted"].includes(item.status)) capabilities.push("action:agora.task.recover");
   if (item.taskId && !historical && !userOwned) capabilities.push("action:agora.task.takeover");
@@ -125,21 +127,19 @@ export function createViews(runtime: PluginRuntime): {
     } catch (error) { stop(); throw error; }
     return { stop, signal: controller.signal, active: () => active && !disposed };
   }
-  async function scanHolds() {
-    if (disposed) return;
-    for (const [id, hold] of holds) if (!runtime.context.mainSessions.get(id)) { hold.release(); holds.delete(id); }
-    if (!runtime.online()) return;
+  /** 分页读取全部可见会话；读取期间来源重置时抛出 TreeReset。 */
+  async function scanSessions(): Promise<{ epoch: string; items: Map<string, SessionItem> } | undefined> {
     const items = new Map<string, SessionItem>();
     const cursors = new Set<string>();
     let cursor: string | undefined;
     let epoch: string | undefined;
     let pages = 0;
     do {
-      if (disposed) return;
-      if (++pages > MAX_PAGES) throw new Error("任务树分页超过保活扫描上限");
+      if (disposed) return undefined;
+      if (++pages > MAX_PAGES) throw new Error("任务树分页超过扫描上限");
       const page = await get<SessionsPage>(query("/v1/sessions", { limit: 200, cursor }));
-      if (disposed) return;
-      if (epoch !== undefined && page.changesCursor.epoch !== epoch) throw new Error("任务树来源已重置，请重新扫描");
+      if (disposed) return undefined;
+      if (epoch !== undefined && page.changesCursor.epoch !== epoch) throw new TreeReset();
       epoch = page.changesCursor.epoch;
       remember(page.items);
       for (const item of page.items) items.set(nodeId(item.agoraSessionId), item);
@@ -147,6 +147,29 @@ export function createViews(runtime: PluginRuntime): {
       if (cursor && cursors.has(cursor)) throw new Error("任务树分页游标未前进");
       if (cursor) cursors.add(cursor);
     } while (cursor);
+    return { epoch: epoch!, items };
+  }
+  /** 统计挂在 pane 节点下的直接子节点总数，含历史会话；扫描期间来源重置时返回 undefined。 */
+  async function foreignChildCounts(epoch: string): Promise<Record<string, number> | undefined> {
+    let scan;
+    try { scan = await scanSessions(); }
+    catch (error) { if (error instanceof TreeReset) return undefined; throw error; }
+    // 来源已重置时快照的订阅会收到 reset，下一次快照再报告数目。
+    if (!scan || scan.epoch !== epoch) return undefined;
+    const counts: Record<string, number> = {};
+    for (const item of scan.items.values()) {
+      const parent = parentNodeId(item);
+      if (parent?.startsWith("pane:")) counts[parent] = (counts[parent] ?? 0) + 1;
+    }
+    return counts;
+  }
+  async function scanHolds() {
+    if (disposed) return;
+    for (const [id, hold] of holds) if (!runtime.context.mainSessions.get(id)) { hold.release(); holds.delete(id); }
+    if (!runtime.online()) return;
+    const scan = await scanSessions();
+    if (!scan) return;
+    const { items } = scan;
     if (disposed || !runtime.online()) return;
     const counts = new Map<string, number>();
     for (const item of items.values()) {
@@ -202,7 +225,9 @@ export function createViews(runtime: PluginRuntime): {
       const revision = page.changesCursor.seq;
       const nodes = page.items.map(item => node(item));
       if (!nodes.some(item => item.id === USER_TASKS)) nodes.push(group(revision));
-      return { source: "agora", epoch: page.changesCursor.epoch, revision, nodes };
+      // 快照只含热节点，pane 主会话下的冷节点数目需要扫描全部会话才能得到。
+      const counts = await foreignChildCounts(page.changesCursor.epoch);
+      return { source: "agora", epoch: page.changesCursor.epoch, revision, nodes, ...(counts ? { foreignChildCounts: counts } : {}) };
     },
     async children(parentId, page) {
       // 旧来源的游标可能在 daemon 返回 epoch 前被拒绝，先用有界读取核实来源。

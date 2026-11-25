@@ -370,3 +370,25 @@ test("权威列表中旧事项缺少状态时不静默移除", async () => {
   await assert.rejects(controller.refresh(), /终态/); assert.equal(f.removed.length, 0);
   controller.dispose();
 });
+
+test("持久表单标题按事项类型加前缀，提问标题取首个问题的纯文本并截断", async () => {
+  const f = fixture();
+  const long = "请在 **方案甲** 与 [方案乙](https://example.com) 之间选择，并说明 `snake_case` 字段 my_field 是否保留以及迁移顺序和回滚办法";
+  f.setRequests([{ ...request, questions: [{ id: "q", question: long }, { id: "r", question: "第二个问题" }] },
+    { ...request, id: "rq-short", questions: [{ id: "q", question: "# 标题\n\n> 引用的 _说明_" }] },
+    { ...request, id: "rq-empty", questions: [{ id: "q", question: "**  **" }] }]);
+  f.setConfirmations([{ confirmationId: "cf", state: "pending", title: "答复提问", summary: "摘要", createdAt: request.createdAt }]);
+  f.setDevices([{ deviceId: "dv", state: "pending", label: "工作电脑", fingerprint: "指纹", createdAt: request.createdAt }]);
+  f.setDecisions([{ taskId: "tk", status: "interrupted", title: "中断任务", agoraSessionId: "session", revision: 1, createdAt: request.createdAt }]);
+  const controller = createForms(f.runtime, f.security);
+  const titles = Object.fromEntries((await controller.forms.pending()).map(form => [form.id, form.title]));
+  const plain = Array.from("请在 方案甲 与 方案乙 之间选择，并说明 snake_case 字段 my_field 是否保留以及迁移顺序和回滚办法");
+  assert.equal(titles["agora:request:rq-one"], `提问：${plain.slice(0, 40).join("")}…`);
+  assert.equal(Array.from(titles["agora:request:rq-one"]).length, "提问：".length + 41);
+  assert.equal(titles["agora:request:rq-short"], "提问：标题 引用的 说明");
+  assert.equal(titles["agora:request:rq-empty"], "提问");
+  assert.equal(titles["agora:confirmation:cf"], "待确认：答复提问");
+  assert.equal(titles["agora:device:dv"], "待批准设备：工作电脑");
+  assert.equal(titles["agora:decision:tk"], "决策：处理中断任务：中断任务");
+  controller.dispose();
+});
