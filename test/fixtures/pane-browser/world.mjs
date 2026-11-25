@@ -15,6 +15,13 @@ export const pluginDir = fileURLToPath(new URL('../../../packages/pane-plugin/',
 export const agoraExtension = fileURLToPath(new URL('../../../packages/extension/dist/index.js', import.meta.url));
 export const childModel = 'p0-fake/scripted';
 
+let screenshots = 0;
+/** 失败截图的文件名：保留中文等字符，只替换路径不安全的字符和空白；名称截到 60 个字符（UTF-8 不超过 240 字节），加序号避免同名覆盖。 */
+function screenshotName(testName, pageIndex) {
+  const name = Array.from(testName.replace(/[\\/:*?"<>|\s]+/g, '_')).slice(0, 60).join('');
+  return `agora-failure-${String(++screenshots).padStart(3, '0')}-${name}-${pageIndex}`;
+}
+
 /** 读取 AGORA_PANE_DIR；未设置时返回 null（调用方跳过），AGORA_TEST_REQUIRE_PANE=1 时未设置或缺少构建产物直接失败。 */
 export async function loadPane() {
   const dir = process.env.AGORA_PANE_DIR;
@@ -107,7 +114,7 @@ export async function createWorld(t, pane, options = {}) {
     try {
       for (const page of world.pages) {
         if (page.isClosed()) continue;
-        if (!t.passed) await pane.browser.screenshot(page, `agora-failure-${t.name.replace(/[^a-z0-9]/gi, '_')}-${world.pages.indexOf(page)}`).catch(() => {});
+        if (!t.passed) await pane.browser.screenshot(page, screenshotName(t.name, world.pages.indexOf(page))).catch(() => {});
         pane.browser.assertNoPageErrors(page, world.allowedErrors);
       }
     } finally {
