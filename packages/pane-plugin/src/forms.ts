@@ -47,7 +47,6 @@ function plainText(markdown: string): string {
   return markdown
     .replace(/```[^\n]*\n?/g, " ")
     .replace(new RegExp(String.raw`!?\[([^\]]*)\]${LINK_TARGET}`, "g"), "$1")
-    .replace(/<[^>]+>/g, " ")
     .replace(/^\s{0,3}(?:#{1,6}\s+|>\s?|[-*+]\s+|\d+[.)]\s+)/gm, "")
     .replace(/[`*]+|~~/g, "")
     // 只去掉前面或后面不是字母、数字的下划线（开头、结尾、空白或标点），保留 snake_case 这类词内下划线。

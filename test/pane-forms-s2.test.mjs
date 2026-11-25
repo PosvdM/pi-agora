@@ -393,7 +393,7 @@ test("持久表单标题按事项类型加前缀，提问标题取首个问题�
   controller.dispose();
 });
 
-test("提问标题去掉链接时允许 URL 中一层平衡括号，紧挨标点的强调下划线也去掉", async () => {
+test("提问标题去掉链接时允许 URL 中一层平衡括号，紧挨标点的强调下划线也去掉，尖括号原样保留", async () => {
   const f = fixture();
   const cases = {
     link: ["请选 [选项](https://example.com/a(b)) 后继续", "提问：请选 选项 后继续"],
@@ -401,6 +401,9 @@ test("提问标题去掉链接时允许 URL 中一层平衡括号，紧挨标点
     emphasis: ["_确认_？", "提问：确认？"],
     punctuated: ["（_重要_）请看 __说明__。", "提问：（重要）请看 说明。"],
     identifier: ["字段 snake_case 与 my__field 保留", "提问：字段 snake_case 与 my__field 保留"],
+    // pane 按纯文本渲染标题，尖括号原样保留，不当作 HTML 标签删除。
+    generic: ["返回 `Promise<string>` 吗", "提问：返回 Promise<string> 吗"],
+    compare: ["a < 10 且 b > 5 时怎么办", "提问：a < 10 且 b > 5 时怎么办"],
   };
   f.setRequests(Object.entries(cases).map(([id, [question]]) => ({ ...request, id, questions: [{ id: "q", question }] })));
   const controller = createForms(f.runtime, f.security);
