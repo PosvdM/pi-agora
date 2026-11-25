@@ -19,12 +19,13 @@ const MAX_PENDING_CHANGE_BYTES = 8 * 1024 * 1024;
  * 每个变更 seq 占用的来源级修订号个数。pane 协议要求每条 upsert/remove 各分配一个新修订号，同一条变更可能推送
  * 节点本身和用户任务根两帧，因此修订号为 `seq × REVISION_SLOTS + 子序号`。快照和分页的切点包含该 seq 的全部推送，
  * 取最后一个子序号；订阅切点落在某个 seq 中间时，插件从该 seq 重新读取，只推送修订号更大的帧。
+ * 一条变更的最后一帧总是取最后一个子序号，前面的帧按顺序往前排（两帧就是倒数第二、最后一个），所以一条变更
+ * 最多推送 REVISION_SLOTS 帧。pane 以收到的最大修订号为水位，分页的修订号大于水位时要等订阅追上，超过 5 秒按
+ * reset 处理；最后一帧取切点值，处理完一条变更后水位就等于同一 seq 的分页修订号。
  */
 export const REVISION_SLOTS = 4;
-/** 节点本身的 upsert/remove，以及非树对象推进来源水位的根节点 upsert。 */
+/** 快照和分页中节点自身的修订号（会话行 treeRevision 换算），不大于同一 seq 的任何推送。 */
 const NODE_SLOT = 0;
-/** 同一条变更引起的用户任务根 childCount 更新。 */
-const ROOT_SLOT = 1;
 function revisionOf(seq: number, slot: number): number {
   const value = seq * REVISION_SLOTS + slot;
   if (!Number.isSafeInteger(value)) throw new Error("变更序号超出树修订号的范围");
@@ -334,17 +335,24 @@ export function createViews(runtime: PluginRuntime): {
         emit(change);
         return true;
       }
-      /** 推送带当前 childCount 的根节点；数目与本订阅上次推送的相同则不推送，unconditional 时总是推送（推进水位）。 */
-      function pushRoot(revision: number, unconditional = false) {
-        const count = tracked()?.ids.size;
-        if (!unconditional && (count === undefined || count === sentCount)) return;
-        if (push({ type: "upsert", revision, node: group(revision, count) })) sentCount = count;
+      type Frame = (revision: number) => Exclude<TreeChange, { type: "reset" }>;
+      /** 带当前 childCount 的根节点（非树对象推进水位时也用它）。 */
+      const rootFrame: Frame = revision => ({ type: "upsert", revision, node: group(revision, tracked()?.ids.size) });
+      /** 推送一条变更的全部帧：最后一帧取该 seq 的切点值，前面的帧按顺序往前排。 */
+      function pushFrames(seq: number, frames: Frame[]) {
+        if (frames.length > REVISION_SLOTS) throw new Error(`一条变更最多推送 ${REVISION_SLOTS} 帧`);
+        const first = REVISION_SLOTS - frames.length;
+        frames.forEach((frame, index) => {
+          const change = frame(revisionOf(seq, first + index));
+          if (push(change) && change.type === "upsert" && change.node.id === USER_TASKS) sentCount = change.node.childCount;
+        });
       }
-      /** 节点移入、移出用户任务根或被删除时更新共享的子节点集合，并推送带新 childCount 的根节点。 */
-      function trackUserTask(id: string, parent: string | null, revision: number) {
+      /** 节点移入、移出用户任务根或被删除时更新共享的子节点集合；返回根节点是否需要推送新的 childCount。 */
+      function trackUserTask(id: string, parent: string | null): boolean {
         const state = tracked();
         if (state) { if (parent === USER_TASKS) state.ids.add(id); else state.ids.delete(id); }
-        pushRoot(revision);
+        const count = tracked()?.ids.size;
+        return count !== undefined && count !== sentCount;
       }
       // 变更流只能核对 seq：切点落在 head 之后的 seq 中间时，按协议先 reset，不推送其他变更。核对排在所有变更之前。
       if (partial) queue = queue.then(async () => {
@@ -370,7 +378,7 @@ export function createViews(runtime: PluginRuntime): {
           if (stopped || !stream!.active()) return;
           if (change.cursor.epoch !== from.epoch) { reset(change.cursor.epoch); return; }
           if (change.cursor.seq <= seq) return;
-          const revision = revisionOf(change.cursor.seq, NODE_SLOT), rootRevision = revisionOf(change.cursor.seq, ROOT_SLOT);
+          const last = cutRevision(change.cursor.seq);
           if (change.objectType === "tree" && change.objectId === "all") {
             // 结构迁移改变父关系，集合在下一次快照前不再可信；晚于该标记的快照已重新扫描，不受影响。
             const state = tracked();
@@ -395,8 +403,8 @@ export function createViews(runtime: PluginRuntime): {
             if (stopped || !stream!.active()) return;
             if (change.tombstone) {
               for (const [taskId, known] of taskSessions) if (known === id) taskSessions.delete(taskId);
-              push({ type: "remove", revision, id: nodeId(id) });
-              trackUserTask(nodeId(id), null, rootRevision);
+              const root = trackUserTask(nodeId(id), null);
+              pushFrames(change.cursor.seq, [revision => ({ type: "remove", revision, id: nodeId(id) }), ...(root ? [rootFrame] : [])]);
             } else {
               const item = await get<SessionItem>(`/v1/sessions/${encoded(id)}`, stream!.signal);
               if (stopped || !stream!.active()) return;
@@ -404,21 +412,21 @@ export function createViews(runtime: PluginRuntime): {
               treeRevision(item);
               // 每条变更都推送，修订号按变更 seq 分配；详情是读取时的最新数据，可能新于本条变更。
               // pane 只应用修订号更大的 upsert，同一节点之后的推送或分页只会带来同样新或更新的数据。
-              const mapped = node(item, revision, tracked()?.ids.size);
-              push({ type: "upsert", revision, node: mapped });
-              trackUserTask(mapped.id, mapped.parentId, rootRevision);
+              const probe = node(item, last);
+              const root = trackUserTask(probe.id, probe.parentId);
+              pushFrames(change.cursor.seq, [revision => ({ type: "upsert", revision, node: node(item, revision, tracked()?.ids.size) }), ...(root ? [rootFrame] : [])]);
             }
-            runtime.context.panelChanged({ panelId: TASK_PANEL, revision, nodeId: nodeId(id) });
+            runtime.context.panelChanged({ panelId: TASK_PANEL, revision: last, nodeId: nodeId(id) });
             void refreshHolds();
           } else {
             // 非树对象也推进来源水位，避免分页等待一个永远不会推送的修订号。
-            pushRoot(revision, true);
+            pushFrames(change.cursor.seq, [rootFrame]);
             if (change.objectType === "request" && !change.tombstone) {
               const request = await get(`/v1/requests/${encoded(change.objectId)}`, stream!.signal);
               if (stopped || !stream!.active()) return;
               if (request.taskId) {
                 const task = await get(`/v1/tasks/${encoded(request.taskId)}`, stream!.signal);
-                if (stream!.active() && task.agoraSessionId) runtime.context.panelChanged({ panelId: TASK_PANEL, revision, nodeId: nodeId(task.agoraSessionId) });
+                if (stream!.active() && task.agoraSessionId) runtime.context.panelChanged({ panelId: TASK_PANEL, revision: last, nodeId: nodeId(task.agoraSessionId) });
               }
             }
           }

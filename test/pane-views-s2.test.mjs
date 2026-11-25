@@ -5,6 +5,8 @@ import { createViews, REVISION_SLOTS } from '../packages/pane-plugin/dist/views.
 /** 变更 seq 的第 slot 帧对应的树修订号；cut 为快照、分页切点的修订号，包含该 seq 的全部帧。 */
 const rev = (seq, slot = 0) => seq * REVISION_SLOTS + slot;
 const cut = seq => rev(seq, REVISION_SLOTS - 1);
+/** 同一 seq 之后还要推送根节点时，节点本身那一帧的修订号。 */
+const mid = seq => rev(seq, REVISION_SLOTS - 2);
 
 const tick = () => new Promise(resolve => setImmediate(resolve));
 function deferred() {
@@ -164,8 +166,8 @@ test('树串行读取任务会话，非树对象推进来源修订号', async t 
   assert.deepEqual(h.requests.map(req => req.path), ['/v1/tasks/t1', '/v1/sessions/s1']);
   session.resolve({ status: 200, body: item() });
   await tick();
-  assert.deepEqual(emitted.map(value => [value.type, value.revision]), [['upsert', rev(1)], ['upsert', rev(2)], ['upsert', rev(3)], ['remove', rev(4)]]);
-  assert.equal(emitted[1].node.revision, rev(2), '订阅推送的节点修订号取变更 seq，不取会话行 revision 或数据的 treeRevision');
+  assert.deepEqual(emitted.map(value => [value.type, value.revision]), [['upsert', cut(1)], ['upsert', cut(2)], ['upsert', cut(3)], ['remove', cut(4)]]);
+  assert.equal(emitted[1].node.revision, cut(2), '订阅推送的节点修订号取变更 seq，不取会话行 revision 或数据的 treeRevision');
   assert.equal(emitted[2].node.id, 'agora:root:user-tasks');
   assert.equal(emitted[3].id, 'agora:session:s2');
   assert.equal(h.panels[0].nodeId, 'agora:session:s1');
@@ -180,13 +182,13 @@ test('从两次变更之前恢复订阅时，每条变更都按 seq 推送，节
   change(h.streams[0], 1); change(h.streams[0], 2, 'device', 'd1'); change(h.streams[0], 3);
   for (let i = 0; i < 5; i++) await tick();
   assert.deepEqual(emitted.map(value => [value.type, value.revision, value.node.id, value.node.revision]), [
-    ['upsert', rev(1), 'agora:session:s1', rev(1)],
-    ['upsert', rev(2), 'agora:root:user-tasks', rev(2)],
-    ['upsert', rev(3), 'agora:session:s1', rev(3)],
+    ['upsert', cut(1), 'agora:session:s1', cut(1)],
+    ['upsert', cut(2), 'agora:root:user-tasks', cut(2)],
+    ['upsert', cut(3), 'agora:session:s1', cut(3)],
   ]);
   assert.equal(emitted[0].node.status, 'done');
   assert.equal(emitted[2].node.status, 'done');
-  assert.deepEqual(h.panels.map(panel => [panel.nodeId, panel.revision]), [['agora:session:s1', rev(1)], ['agora:session:s1', rev(3)]]);
+  assert.deepEqual(h.panels.map(panel => [panel.nodeId, panel.revision]), [['agora:session:s1', cut(1)], ['agora:session:s1', cut(3)]]);
   assert.equal(h.streams[0].closed, false);
   assert.deepEqual(h.warnings, []);
 });
@@ -206,8 +208,8 @@ test('回放时历史会话的存档删除照常推送，即使共享任务随�
   change(h.streams[0], 5, 'session', 'A'); change(h.streams[0], 6, 'task', 'T');
   for (let i = 0; i < 8; i++) await tick();
   assert.deepEqual(emitted.map(value => [value.type, value.revision, value.node.id, value.node.revision, value.node.availability]), [
-    ['upsert', rev(5), 'agora:session:A', rev(5), 'missing'],
-    ['upsert', rev(6), 'agora:session:B', rev(6), 'archived'],
+    ['upsert', cut(5), 'agora:session:A', cut(5), 'missing'],
+    ['upsert', cut(6), 'agora:session:B', cut(6), 'archived'],
   ]);
   assert.deepEqual(h.warnings, []);
 });
@@ -310,7 +312,7 @@ test('树映射完成后归还积压预算，持续变更仍按修订号串行�
     await tick();
   }
   assert.equal(h.streams[0].closed, false);
-  assert.deepEqual(emitted.map(value => value.revision), Array.from({ length: 768 }, (_, i) => rev(i + 1)));
+  assert.deepEqual(emitted.map(value => value.revision), Array.from({ length: 768 }, (_, i) => cut(i + 1)));
   assert.ok(emitted.every(value => value.type === 'upsert'));
 });
 
@@ -331,9 +333,9 @@ test('HTTP 失败触发重置，仅 tombstone 删除节点', async t => {
   change(known.streams[0], 11, 'task', 't-s1', { tombstone: true });
   await tick();
   assert.deepEqual(removed.map(value => value.type === 'remove' ? value : [value.revision, value.node.id, value.node.childCount]), [
-    { type: 'remove', revision: rev(11), id: 'agora:session:s1' },
+    { type: 'remove', revision: mid(11), id: 'agora:session:s1' },
     // 新订阅的第一条树变更总会推送一次根节点，宿主手里的数目可能来自更早的快照。
-    [rev(11, 1), 'agora:root:user-tasks', 0],
+    [cut(11), 'agora:root:user-tasks', 0],
   ]);
 });
 
@@ -702,19 +704,19 @@ test('订阅按用户任务根子节点集合增减根节点 childCount，根节
   const root = 'agora:root:user-tasks';
   assert.deepEqual(emitted.map(value => value.type === 'remove' ? ['remove', value.revision, value.id]
     : [value.revision, value.node.id, value.node.revision, value.node.id === root ? value.node.childCount : undefined]), [
-    [rev(11), 'agora:session:late', rev(11), undefined],
-    [rev(11, 1), root, rev(11, 1), 2],
-    [rev(12), 'agora:session:fresh', rev(12), undefined],
-    [rev(12, 1), root, rev(12, 1), 3],
-    [rev(13), 'agora:session:fresh', rev(13), undefined],
-    [rev(14), root, rev(14), 3],
-    [rev(15), 'agora:session:moved', rev(15), undefined],
-    [rev(15, 1), root, rev(15, 1), 4],
-    [rev(16), 'agora:session:cold', rev(16), undefined],
-    [rev(16, 1), root, rev(16, 1), 3],
-    ['remove', rev(17), 'agora:session:fresh'],
-    [rev(17, 1), root, rev(17, 1), 2],
-    ['remove', rev(18), 'agora:session:unknown'],
+    [mid(11), 'agora:session:late', mid(11), undefined],
+    [cut(11), root, cut(11), 2],
+    [mid(12), 'agora:session:fresh', mid(12), undefined],
+    [cut(12), root, cut(12), 3],
+    [cut(13), 'agora:session:fresh', cut(13), undefined],
+    [cut(14), root, cut(14), 3],
+    [mid(15), 'agora:session:moved', mid(15), undefined],
+    [cut(15), root, cut(15), 4],
+    [mid(16), 'agora:session:cold', mid(16), undefined],
+    [cut(16), root, cut(16), 3],
+    ['remove', mid(17), 'agora:session:fresh'],
+    [cut(17), root, cut(17), 2],
+    ['remove', cut(18), 'agora:session:unknown'],
   ]);
   assert.deepEqual(h.warnings, []);
 });
@@ -735,7 +737,7 @@ test('快照扫描失败或来源不符时，订阅推送的用户任务根不�
   change(h.streams[0], 11, 'session', 'fresh'); change(h.streams[0], 12, 'device', 'd1');
   for (let i = 0; i < 6; i++) await tick();
   assert.deepEqual(emitted.map(value => [value.revision, value.node.id, value.node.childCount]), [
-    [rev(11), 'agora:session:fresh', undefined], [rev(12), 'agora:root:user-tasks', undefined]]);
+    [cut(11), 'agora:session:fresh', undefined], [cut(12), 'agora:root:user-tasks', undefined]]);
 });
 
 test('同一变更推送的节点与根节点各有递增的修订号，断在两帧之间续订时重放第二帧', async t => {
@@ -756,19 +758,19 @@ test('同一变更推送的节点与根节点各有递增的修订号，断在�
   head = 11; change(h.streams[0], 11, 'session', 'a');
   for (let i = 0; i < 6; i++) await tick();
   assert.deepEqual(first.map(value => [value.revision, value.node.id, value.node.childCount]), [
-    [rev(11), 'agora:session:a', undefined], [rev(11, 1), 'agora:root:user-tasks', 2]]);
+    [mid(11), 'agora:session:a', undefined], [cut(11), 'agora:root:user-tasks', 2]]);
   assert.ok(first[0].revision < first[1].revision);
   // 宿主只收到第一帧就断开，从它的修订号续订：重新读取 seq 11，只推送根节点这一帧。
   off();
   const second = [];
-  h.views.tree.subscribe({ epoch: 'db', revision: rev(11) }, value => second.push(value));
+  h.views.tree.subscribe({ epoch: 'db', revision: mid(11) }, value => second.push(value));
   assert.equal(h.streams[1].path, '/v1/changes?epoch=db&afterSeq=10');
   change(h.streams[1], 11, 'session', 'a');
   for (let i = 0; i < 8; i++) await tick();
-  assert.deepEqual(second.map(value => [value.revision, value.node.id, value.node.childCount]), [[rev(11, 1), 'agora:root:user-tasks', 2]]);
+  assert.deepEqual(second.map(value => [value.revision, value.node.id, value.node.childCount]), [[cut(11), 'agora:root:user-tasks', 2]]);
   // 两帧都已收到时续订不重复推送。
   const third = [];
-  h.views.tree.subscribe({ epoch: 'db', revision: rev(11, 1) }, value => third.push(value));
+  h.views.tree.subscribe({ epoch: 'db', revision: cut(11) }, value => third.push(value));
   change(h.streams[2], 11, 'session', 'a');
   for (let i = 0; i < 8; i++) await tick();
   assert.deepEqual(third, []);
@@ -820,15 +822,15 @@ test('浏览器重连续订后用户任务根的 childCount 从当前集合继�
   const off = h.views.tree.subscribe({ epoch: 'db', revision: snapshot.revision }, value => first.push(value));
   w.create(11, 'a', h.streams[0]); w.other(12, h.streams[0]);
   await flush();
-  assert.deepEqual(rootCounts(first), [[rev(11, 1), 2], [rev(12), 2]]);
+  assert.deepEqual(rootCounts(first), [[cut(11), 2], [cut(12), 2]]);
   // 断线后从已收到的最新修订号续订，之后新建 B：根节点总数为 3（冷任务、A、B）。
   off();
   const second = [];
-  h.views.tree.subscribe({ epoch: 'db', revision: rev(12) }, value => second.push(value));
-  assert.equal(h.streams[1].path, '/v1/changes?epoch=db&afterSeq=11');
-  w.other(12, h.streams[1]); w.create(13, 'b', h.streams[1]);
+  h.views.tree.subscribe({ epoch: 'db', revision: cut(12) }, value => second.push(value));
+  assert.equal(h.streams[1].path, '/v1/changes?epoch=db&afterSeq=12');
+  w.create(13, 'b', h.streams[1]);
   await flush();
-  assert.deepEqual(rootCounts(second), [[rev(13, 1), 3]]);
+  assert.deepEqual(rootCounts(second), [[cut(13), 3]]);
   assert.deepEqual(h.warnings, []);
 });
 
@@ -843,13 +845,13 @@ test('没有订阅期间新建的用户任务在续订回放后计入根节点 c
   // 空窗期间新建 B，没有订阅处理这条变更；续订从 A 的根节点帧之后开始，回放补齐 B。
   w.create(12, 'b');
   const second = [];
-  h.views.tree.subscribe({ epoch: 'db', revision: rev(11, 1) }, value => second.push(value));
+  h.views.tree.subscribe({ epoch: 'db', revision: cut(11) }, value => second.push(value));
   change(h.streams[1], 11, 'session', 'a'); change(h.streams[1], 12, 'session', 'b');
   await flush();
-  assert.deepEqual(rootCounts(second), [[rev(12, 1), 3]]);
+  assert.deepEqual(rootCounts(second), [[cut(12), 3]]);
   w.create(13, 'c', h.streams[1]);
   await flush();
-  assert.deepEqual(rootCounts(second), [[rev(12, 1), 3], [rev(13, 1), 4]]);
+  assert.deepEqual(rootCounts(second), [[cut(12), 3], [cut(13), 4]]);
   assert.deepEqual(h.warnings, []);
 });
 
@@ -863,8 +865,8 @@ test('多个订阅共用用户任务集合，各自推送宿主未见过的根�
   await flush();
   change(h.streams[1], 11, 'session', 'a');
   await flush();
-  assert.deepEqual(rootCounts(one), [[rev(11, 1), 2]]);
-  assert.deepEqual(rootCounts(two), [[rev(11, 1), 2]], '另一订阅已计入 A，本订阅仍要把数目推给自己的宿主');
+  assert.deepEqual(rootCounts(one), [[cut(11), 2]]);
+  assert.deepEqual(rootCounts(two), [[cut(11), 2]], '另一订阅已计入 A，本订阅仍要把数目推给自己的宿主');
   change(h.streams[0], 12, 'tree', 'all');
   await flush();
   assert.deepEqual(one.at(-1), { type: 'reset', epoch: 'db' });
@@ -875,7 +877,7 @@ test('多个订阅共用用户任务集合，各自推送宿主未见过的根�
   h.views.tree.subscribe({ epoch: 'db', revision: cut(11) }, value => three.push(value));
   w.other(13, h.streams[2]);
   await flush();
-  assert.deepEqual(rootCounts(three), [[rev(13), undefined]]);
+  assert.deepEqual(rootCounts(three), [[cut(13), undefined]]);
   // 新快照重新扫描，集合恢复。
   const next = await h.views.tree.snapshot({ openNodeIds: [], recentSince: '2026-01-01T00:00:00Z' });
   assert.equal(next.nodes.find(node => node.id === 'agora:root:user-tasks').childCount, 2);
@@ -883,7 +885,7 @@ test('多个订阅共用用户任务集合，各自推送宿主未见过的根�
   h.views.tree.subscribe({ epoch: 'db', revision: next.revision }, value => four.push(value));
   w.create(14, 'b', h.streams[3]);
   await flush();
-  assert.deepEqual(rootCounts(four), [[rev(14, 1), 3]]);
+  assert.deepEqual(rootCounts(four), [[cut(14), 3]]);
   assert.deepEqual(h.warnings, []);
 });
 
@@ -913,4 +915,24 @@ test('快照之后才出现或变热的主会话子任务由订阅推送，不�
   assert.equal(snapshot.revision, cut(10));
   assert.deepEqual(snapshot.nodes.map(node => node.id), ['agora:session:hot', 'agora:session:both', 'agora:root:user-tasks']);
   assert.deepEqual(snapshot.foreignChildCounts, { 'pane:session:main': 4 }, 'hot、both 由快照抵扣，cold、lateCold 留在历史里');
+});
+
+test('每处理完一条变更，订阅推送的最大修订号等于同一 seq 的分页修订号，pane 不必等待分页', async t => {
+  const w = userTaskWorld(t), { h } = w;
+  const snapshot = await h.views.tree.snapshot({ openNodeIds: [], recentSince: '2026-01-01T00:00:00Z' });
+  const emitted = [];
+  h.views.tree.subscribe({ epoch: 'db', revision: snapshot.revision }, value => emitted.push(value));
+  const watermark = () => Math.max(snapshot.revision, ...emitted.map(value => value.revision));
+  // 非树对象只推根节点；新建用户任务推节点和根节点两帧；已计入的节点再次变化只推节点本身。
+  const steps = [() => w.other(11, h.streams[0]), () => w.create(12, 'a', h.streams[0]), () => change(h.streams[0], 13, 'session', 'a')];
+  for (const [index, step] of steps.entries()) {
+    const seq = 11 + index;
+    if (index === 2) w.other(13);
+    step();
+    await flush();
+    const page = await h.views.tree.children('agora:root:user-tasks', { epoch: 'db', limit: 10 });
+    assert.equal(page.revision, cut(seq));
+    assert.equal(watermark(), page.revision, `seq ${seq} 处理完后水位应等于分页修订号`);
+  }
+  assert.deepEqual(h.warnings, []);
 });
