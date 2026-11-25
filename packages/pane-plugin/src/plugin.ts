@@ -216,14 +216,18 @@ export default function createPlugin(options: PluginOptions = {}): PanePlugin {
     inProgress.set(key, operation);
     return operation;
   }
-  /** 读取失败是否可能因 daemon 不可达：传输层失败、连接已换代，或 daemon 返回 5xx（退出前排空时为 503）。 */
+  /**
+   * 读取失败是否可能因连接不可用：传输层失败、连接已换代、daemon 返回 5xx（退出前排空时为 503），
+   * 或当前凭证已失效（`401 token_expired`、`401 unauthenticated`）。
+   */
   function connectionFailure(error: unknown): boolean {
     return error instanceof AgoraConnectionError || typeof error === "object" && error !== null && transportFailures.has(error)
-      || error instanceof AgoraReplyError && error.status >= 500;
+      || error instanceof AgoraReplyError && (error.status >= 500 || error.status === 401 && ["token_expired", "unauthenticated"].includes(error.code ?? ""));
   }
   // daemon 刚退出时，变更流断开会先于定时检查触发 reset，宿主随即重取快照。在线读取遇到连接类错误时立即检查连接：
-  // 确认已离线就改读存档，避免把连接错误交给宿主；daemon 快速重启、检查时已连上新连接就在新连接上重试一次；
-  // 连接没有变化时原样抛出。daemon 的 4xx 等业务错误直接抛出，不检查连接。
+  // 确认已离线就改读存档，避免把连接错误交给宿主；daemon 快速重启或凭证失效、检查时已连上新连接就在新连接上重试一次；
+  // 连接没有变化时原样抛出。检查用 `/v1/status` 核对凭证，凭证失效时返回 401，连接因此被判为需要重建。
+  // daemon 的其他 4xx 业务错误直接抛出，不检查连接。
   async function read<T>(live: () => Promise<T>, archived: (reader: Awaited<ReturnType<typeof offline>>) => Promise<T>): Promise<T> {
     active();
     if (online) {

@@ -811,6 +811,28 @@ test("在线读取遇到 daemon 5xx 时检查连接，连接未变就原样抛�
   assert.equal(a.state.closed, 0);
 });
 
+for (const code of ["token_expired", "unauthenticated"]) test(`在线读取遇到 401 ${code} 时检查连接，凭证失效就重建连接并重试一次读取`, { timeout: 5_000 }, async t => {
+  const h = await host(t);
+  const snapshotCall = call => call.url.pathname === "/v1/sessions" && call.url.searchParams.get("snapshot") === "1";
+  // 旧连接的 token 已失效：读取和认证检查都返回 401，daemon 本身仍在运行。
+  const first = mockApi(h, (call, state) => {
+    if (snapshotCall(call)) { state.authorization = 401; return { status: 401, body: { error: { code, message: "请重新认证" } } }; }
+  });
+  const second = mockApi(h);
+  const apis = [first.api, second.api];
+  let connects = 0;
+  const plugin = h.plugin({ connect: async () => apis[connects++], openArchive: async () => { throw new Error("在线测试不能打开存档"); } });
+  await plugin.activate(h.context);
+  await eventually(() => first.polls.size === 1, "启用后应有一个挂起的通知轮询");
+  const snapshot = await plugin.tree.snapshot(treeRequest);
+  assert.equal(connects, 2, "凭证失效时检查连接并重建");
+  assert.equal(first.calls.filter(call => call.path === "/v1/status").length, 1, "读取失败后用 /v1/status 核对凭证");
+  assert.equal(first.state.closed, 1);
+  assert.ok(snapshot.nodes.some(node => node.id === `agora:session:${ref.id}`));
+  assert.equal(second.calls.filter(snapshotCall).length, 1, "新连接上只重试一次");
+  assert.deepEqual(second.unexpected, []);
+});
+
 test("在线读取的 4xx 业务错误直接抛出，不检查连接", { timeout: 5_000 }, async t => {
   const missing = call => call.url.pathname.startsWith("/v1/sessions/as_missing");
   const { a, plugin } = await activated(t, call => missing(call)
