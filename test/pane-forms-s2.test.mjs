@@ -449,3 +449,25 @@ test("提问及其待确认填发起任务的当前会话节点，任务读取�
   assert.equal((await offline.forms.pending()).find(form => form.id === "agora:request:rq-a").nodeId, "agora:session:as-a2");
   controller.dispose(); offline.dispose();
 });
+
+test("列表读取进行中再次请求待处理表单时另读一轮，不返回早于这次请求的列表", async () => {
+  const f = fixture(), controller = createForms(f.runtime, f.security);
+  const original = f.runtime.api.request;
+  let release, started;
+  const gate = new Promise(yes => { release = yes; }), ready = new Promise(yes => { started = yes; });
+  let held = false;
+  f.runtime.api.request = async (method, path, body) => {
+    if (!held && path.startsWith("/v1/devices?")) { held = true; started(); await gate; }
+    return original(method, path, body);
+  };
+  const first = controller.forms.pending(); await ready;
+  // 第一轮已读过提问列表时新增一条提问（如刚创建的待确认）；之后的请求必须看到它。
+  f.setRequests([structuredClone(request), { ...structuredClone(request), id: "rq-two" }]);
+  const second = controller.forms.pending(), third = controller.forms.pending();
+  assert.notEqual(second, first, "不复用进行中的一轮");
+  assert.equal(second, third, "期间的调用方共用新的一轮");
+  release();
+  assert.ok(!(await first).some(item => item.id === "agora:request:rq-two"));
+  assert.ok((await second).some(item => item.id === "agora:request:rq-two"));
+  controller.dispose();
+});

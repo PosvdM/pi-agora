@@ -202,10 +202,17 @@ export function createForms(runtime: PluginRuntime, security: Security) {
     current.clear(); for (const [id, item] of next) current.set(id, item);
     return sorted();
   }
+  // 进行中的一轮可能在调用方关心的变化（如刚创建的待确认）之前就读过列表：此时排一轮新的，在当前这轮结束后开始，
+  // 期间的调用方共用这一轮，不直接拿进行中那轮的结果。
+  let again: Promise<FormSpec[]> | undefined;
   function pending(): Promise<FormSpec[]> {
     if (disposed) return Promise.reject(new Error("agora 插件已停用"));
-    if (!refresh) refresh = load().finally(() => { refresh = undefined; });
-    return refresh;
+    if (!refresh) {
+      refresh = load().finally(() => { refresh = undefined; });
+      return refresh;
+    }
+    again ??= refresh.catch(() => {}).then(() => { again = undefined; return pending(); });
+    return again;
   }
   async function mapped(response: ApiReply, req: FormSubmission): Promise<FormSubmitResult> {
     active();
