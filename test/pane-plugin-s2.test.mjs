@@ -818,6 +818,26 @@ test("在线读取的 4xx 业务错误直接抛出，不检查连接", { timeout
   const missingRef = { source: "agora", id: "as_missing" };
   await assert.rejects(plugin.sessions.snapshot(missingRef), /会话不存在/);
   await assert.rejects(plugin.sessions.history(missingRef, { limit: 1 }), /会话不存在/);
+  await assert.rejects(plugin.panels.content("agora.task", "agora:session:as_missing"), /会话不存在/);
   assert.equal(a.calls.filter(call => call.path === "/v1/health").length, 0, "业务错误不能触发连接检查");
   assert.equal(a.state.closed, 0);
+});
+
+test("daemon 刚退出、定时检查之前打开任务面板时改读存档", { timeout: 5_000 }, async t => {
+  const h = await host(t), archive = archiveReader();
+  // daemon 在面板读取时退出，之后健康检查和重连都失败。
+  const a = mockApi(h, (call, state) => {
+    if (call.url.pathname === `/v1/sessions/${ref.id}`) { state.closed++; throw new AgoraConnectionError(); }
+  });
+  let connects = 0, opened = 0;
+  const plugin = h.plugin({ connect: async () => { if (connects++) throw new AgoraConnectionError(); return a.api; },
+    openArchive: async () => { opened++; return archive.reader; } });
+  await plugin.activate(h.context);
+  await eventually(() => a.polls.size === 1, "启用后应有一个挂起的通知轮询");
+  const content = await plugin.panels.content("agora.task", `agora:session:${ref.id}`);
+  assert.equal(content.type, "keyValue");
+  assert.deepEqual(content.rows.find(row => row.key === "会话"), { key: "会话", value: ref.id });
+  assert.equal(connects, 2);
+  assert.equal(opened, 1);
+  assert.deepEqual(plugin.actions.list(), []);
 });

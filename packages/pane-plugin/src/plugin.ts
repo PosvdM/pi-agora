@@ -322,13 +322,10 @@ export default function createPlugin(options: PluginOptions = {}): PanePlugin {
     },
     panels: {
       list: () => views?.panels.list() ?? [],
-      async content(id, nodeId) {
-        active();
-        if (online) return views.panels.content(id, nodeId);
-        const reader = await offline();
+      content: (id, nodeId) => read(() => views.panels.content(id, nodeId), reader => {
         if (!reader.panels) throw new Error(offlineMessage);
         return reader.panels.content(id, nodeId);
-      },
+      }),
     },
     actions: {
       list: () => online ? [...actions.list(), { id: "agora.device.pair", source: "agora", title: "配对当前浏览器", scope: ["global"], timeoutMs: 60_000 },
