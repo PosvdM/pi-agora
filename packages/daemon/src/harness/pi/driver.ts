@@ -12,7 +12,7 @@ import {
 } from "pi-hostkit";
 
 import type { LaunchSpec, ResolvedSkill } from "../types.js";
-import { normalizePiEvent } from "./events.js";
+import { cacheWarmEntryId, normalizePiEvent } from "./events.js";
 import { buildPiArgv } from "./launch.js";
 export type { LaunchSpec } from "../types.js";
 export { normalizePiEvent } from "./events.js";
@@ -387,9 +387,11 @@ class RpcDriverHandle implements DriverHandle {
     } else if (event.type === "tool_execution_end") {
       this.tools.delete(String(event.toolCallId)); this.lastCompleted = boundedEvent(event);
     } else if (event.type === "message_end") this.lastCompleted = boundedEvent(event);
-    if (event.type === "message_end" && record(event.message).role === "assistant") {
+    const warmId = cacheWarmEntryId(event);
+    if (warmId !== undefined || event.type === "message_end" && record(event.message).role === "assistant") {
       const message = record(event.message);
-      const id = typeof message.id === "string" && message.id ? `id:${message.id}` : `body:${createHash("sha256").update(JSON.stringify(message)).digest("hex")}`;
+      const id = warmId !== undefined ? `entry:${warmId}`
+        : typeof message.id === "string" && message.id ? `id:${message.id}` : `body:${createHash("sha256").update(JSON.stringify(message)).digest("hex")}`;
       if (!this.completedMessages.has(id)) {
         this.completedMessages.add(id);
         for (const normalized of normalizePiEvent(event, `message-${++this.messageSequence}`, Date.now())) {

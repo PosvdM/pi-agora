@@ -47,6 +47,16 @@ async function setup(t, { managed = false, tools = ['read', 'grep', 'find', 'ls'
     get shutdown() { return shutdown; }, setTools(value) { activeTools = value; }, setThinking(value) { thinking = value; },
   };
 }
+for (const managed of [true, false]) test(`缓存预热：${managed ? '受管会话空闲时停止，运行中沿用 pi 的判断' : '主会话不覆盖 pi 的判断'}`, async t => {
+  const f = await setup(t, { managed });
+  const decide = f.handlers.get('cache_warming_decision');
+  assert.equal(typeof decide, 'function');
+  const event = { type: 'cache_warming_decision', warmCost: 0.01, missCost: 1, continuationProbability: 0.15, action: 'warm' };
+  assert.deepEqual(decide(event, { ...f.ctx, isIdle: () => true }), managed ? { action: 'stop' } : undefined);
+  assert.equal(decide(event, { ...f.ctx, isIdle: () => false }), undefined);
+  assert.equal(decide({ ...event, action: 'stop' }, { ...f.ctx, isIdle: () => false }), undefined);
+  assert.equal(decide(event, f.ctx), undefined, '缺少 isIdle 时不干预');
+});
 async function until(fn, timeoutMs = 5000) {
   const deadline = performance.now() + timeoutMs;
   while (!fn()) { if (performance.now() >= deadline) throw new Error('测试等待超时'); await delay(20); }

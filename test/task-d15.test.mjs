@@ -135,6 +135,22 @@ test('D15 逐请求记账关联任务/代/会话，用量去重并按任务树�
   const current = await main.request('GET', `/v1/tasks/${parent.taskId}/result`); assert.equal(current.generationUsage.inputTokens, 40);
 });
 
+test('D15 缓存预热用量计入预算、按请求去重，不覆盖上下文大小，settled 后仍记入当前代', async t => {
+  const f = await setup(t), main = await f.main(), task = await f.spawn(main, { maxTokens: 1000 }), h = await f.handle(task);
+  const warm = { type: 'usage_record', requestId: 'cache-warm:e1', inputTokens: 0, cacheReadTokens: 300, cacheWriteTokens: 0, outputTokens: 1, reasoningTokens: 0, contextTokens: 0 };
+  h.emit(usage('real-1'));
+  h.emit(warm); h.emit(warm);
+  await f.settle(h);
+  h.emit({ ...warm, requestId: 'cache-warm:e2' });
+  const status = await main.request('GET', `/v1/tasks/${task.taskId}`);
+  assert.equal(status.usage.requests, 3); assert.equal(status.usage.cacheReadTokens, 620); assert.equal(status.usage.contextTokens, 33);
+  assert.equal(status.budget.usedTokens, 37 + 2 * 301);
+  assert.equal(f.daemon.store.get("SELECT COUNT(*) AS n FROM usage_records WHERE task_id=? AND generation=1", task.taskId).n, 3);
+  h.emit({ ...warm, requestId: 'cache-warm:e3', cacheReadTokens: 1000 });
+  assert.ok((await main.request('GET', `/v1/tasks/${task.taskId}`)).budget.usedTokens > 1000);
+  assert.equal(f.daemon.store.task(task.taskId).status, 'completed', '已结束任务保留终态');
+});
+
 test('N4 stop 收尾仍记录原代用量，确认退出后拒收，重复请求只记一次', async t => {
   const f = await setup(t), main = await f.main(), task = await f.spawn(main), h = await f.handle(task);
   h.onStop = () => { h.emit(usage('abort-tail')); h.emit(usage('abort-tail')); };
