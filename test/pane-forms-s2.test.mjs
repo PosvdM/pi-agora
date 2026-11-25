@@ -408,3 +408,41 @@ test("提问标题去掉链接时允许 URL 中一层平衡括号，紧挨标点
   for (const [id, [, title]] of Object.entries(cases)) assert.equal(titles[`agora:request:${id}`], title, id);
   controller.dispose();
 });
+
+test("提问及其待确认填发起任务的当前会话节点，任务读取失败时省略 nodeId，设备批准不填", async t => {
+  const f = fixture(await directory(t));
+  const base = f.runtime.api.request;
+  const reads = [];
+  f.runtime.api.request = async (method, path, body) => {
+    if (path.startsWith("/v1/tasks/")) {
+      reads.push(path);
+      if (path === "/v1/tasks/tk-a") return { status: 200, body: { taskId: "tk-a", agoraSessionId: "as-a2" } };
+      if (path === "/v1/tasks/tk-broken") throw new Error("断线");
+      return { status: 404, body: { error: { code: "not_found" } } };
+    }
+    if (path === "/v1/requests/rq-other") return { status: 200, body: { ...request, id: "rq-other", targetId: "agent", state: "open", taskId: "tk-a" } };
+    return base(method, path, body);
+  };
+  f.setRequests([{ ...request, id: "rq-a", taskId: "tk-a" }, { ...request, id: "rq-a-second", taskId: "tk-a" },
+    { ...request, id: "rq-broken", taskId: "tk-broken" }, { ...request, id: "rq-missing", taskId: "tk-missing" },
+    { ...request, id: "rq-user", taskId: null }]);
+  const confirmation = (id, action, target) => ({ confirmationId: id, state: "pending", action, target, title: action, summary: "摘要", createdAt: request.createdAt });
+  f.setConfirmations([confirmation("cf-a", "agora.request.answer", "rq-a"), confirmation("cf-other", "agora.request.cancel", "rq-other"),
+    confirmation("cf-task", "agora.task.spawn", "tk-a")]);
+  f.setDevices([{ deviceId: "dv", state: "pending", label: "工作电脑", fingerprint: "指纹", createdAt: request.createdAt }]);
+  const controller = createForms(f.runtime, f.security);
+  const nodes = Object.fromEntries((await controller.forms.pending()).map(form => [form.id, form.nodeId]));
+  assert.deepEqual(nodes, {
+    "agora:request:rq-a": "agora:session:as-a2", "agora:request:rq-a-second": "agora:session:as-a2",
+    "agora:request:rq-broken": undefined, "agora:request:rq-missing": undefined, "agora:request:rq-user": undefined,
+    "agora:confirmation:cf-a": "agora:session:as-a2", "agora:confirmation:cf-other": "agora:session:as-a2",
+    "agora:confirmation:cf-task": undefined, "agora:device:dv": undefined,
+  });
+  assert.deepEqual(reads, ["/v1/tasks/tk-a", "/v1/tasks/tk-broken", "/v1/tasks/tk-missing"], "同一次对齐中每个任务只读取一次");
+  assert.equal(f.added.find(form => form.id === "agora:request:rq-a").nodeId, "agora:session:as-a2");
+  // 离线时从缓存读出的表单保留 nodeId。
+  f.setOnline(false);
+  const offline = createForms(f.runtime, f.security);
+  assert.equal((await offline.forms.pending()).find(form => form.id === "agora:request:rq-a").nodeId, "agora:session:as-a2");
+  controller.dispose(); offline.dispose();
+});

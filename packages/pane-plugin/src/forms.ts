@@ -122,18 +122,47 @@ export function createForms(runtime: PluginRuntime, security: Security) {
     for (const [kind, items] of [["request", requests], ["confirmation", confirmations], ["device", devices], ["decision", decisions]] as const) {
       for (const item of items) businessState(kind, item);
     }
+    // 提问及其待确认挂在发起提问的任务当前会话节点上；任务读取失败时省略 nodeId，不影响待处理区。
+    const taskNodes = new Map<string, Promise<string | undefined>>();
+    const taskNode = (taskId: unknown): Promise<string | undefined> => {
+      if (typeof taskId !== "string" || !taskId) return Promise.resolve(undefined);
+      let value = taskNodes.get(taskId);
+      if (!value) {
+        value = runtime.api.request("GET", `/v1/tasks/${encoded(taskId)}`).then(reply => {
+          const id = reply.status === 200 ? reply.body?.agoraSessionId : undefined;
+          return typeof id === "string" && id ? `agora:session:${id}` : undefined;
+        }, () => undefined);
+        taskNodes.set(taskId, value);
+      }
+      return value;
+    };
+    const requestNode = async (requestId: unknown): Promise<string | undefined> => {
+      if (typeof requestId !== "string" || !requestId) return undefined;
+      let request = requests.find(item => item.id === requestId);
+      if (!request) {
+        const reply = await runtime.api.request("GET", `/v1/requests/${encoded(requestId)}`).catch(() => undefined);
+        if (reply?.status === 200 && reply.body?.id === requestId) request = reply.body;
+      }
+      return taskNode(request?.taskId);
+    };
+    const nodeOf = (nodeId: string | undefined) => nodeId ? { nodeId } : {};
     const next = new Map<string, FormRecord>();
     const add = (item: FormRecord) => {
       if (next.has(item.form.id)) throw new Error("agora 待处理事项标识重复");
       next.set(item.form.id, item);
     };
     for (const request of requests) if (request.targetId === "user" && ["open", "escalated"].includes(request.state)) {
+      const nodeId = await taskNode(request.taskId);
+      active();
       add(record("request", request.id, request, { title: questionTitle(request.questions), description: request.context ?? undefined,
-        questions: request.questions, cancel: { label: "不答复，取消提问" }, expiresAt: request.expiresAt ?? undefined }));
+        questions: request.questions, cancel: { label: "不答复，取消提问" }, expiresAt: request.expiresAt ?? undefined, ...nodeOf(nodeId) }));
     }
     for (const confirmation of confirmations) if (["pending", "executing"].includes(confirmation.state)) {
+      // 答复或取消提问的待确认以提问 ID 为目标。
+      const nodeId = typeof confirmation.action === "string" && confirmation.action.startsWith("agora.request.") ? await requestNode(confirmation.target) : undefined;
+      active();
       add(record("confirmation", confirmation.confirmationId ?? confirmation.id, confirmation, { title: `待确认：${confirmation.title}`,
-        description: `${confirmation.summary}\n\n发起方：${confirmation.requestedBy ?? "未知"}`, expiresAt: confirmation.expiresAt, cancel: { label: "拒绝" } }));
+        description: `${confirmation.summary}\n\n发起方：${confirmation.requestedBy ?? "未知"}`, expiresAt: confirmation.expiresAt, cancel: { label: "拒绝" }, ...nodeOf(nodeId) }));
     }
     for (const device of devices) if (device.state === "pending") {
       add(record("device", device.deviceId, device, { title: `待批准设备：${device.label}`, description: `设备：${device.label}\n\n公钥指纹：${device.fingerprint}\n\n请求时间：${device.createdAt}`, cancel: { label: "拒绝" } }));
