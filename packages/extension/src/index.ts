@@ -217,6 +217,9 @@ export default function agoraExtension(pi: PiExtensionApi): void {
   pi.on('session_before_switch', () => managed ? { cancel: true } : undefined);
   pi.on('session_before_fork', () => managed ? { cancel: true } : undefined);
   pi.on('session_before_tree', () => managed ? { cancel: true } : undefined);
+  // 受管子代理空闲时不预热提示缓存：daemon 会在 idleReclaimMs 后回收进程，空闲预热的收益有限且会产生计费请求。
+  // 长工具调用期间（非空闲）沿用 pi 的判断；主会话不返回结果，不影响用户自己的设置和其他扩展。
+  pi.on('cache_warming_decision', (_event, ctx) => managed && ctx.isIdle?.() === true ? { action: 'stop' } : undefined);
   pi.on('tool_call', async (event, ctx) => {
     if (!managed) return;
     const r = runtime;

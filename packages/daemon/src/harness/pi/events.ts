@@ -60,8 +60,26 @@ function quotaEvent(message: Record<string, unknown>, nowMs: number): QuotaExhau
   return { type: "quota_exhausted", resumeAt, reason };
 }
 
-/** 返回派生事件；调用方须按运行去重，并先于原 message_end 派发。 */
+/**
+ * pi 空闲或长工具调用期间的缓存预热请求不产生助手消息，只在会话中追加 `usage` 条目并发出 `entry_appended`。
+ * 返回条目 ID 作为请求标识；不是预热用量时返回 undefined。
+ */
+export function cacheWarmEntryId(event: RpcEvent): string | undefined {
+  if (event.type !== "entry_appended") return undefined;
+  const entry = record(event.entry);
+  return entry.type === "usage" && entry.kind === "cache_warm" && typeof entry.id === "string" && entry.id ? entry.id : undefined;
+}
+
+/** 返回派生事件；调用方须按运行去重，并先于原 message_end 或 entry_appended 派发。 */
 export function normalizePiEvent(event: RpcEvent, requestId: string, nowMs: number): HarnessDerivedEvent[] {
+  const warmId = cacheWarmEntryId(event);
+  if (warmId !== undefined) {
+    // 预热重放上一次请求，不代表新的上下文大小，contextTokens 记 0，避免覆盖最近一次真实请求的值。
+    const usage = record(record(event.entry).usage);
+    return [{ type: "usage_record", requestId: `cache-warm:${warmId}`, inputTokens: tokenCount(usage.input),
+      cacheReadTokens: tokenCount(usage.cacheRead), cacheWriteTokens: tokenCount(usage.cacheWrite),
+      outputTokens: tokenCount(usage.output), reasoningTokens: tokenCount(usage.reasoning), contextTokens: 0 }];
+  }
   const message = record(event.message);
   if (event.type !== "message_end" || message.role !== "assistant") return [];
   const usage = record(message.usage);

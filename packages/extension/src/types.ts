@@ -17,6 +17,8 @@ export interface SessionContext {
     getBranch(): SessionEntry[];
   };
   shutdown(): void;
+  /** pi 的 agent 没有在运行（已 settled）时为 true。 */
+  isIdle?(): boolean;
 }
 export interface ToolCall { toolName: string; input: Record<string, unknown> }
 export interface ToolResult { content: { type: 'text'; text: string }[]; details: unknown }

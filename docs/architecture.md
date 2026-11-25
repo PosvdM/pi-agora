@@ -147,7 +147,7 @@ node <pi>/dist/bundle/cli.js --mode rpc
 
 ### 用量与额度事件
 
-pi 专有的 skill 解析与启动参数位于 `packages/daemon/src/harness/pi/driver.ts` 和 `launch.ts`，用量字段和错误解析位于同目录的 `events.ts`；逐请求记账与额度暂停使用 `harness/types.ts` 定义的中立 `usage_record` 和 `quota_exhausted` 字段。任务状态机的其他控制与会话事件仍依赖 pi RPC，详见 [Harness 耦合清单](harness-portability.md)。驱动在助手 `message_end` 时读取 `usage.input`、`cacheRead`、`cacheWrite`、`output` 及可用的推理 token 字段，生成逐请求用量。任务层按 runId + requestId 去重写入 `usage_records`，不把累计 `get_session_stats` 反复相加。
+pi 专有的 skill 解析与启动参数位于 `packages/daemon/src/harness/pi/driver.ts` 和 `launch.ts`，用量字段和错误解析位于同目录的 `events.ts`；逐请求记账与额度暂停使用 `harness/types.ts` 定义的中立 `usage_record` 和 `quota_exhausted` 字段。任务状态机的其他控制与会话事件仍依赖 pi RPC，详见 [Harness 耦合清单](harness-portability.md)。驱动在助手 `message_end` 时读取 `usage.input`、`cacheRead`、`cacheWrite`、`output` 及可用的推理 token 字段，生成逐请求用量。pi 的提示缓存预热请求不产生助手消息，只在会话中追加 `kind: "cache_warm"` 的 `usage` 条目并发出 `entry_appended`；驱动同样把它转成逐请求用量，`requestId` 为 `cache-warm:<条目 ID>`，`contextTokens` 记 0。任务层按 runId + requestId 去重写入 `usage_records`，不把累计 `get_session_stats` 反复相加。
 
 额度识别只匹配助手错误中的明确限额代码（`usage_limit_reached`、`quota_exceeded`、`insufficient_quota`）和 HTTP 429 信息；普通 `rate_limit_exceeded` 不按额度用完处理。驱动从错误返回的重置时间或重试等待时间生成 `resumeAt`；未识别的时间保留 null，不推测恢复时刻。无法识别的错误仍按原失败路径处理。pi RPC 提供的错误可能只有 `errorMessage` 文本，解析以其可见字段为限，不保证所有 provider 的私有错误格式都能识别。
 
@@ -399,6 +399,7 @@ daemon 被强杀时，Windows 上 Job Object 关闭，受管进程随之终止�
 
 - 每个空闲 pi RPC 进程估算占 100–300 MiB（**估算，未实测**，P0 测量）。长上下文和图片会抬高峰值。
 - 同时推理的协作会话默认最多 4 个（`maxConcurrentRuns`，可配置）。一次运行从发出 `prompt`（或注入触发新一轮的消息）开始占用一个名额，到 `agent_settled` 释放。见下文“名额优先级”。
+- 提示缓存预热：pi 1.5.1 起默认在会话空闲时最长 30 分钟内继续预热提示缓存（全局设置 `cacheWarming: "idle"`）。受管扩展在 `cache_warming_decision` 事件中对空闲状态（`ctx.isIdle()` 为 true）返回 `stop`，子代理空闲期间不发预热请求；agent 运行期间（如长工具调用）沿用 pi 的判断，预热用量按逐请求用量入账。预热失败（包括 429）时 pi 不写条目、不发事件，也不会触发额度暂停。主会话中该处理器不返回结果，不影响用户设置。不改用户全局设置，是因为 pi 只从全局设置读取该项，没有启动参数、项目设置或 RPC 命令可以覆盖。
 - 回收：协作会话 settled、没有进行中的工具调用，空闲 5 分钟后停止进程（`idleReclaimMs`，默认 300000）；1b 的扩展 UI 默认立即取消。等待答复（`waiting_decision`）或下级（`waiting_children`）的父任务同样可回收，相关通知到达后先排队取得名额，再用原会话重新拉起并注入通知，不重放原任务书。父任务收到下级通知后仍需自行交出最终结果。后续开放 pending UI 时，存在待回应对话框也必须阻止回收。
 - 回收只停进程，**不删除**会话、任务、worktree 或存档。
 

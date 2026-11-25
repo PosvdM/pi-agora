@@ -34,14 +34,14 @@
 
 | 位置 | pi 依赖 | 更换 Harness 时的工作 | 代价 |
 | --- | --- | --- | --- |
-| `packages/extension/src/types.ts`、`index.ts` | `registerTool/appendEntry/sendMessage`、sessionManager、模型与 thinking 查询；session / turn / tool / settled / shutdown 钩子及取消、阻断返回值。整个包属于 pi 侧适配。 | 实现对应 Harness 的扩展包或其他桥接方式；保持两阶段就绪、工具调用 fail closed、token 与生命周期绑定。 | 高 |
+| `packages/extension/src/types.ts`、`index.ts` | `registerTool/appendEntry/sendMessage`、sessionManager、模型与 thinking 查询；session / turn / tool / settled / shutdown 钩子及取消、阻断返回值；`cache_warming_decision` 事件与 `ctx.isIdle()`，用于停止受管会话的空闲缓存预热。整个包属于 pi 侧适配。 | 实现对应 Harness 的扩展包或其他桥接方式；保持两阶段就绪、工具调用 fail closed、token 与生命周期绑定。 | 高 |
 | `packages/extension/src/notifications.ts` | `sendMessage`、`followUp`、`triggerTurn` 与 pi 已持久化条目。 | 替换注入与唤醒机制，保留 outbox 为准、落盘后确认和每代去重规则。 | 高 |
 
 ## usage 与额度错误
 
 | 位置 | pi 依赖 | 更换 Harness 时的工作 | 代价 |
 | --- | --- | --- | --- |
-| `harness/pi/events.ts`：`normalizePiEvent/quotaEvent/resetTime`；`harness/pi/driver.ts`：`receive` | 助手 `message_end.message.usage` 的 input/cacheRead/cacheWrite/output/reasoning；429 与明确额度码、重置时间字段；助手消息 ID / 内容摘要去重。 | 替换解析器，输出 `harness/types.ts` 的 `usage_record/quota_exhausted`；保留逐请求去重、先于原事件派发及未知重置时间为 null。 | 低 |
+| `harness/pi/events.ts`：`normalizePiEvent/quotaEvent/resetTime`；`harness/pi/driver.ts`：`receive` | 助手 `message_end.message.usage` 的 input/cacheRead/cacheWrite/output/reasoning；`entry_appended` 中 `type: "usage"`、`kind: "cache_warm"` 的预热用量条目及其条目 ID；429 与明确额度码、重置时间字段；助手消息 ID / 内容摘要 / 用量条目 ID 去重。 | 替换解析器，输出 `harness/types.ts` 的 `usage_record/quota_exhausted`；保留逐请求去重、先于原事件派发及未知重置时间为 null。 | 低 |
 | `tasks.ts`：`recordUsage/pauseQuota/armQuotaTimer/resumeQuota`；`store.ts` 的用量账本；`packages/protocol/src/index.ts`：`UsageSummary/TaskStatus` | 用量和额度状态本身是中立合同；结果中还保存原始 `get_session_stats`，任务 settled 仍受 pi 事件控制。 | 复用账本、树汇总和恢复规则；替换原始统计与完成时机。若重新定义统计合同，还需兼容持久化与客户端。 | 高，仅记录 |
 
 ## 安全与任务树预算
@@ -50,6 +50,8 @@
 | --- | --- | --- | --- |
 | `packages/daemon/src/budgets.ts`、`acl.ts`、`security.ts`、`offline.ts` | 预算、资源关系、设备签名、JCS、SQLite 和实例锁不依赖 pi。预算暂停只调用既有 `DriverHandle.stop()`；取消队列、停止推理和清理进程由适配器完成。 | 复用安全与预算规则；新驱动必须保留停止和停止后尾量记账的合同。 | 低 |
 | `test/task-security-1c.test.mjs`、`security-http-1c.test.mjs`、`security-core.test.mjs` | 安全服务与 HTTP 用测试签名器验收；任务模拟器仍构造 pi RPC 事件和停止队列。 | 替换任务夹具的 Harness 事件，安全签名与迁移测试可复用。 | 安全低；任务夹具中 |
+
+`test/cache-warming-e2e.test.mjs` 与 `test/fixtures/warm-provider.ts` 依赖 pi 的 `promptCache` 模型字段、预热请求以 `maxTokens: 1` 重放上一次请求，以及默认 `cacheWarming` 和 `cache_warming_decision` 语义；迁移时须按目标 Harness 的缓存预热机制重写，或在其没有该机制时删除。
 
 `test/budget-wake-e2e.test.mjs` 与 `test/fixtures/budget-provider.ts` 用 pi Provider 注册、真实 agora 工具和 `agora:notice` 落盘格式验证单名额预算循环，覆盖父进程复用与回收重拉。迁移时须替换 Provider 和消息注入适配，保留同代两次暂停、逐次确认及显式恢复语义；代价高。预算事件本身仅复用已有调度，不新增 pi RPC 命令。
 

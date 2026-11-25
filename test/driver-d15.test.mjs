@@ -416,4 +416,13 @@ test("D15：handle 先发送 normalized events，再发送原 message_end；重�
   assert.equal(observed[2], original);
   assert.deepEqual(observed.filter((event) => event.type === "usage_record").map((event) => event.requestId), ["same-id", "message-2", "message-3"]);
   assert.equal(handle.diagnostics().events.filter((event) => event.type === "usage_record").length, 3);
+  observed.length = 0;
+  const warm = { type: "entry_appended", entry: { type: "usage", id: "warm-1", kind: "cache_warm", usage: { input: 0, output: 1, cacheRead: 500, cacheWrite: 0 } } };
+  current.push(warm);
+  current.push(structuredClone(warm));
+  current.push({ type: "entry_appended", entry: { type: "custom", id: "custom-1" } });
+  assert.deepEqual(observed.map((event) => event.type), ["usage_record", "entry_appended", "entry_appended", "entry_appended"]);
+  assert.equal(observed[0].requestId, "cache-warm:warm-1");
+  assert.equal(observed[0].contextTokens, 0);
+  assert.equal(observed[1], warm);
 });

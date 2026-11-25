@@ -50,6 +50,19 @@ test("Harness：pi 事件输出中立的逐请求用量和额度事件，顺序�
   assert.deepEqual(message, snapshot);
 });
 
+test("Harness：pi 的 cache_warm 用量条目转为逐请求用量，不更新上下文大小", () => {
+  const event = { type: "entry_appended", entry: { type: "usage", id: "entry-1", kind: "cache_warm", provider: "p", model: "m",
+    usage: { input: 2, output: 1, cacheRead: 500, cacheWrite: 3, reasoning: 0, totalTokens: 506 } } };
+  const snapshot = structuredClone(event);
+  assert.deepEqual(normalizePiEvent(event, "fallback", 0), [{ type: "usage_record", requestId: "cache-warm:entry-1",
+    inputTokens: 2, cacheReadTokens: 500, cacheWriteTokens: 3, outputTokens: 1, reasoningTokens: 0, contextTokens: 0 }]);
+  assert.deepEqual(event, snapshot);
+  for (const entry of [{ ...event.entry, kind: "other" }, { ...event.entry, type: "custom" }, { ...event.entry, id: "" }, { ...event.entry, id: undefined }]) {
+    assert.deepEqual(normalizePiEvent({ type: "entry_appended", entry }, "fallback", 0), []);
+  }
+  assert.deepEqual(normalizePiEvent({ type: "message_end", entry: event.entry, message: { role: "user" } }, "fallback", 0), []);
+});
+
 test("Harness：中立类型不依赖 pi、hostkit 或旧驱动入口", async () => {
   const source = await readFile(new URL("../packages/daemon/src/harness/types.ts", import.meta.url), "utf8");
   assert.doesNotMatch(source, /\b(?:import|export)\s+(?:type\s+)?[^;]*\bfrom\s*["']/);
