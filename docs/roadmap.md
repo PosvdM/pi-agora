@@ -1,6 +1,6 @@
 # 路线图
 
-> 状态：代码覆盖切片 1c 的任务核心、安全与任务树软预算，以及切片 2 的 daemon 变更流和 pane 服务端数据插件。1d 存档与会话接口已合入，插件适配仍在接线；pane 浏览器联调、board 和会议按对应切片推进。可选扩展 / MCP 白名单及 saved 项目信任配置隔离推迟，原因见 [#10](https://github.com/PosvdM/pi-agora/issues/10)。实现与测试入口见 [development.md](development.md)。
+> 状态：代码覆盖切片 1c 的任务核心、安全与任务树软预算，以及切片 2 的 daemon 变更流和 pane 服务端数据插件。1d 存档与会话接口已合入，插件适配仍在接线；切片 2 的 pane 浏览器联调测试与 pi-pane M3 界面在 CI 中一起运行；board 和会议按对应切片推进。可选扩展 / MCP 白名单及 saved 项目信任配置隔离推迟，原因见 [#10](https://github.com/PosvdM/pi-agora/issues/10)。实现与测试入口见 [development.md](development.md)。
 
 
 ## P0 验证项

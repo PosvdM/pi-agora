@@ -14,7 +14,7 @@
 
 ## 协议副本
 
-`@pi-pane/plugin-api` 位于 pi-pane 的 monorepo 子目录，npm git 依赖不能直接选择该子包。插件的 peer 依赖声明固定仓库提交，本地开发依赖指向 `vendor/plugin-api` 的只读副本，构建时不联网。固定提交为 `85be519f598b281129c484ff6a66ce05edf7913c`。
+`@pi-pane/plugin-api` 位于 pi-pane 的 monorepo 子目录，npm git 依赖不能直接选择该子包。插件的 peer 依赖声明固定仓库提交，本地开发依赖指向 `vendor/plugin-api` 的只读副本，构建时不联网。固定提交为 `20196121cb87721be277645de71a80e40584ecd3`。
 
 副本保留原始的 `package.json`、`tsconfig.json` 和 `src/index.ts`；`SOURCE.json` 记录仓库、完整提交及各文件的 SHA-256。构建使用插件自己的 `tsconfig.api.json`，不修改副本的构建配置。`.gitattributes` 禁止对副本做换行转换。
 
@@ -45,9 +45,9 @@ node scripts/vendor-pane-api.mjs generate <pi-pane仓库路径>
 
 ## 同步与离线
 
-在线树使用数据库级变更游标。普通子节点分页先核实当前 epoch，再传递 cursor；跨在线/离线或数据库周期时返回 reset，同周期的非法 cursor 仍报错。热快照在同一事务内返回热节点及其祖先，不截断成默认列表的第一页；挂在 pane 主会话下的子节点总数另行分页扫描全部会话得出，填入 `foreignChildCounts`，口径见 [integration.md](integration.md#同步与按需加载)。结构迁移的持久 `tree/all` 标记使整个来源树重建，覆盖父关系、历史会话及父节点计数的派生变化。节点的 revision 取会话的 `treeRevision`（变更流口径），不使用会话行 `revision`；列表项或详情缺少 `treeRevision` 时按旧版 daemon 报错。订阅对每条会话或任务变更都推送 upsert，修订号取该变更的 `seq`，节点数据取读取时的最新详情，可能新于该条变更；pi-pane 只应用修订号更大的 upsert，不会用旧数据覆盖新数据。非树对象的变更以虚拟用户任务根的更新推进来源水位，使分页的 revision 可以与订阅对齐。断流、后台恢复或 epoch 失配时向宿主发送 `reset`；会话流对应发送 `resync`。领域变更流过期也会触发树 `reset`，宿主据此调用 `forms.pending()` 对齐待处理区；对齐期间又到达变更时，插件继续执行一轮对齐，不能静默丢掉这次变化。
+在线树使用数据库级变更游标。普通子节点分页先核实当前 epoch，再传递 cursor；跨在线/离线或数据库周期时返回 reset，同周期的非法 cursor 仍报错。热快照在同一事务内返回热节点及其祖先，不截断成默认列表的第一页；挂在 pane 主会话下的子节点总数与虚拟用户任务根的子节点总数（根节点的 `childCount`，供“历史（N）”使用）由同一次分页扫描全部会话得出，主会话部分填入 `foreignChildCounts`；订阅推送的用户任务根沿用最近一次快照的数目，口径见 [integration.md](integration.md#同步与按需加载)。结构迁移的持久 `tree/all` 标记使整个来源树重建，覆盖父关系、历史会话及父节点计数的派生变化。节点的 revision 取会话的 `treeRevision`（变更流口径），不使用会话行 `revision`；列表项或详情缺少 `treeRevision` 时按旧版 daemon 报错。订阅对每条会话或任务变更都推送 upsert，修订号取该变更的 `seq`，节点数据取读取时的最新详情，可能新于该条变更；pi-pane 只应用修订号更大的 upsert，不会用旧数据覆盖新数据。非树对象的变更以虚拟用户任务根的更新推进来源水位，使分页的 revision 可以与订阅对齐。断流、后台恢复或 epoch 失配时向宿主发送 `reset`；会话流对应发送 `resync`。领域变更流过期也会触发树 `reset`，宿主据此调用 `forms.pending()` 对齐待处理区；对齐期间又到达变更时，插件继续执行一轮对齐，不能静默丢掉这次变化。
 
-插件每 15 秒检查连接和认证状态。daemon 不运行时，通过 `openArchive({ home, apiVersion: 1 })` 只读读取，节点保留业务状态，只有 `open` 能力，会话标为只读。恢复在线时关闭 archive reader，并重置已订阅的树和会话。未知认证或协议错误不会在启用时冒充正常的离线状态。
+插件每 15 秒检查连接和认证状态；在线读取树、会话快照或历史失败时立即检查一次，确认 daemon 已不可达就改读存档，连接仍正常时原样返回错误。daemon 刚退出时变更流断开会先于定时检查触发 `reset`，宿主随即重取的快照因此直接得到存档内容。daemon 不运行时，通过 `openArchive({ home, apiVersion: 1 })` 只读读取，节点保留业务状态，只有 `open` 能力，会话标为只读。恢复在线时关闭 archive reader，并重置已订阅的树和会话。未知认证或协议错误不会在启用时冒充正常的离线状态。
 
 离线元数据扫描每页 128 条，最多 64 页、4096 个会话；超限明确报错，不返回截断的树。每次打开 reader 使用新的离线 epoch，同一 epoch 使用固定元数据索引。归档条目和历史经 adapter 透传；流片段由 archive 的 `projectPartialsAsync` 分批转成协议中的未完成内容，不由插件解析 pi 格式。离线任务面板使用 adapter 的 `usage` 和 `isCurrent` 显示用量、上下文及历史会话标记。父关系缺失时进入未归属，不能用祖先的 pi 会话 ID 猜测直接父节点。
 
@@ -81,5 +81,6 @@ HTTP JSON 响应最多 8 MiB，单个 SSE 事件最多 4 MiB。树变更映射�
 | `pane-identities-s2.test.mjs` | 跨重启完整调用身份、最终结果与并发登记 |
 | `pane-offline-s2.test.mjs`、`pane-archive-real-s2.test.mjs`、`schema-s2.test.mjs` | 离线热树与中立父关系、跨来源子节点数、分页、只读内容、缺失文件、扫描上限与取消 |
 | `pane-plugin-s2.test.mjs` | 生命周期、通知展示后确认、离线恢复、停用竞态、重启幂等和无效安全状态保留 |
+| `pane-browser-m3.test.mjs` | pi-pane 浏览器联调：真实 daemon、真实 pi 与假 provider、同进程的 pi-pane 服务端和本插件、真实 Chrome。覆盖子会话流式输出时断网再恢复后与 daemon 记录逐字一致；两个标签页同时答复同一提问只生效一次；确认被拒、超时和没有可接收确认的浏览器时 daemon 不执行；首台设备自签、新设备待批准、两台浏览器同时首次配对只有一台成功、离线重置后的单次 TOFU；三类安全横幅在所有标签页显示、不能关闭，跨 pi-pane 重启、daemon 重启、插件停用和加载失败保留，按规则消失，旧 revision 的知悉被拒；接管后打开的会话开放输入框、返工和停止；daemon 重启及变更流过期后侧栏与 daemon 一致；主会话下的子任务、工具卡片与通知卡片链接、唯一停止入口、冷历史和显示名称 |
 
-这些测试在 agora 侧使用模拟主机，其中安全和接管测试通过真实 daemon HTTP 及 P-256 签名验证后台协议；它们不代替 pane M3 的浏览器联调。流式输出断网恢复、多标签页交互、设备密钥与签名、横幅跨宿主重启及插件不可用提示，需由 pane 的浏览器测试验收。
+除 `pane-browser-m3.test.mjs` 外，这些测试在 agora 侧使用模拟主机，其中安全和接管测试通过真实 daemon HTTP 及 P-256 签名验证后台协议。浏览器中的流式恢复、多标签页交互、设备密钥与签名、横幅跨宿主重启及插件不可用提示由 `pane-browser-m3.test.mjs` 验收，运行方式见 [development.md](development.md#pane-浏览器联调)。

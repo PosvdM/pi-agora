@@ -51,7 +51,8 @@ jobs:
           - os: windows-latest
             containment: snapshot
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
+    # 浏览器联调约四分钟，其中在场确认超时用例等待 pi-pane 的 120 秒期限。
+    timeout-minutes: 30
     env:
       HOSTKIT_TEST_CONTAINMENT: ${{ matrix.containment }}
       HOSTKIT_TEST_PI_VERSION: ${{ matrix.pi }}
@@ -77,16 +78,26 @@ jobs:
           echo "XDG_RUNTIME_DIR=/run/user/$uid" >> "$GITHUB_ENV"
           echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus" >> "$GITHUB_ENV"
           if [ "${{ matrix.containment }}" = auto ]; then echo "HOSTKIT_TEST_REQUIRE_CGROUP=1" >> "$GITHUB_ENV"; fi
-      - name: 取得固定版本的 pane 协议源码
+      - name: 取得固定版本的 pi-pane
         uses: actions/checkout@v4
         with:
           repository: PosvdM/pi-pane
-          ref: 85be519f598b281129c484ff6a66ce05edf7913c
+          ref: 20196121cb87721be277645de71a80e40584ecd3
           path: .pi-tmp-pane-api
           token: ${{ secrets.PANE_SOURCE_TOKEN || github.token }}
+      - name: 构建 pi-pane（浏览器联调使用其服务端、前端和测试设施）
+        working-directory: .pi-tmp-pane-api
+        run: |
+          npm ci
+          npm run build
       - name: 比对 pane 协议只读副本
         run: node scripts/vendor-pane-api.mjs compare .pi-tmp-pane-api
-      - run: npm test
+      - name: 完整测试（含 pi-pane 浏览器联调）
+        run: npm test
+        env:
+          AGORA_PANE_DIR: ${{ github.workspace }}/.pi-tmp-pane-api
+          AGORA_TEST_REQUIRE_PANE: '1'
+          PANE_TEST_REQUIRE_CHROME: '1'
       - name: macOS 忽略 abort 的 provider 真实停止重复二十五次
         if: runner.os == 'macOS'
         env:
