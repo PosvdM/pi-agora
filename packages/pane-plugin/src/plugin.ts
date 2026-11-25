@@ -212,15 +212,21 @@ export default function createPlugin(options: PluginOptions = {}): PanePlugin {
     inProgress.set(key, operation);
     return operation;
   }
-  // daemon 刚退出时，变更流断开会先于定时检查触发 reset，宿主随即重取快照。在线读取失败时立即检查连接，
-  // 确认已离线就改读存档，避免把连接错误交给宿主；连接仍然正常时原样抛出业务错误。
+  // daemon 刚退出时，变更流断开会先于定时检查触发 reset，宿主随即重取快照。在线读取失败时立即检查连接：
+  // 确认已离线就改读存档，避免把连接错误交给宿主；daemon 快速重启、检查时已连上新连接就在新连接上重试一次；
+  // 连接没有变化时原样抛出业务错误。
   async function read<T>(live: () => Promise<T>, archived: (reader: Awaited<ReturnType<typeof offline>>) => Promise<T>): Promise<T> {
     active();
     if (online) {
+      const token = generation;
       try { return await live(); }
       catch (error) {
         await probe().catch(() => {});
-        if (online || !activated) throw error;
+        if (!activated) throw error;
+        if (online) {
+          if (generation === token) throw error;
+          return live();
+        }
       }
     }
     return archived(await offline());

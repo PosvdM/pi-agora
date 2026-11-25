@@ -780,3 +780,32 @@ test("领域刷新挂起时大量变更事件只置脏标记，不为每条事�
   await delay(20);
   assert.equal(a.calls.filter(alerts).length, reruns + 1);
 });
+
+test("在线读取失败后检查时已连上快速重启的 daemon，在新连接上重试一次读取", { timeout: 5_000 }, async t => {
+  const h = await host(t);
+  const snapshotCall = call => call.url.pathname === "/v1/sessions" && call.url.searchParams.get("snapshot") === "1";
+  // 旧 daemon 在快照读取时退出，之后的健康检查也连不上；新 daemon 已在监听。
+  const first = mockApi(h, (call, state) => { if (snapshotCall(call)) { state.closed++; throw new AgoraConnectionError(); } });
+  const second = mockApi(h);
+  const apis = [first.api, second.api];
+  let connects = 0;
+  const plugin = h.plugin({ connect: async () => apis[connects++], openArchive: async () => { throw new Error("在线测试不能打开存档"); } });
+  await plugin.activate(h.context);
+  await eventually(() => first.polls.size === 1, "启用后应有一个挂起的通知轮询");
+  const snapshot = await plugin.tree.snapshot(treeRequest);
+  assert.equal(connects, 2);
+  assert.equal(snapshot.epoch, treeCursor.epoch);
+  assert.ok(snapshot.nodes.some(node => node.id === `agora:session:${ref.id}`));
+  assert.equal(first.calls.filter(snapshotCall).length, 1);
+  assert.equal(second.calls.filter(snapshotCall).length, 1, "新连接上只重试一次");
+  assert.deepEqual(second.unexpected, []);
+});
+
+test("在线读取的业务错误在连接未变时原样抛出，不重试也不改读存档", { timeout: 5_000 }, async t => {
+  const snapshotCall = call => call.url.pathname === "/v1/sessions" && call.url.searchParams.get("snapshot") === "1";
+  const { a, plugin } = await activated(t, call => snapshotCall(call)
+    ? { status: 500, body: { error: { code: "internal", message: "快照读取失败" } } } : undefined);
+  await assert.rejects(plugin.tree.snapshot(treeRequest), /快照读取失败/);
+  assert.equal(a.calls.filter(snapshotCall).length, 1);
+  assert.equal(a.state.closed, 0);
+});
