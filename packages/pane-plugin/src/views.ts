@@ -178,9 +178,13 @@ export function createViews(runtime: PluginRuntime): {
     } while (cursor);
     return { epoch: epoch!, items };
   }
-  // 最近一次快照扫描得到的用户任务根直接子节点 ID，含历史会话。根节点的 childCount 供“历史（N）”使用，
-  // 订阅以它为起点，按会话移入、移出或删除增减。
-  let userTasks: { epoch: string; ids: ReadonlySet<string> } | undefined;
+  /**
+   * 用户任务根的直接子节点 ID，含历史会话；根节点的 childCount 取集合大小，供“历史（N）”使用。快照扫描建立集合，
+   * 所有订阅处理变更时按会话移入、移出或删除持续增减，新订阅（包括浏览器重连后的续订）从当前集合开始，不回到快照时的副本。
+   * 集合按 ID 增减，订阅回放已计入的变更不会重复计数；没有订阅期间漏掉的变更由续订回放补齐。`seq` 为已计入的
+   * 最新变更序号；之后的结构标记或来源切换使集合作废，直到下一次快照重新扫描。
+   */
+  let userTasks: { epoch: string; ids: Set<string>; seq: number } | undefined;
   /** 统计挂在 pane 节点下的直接子节点总数，收集用户任务根的直接子节点，含历史会话；扫描期间来源重置时返回 undefined。 */
   async function childCounts(epoch: string): Promise<{ foreign: Record<string, number>; userTasks: Set<string> } | undefined> {
     let scan;
@@ -259,7 +263,7 @@ export function createViews(runtime: PluginRuntime): {
       const revision = cutRevision(page.changesCursor.seq);
       // 快照只含热节点，用户任务根与 pane 主会话下的冷节点数目需要扫描全部会话才能得到。
       const counts = await childCounts(page.changesCursor.epoch);
-      userTasks = counts ? { epoch: page.changesCursor.epoch, ids: counts.userTasks } : undefined;
+      userTasks = counts ? { epoch: page.changesCursor.epoch, ids: counts.userTasks, seq: page.changesCursor.seq } : undefined;
       const userTaskCount = counts?.userTasks.size;
       const nodes = page.items.map(item => node(item, undefined, userTaskCount));
       if (!nodes.some(item => item.id === USER_TASKS)) nodes.push(group(revision, userTaskCount));
@@ -299,24 +303,36 @@ export function createViews(runtime: PluginRuntime): {
       let pendingBytes = 0;
       let stopped = false;
       let stream: ReturnType<typeof listen> | undefined;
-      // 扫描在快照页之后读取，可能已含回放中的会话；按 ID 增减，重复的变更不会重复计数。
-      const userTaskIds = userTasks?.epoch === from.epoch ? new Set(userTasks.ids) : undefined;
+      // 本订阅最近一次推送给宿主的根节点 childCount。宿主手里的数目可能来自更早的快照或其他订阅，
+      // 新订阅在第一条树变更时总会推送一次根节点，之后数目变化才推送。
+      let sentCount: number | undefined;
+      /** 与本订阅同一来源周期的用户任务根子节点集合；没有扫描结果或已作废时为 undefined，根节点不填 childCount。 */
+      const tracked = () => userTasks?.epoch === from.epoch ? userTasks : undefined;
       function reset(epoch = from.epoch) {
         if (stopped || disposed) return;
         stopped = true;
         stream?.stop();
         taskSessions.clear();
+        if (epoch !== from.epoch && userTasks?.epoch === from.epoch) userTasks = undefined;
         emit({ type: "reset", epoch });
       }
-      /** 推送一帧；重新读取切点所在的 seq 时，跳过宿主已收到的帧（修订号不大于切点）。 */
-      function push(change: Exclude<TreeChange, { type: "reset" }>) {
-        if (change.revision > from.revision) emit(change);
+      /** 推送一帧；重新读取切点所在的 seq 时，跳过宿主已收到的帧（修订号不大于切点）。返回是否推送。 */
+      function push(change: Exclude<TreeChange, { type: "reset" }>): boolean {
+        if (change.revision <= from.revision) return false;
+        emit(change);
+        return true;
       }
-      /** 节点移入、移出用户任务根或被删除时更新子节点集合，并推送带新 childCount 的根节点。 */
+      /** 推送带当前 childCount 的根节点；数目与本订阅上次推送的相同则不推送，unconditional 时总是推送（推进水位）。 */
+      function pushRoot(revision: number, unconditional = false) {
+        const count = tracked()?.ids.size;
+        if (!unconditional && (count === undefined || count === sentCount)) return;
+        if (push({ type: "upsert", revision, node: group(revision, count) })) sentCount = count;
+      }
+      /** 节点移入、移出用户任务根或被删除时更新共享的子节点集合，并推送带新 childCount 的根节点。 */
       function trackUserTask(id: string, parent: string | null, revision: number) {
-        if (!userTaskIds || (parent === USER_TASKS) === userTaskIds.has(id)) return;
-        if (parent === USER_TASKS) userTaskIds.add(id); else userTaskIds.delete(id);
-        push({ type: "upsert", revision, node: group(revision, userTaskIds.size) });
+        const state = tracked();
+        if (state) { if (parent === USER_TASKS) state.ids.add(id); else state.ids.delete(id); }
+        pushRoot(revision);
       }
       // 变更流只能核对 seq：切点落在 head 之后的 seq 中间时，按协议先 reset，不推送其他变更。核对排在所有变更之前。
       if (partial) queue = queue.then(async () => {
@@ -343,7 +359,13 @@ export function createViews(runtime: PluginRuntime): {
           if (change.cursor.epoch !== from.epoch) { reset(change.cursor.epoch); return; }
           if (change.cursor.seq <= seq) return;
           const revision = revisionOf(change.cursor.seq, NODE_SLOT), rootRevision = revisionOf(change.cursor.seq, ROOT_SLOT);
-          if (change.objectType === "tree" && change.objectId === "all") { reset(); return; }
+          if (change.objectType === "tree" && change.objectId === "all") {
+            // 结构迁移改变父关系，集合在下一次快照前不再可信；晚于该标记的快照已重新扫描，不受影响。
+            const state = tracked();
+            if (state && state.seq < change.cursor.seq) userTasks = undefined;
+            reset();
+            return;
+          }
           if (change.objectType === "task" || change.objectType === "session") {
             let id = change.objectId as string;
             if (change.objectType === "task") {
@@ -370,7 +392,7 @@ export function createViews(runtime: PluginRuntime): {
               treeRevision(item);
               // 每条变更都推送，修订号按变更 seq 分配；详情是读取时的最新数据，可能新于本条变更。
               // pane 只应用修订号更大的 upsert，同一节点之后的推送或分页只会带来同样新或更新的数据。
-              const mapped = node(item, revision, userTaskIds?.size);
+              const mapped = node(item, revision, tracked()?.ids.size);
               push({ type: "upsert", revision, node: mapped });
               trackUserTask(mapped.id, mapped.parentId, rootRevision);
             }
@@ -378,7 +400,7 @@ export function createViews(runtime: PluginRuntime): {
             void refreshHolds();
           } else {
             // 非树对象也推进来源水位，避免分页等待一个永远不会推送的修订号。
-            push({ type: "upsert", revision, node: group(revision, userTaskIds?.size) });
+            pushRoot(revision, true);
             if (change.objectType === "request" && !change.tombstone) {
               const request = await get(`/v1/requests/${encoded(change.objectId)}`, stream!.signal);
               if (stopped || !stream!.active()) return;
@@ -389,6 +411,8 @@ export function createViews(runtime: PluginRuntime): {
             }
           }
           seq = change.cursor.seq;
+          const state = tracked();
+          if (state && seq > state.seq) state.seq = seq;
         }).catch(error => { if (!stopped && stream!.active()) { warn(error); reset(); } })
           .finally(() => { pendingChanges--; pendingBytes -= bytes; });
       }, error => { warn(error); reset(); });
