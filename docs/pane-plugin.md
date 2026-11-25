@@ -14,7 +14,7 @@
 
 ## 协议副本
 
-`@pi-pane/plugin-api` 位于 pi-pane 的 monorepo 子目录，npm git 依赖不能直接选择该子包。插件的 peer 依赖声明固定仓库提交，本地开发依赖指向 `vendor/plugin-api` 的只读副本，构建时不联网。固定提交为 `337c1740b92647bd0240199903051a4327668b1f`。
+`@pi-pane/plugin-api` 位于 pi-pane 的 monorepo 子目录，npm git 依赖不能直接选择该子包。插件的 peer 依赖声明固定仓库提交，本地开发依赖指向 `vendor/plugin-api` 的只读副本，构建时不联网。固定提交为 `b20f781667712d5f9225d23250be507f69ae783f`。
 
 副本保留原始的 `package.json`、`tsconfig.json` 和 `src/index.ts`；`SOURCE.json` 记录仓库、完整提交及各文件的 SHA-256。构建使用插件自己的 `tsconfig.api.json`，不修改副本的构建配置。`.gitattributes` 禁止对副本做换行转换。
 

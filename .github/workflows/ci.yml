@@ -82,7 +82,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: PosvdM/pi-pane
-          ref: 337c1740b92647bd0240199903051a4327668b1f
+          ref: b20f781667712d5f9225d23250be507f69ae783f
           path: .pi-tmp-pane-api
           token: ${{ secrets.PANE_SOURCE_TOKEN || github.token }}
       - name: 构建 pi-pane（浏览器联调使用其服务端、前端和测试设施）
