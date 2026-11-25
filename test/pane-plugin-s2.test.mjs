@@ -801,11 +801,23 @@ test("在线读取失败后检查时已连上快速重启的 daemon，在新连�
   assert.deepEqual(second.unexpected, []);
 });
 
-test("在线读取的业务错误在连接未变时原样抛出，不重试也不改读存档", { timeout: 5_000 }, async t => {
+test("在线读取遇到 daemon 5xx 时检查连接，连接未变就原样抛出，不重试也不改读存档", { timeout: 5_000 }, async t => {
   const snapshotCall = call => call.url.pathname === "/v1/sessions" && call.url.searchParams.get("snapshot") === "1";
   const { a, plugin } = await activated(t, call => snapshotCall(call)
     ? { status: 500, body: { error: { code: "internal", message: "快照读取失败" } } } : undefined);
   await assert.rejects(plugin.tree.snapshot(treeRequest), /快照读取失败/);
   assert.equal(a.calls.filter(snapshotCall).length, 1);
+  assert.equal(a.calls.filter(call => call.path === "/v1/health").length, 1, "5xx 可能来自正在退出的 daemon，需要检查连接");
+  assert.equal(a.state.closed, 0);
+});
+
+test("在线读取的 4xx 业务错误直接抛出，不检查连接", { timeout: 5_000 }, async t => {
+  const missing = call => call.url.pathname.startsWith("/v1/sessions/as_missing");
+  const { a, plugin } = await activated(t, call => missing(call)
+    ? { status: 404, body: { error: { code: "not_found", message: "会话不存在" } } } : undefined);
+  const missingRef = { source: "agora", id: "as_missing" };
+  await assert.rejects(plugin.sessions.snapshot(missingRef), /会话不存在/);
+  await assert.rejects(plugin.sessions.history(missingRef, { limit: 1 }), /会话不存在/);
+  assert.equal(a.calls.filter(call => call.path === "/v1/health").length, 0, "业务错误不能触发连接检查");
   assert.equal(a.state.closed, 0);
 });

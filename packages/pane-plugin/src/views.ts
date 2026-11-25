@@ -2,7 +2,7 @@ import type {
   PanePlugin, NodeStatus, TreeNode, SessionRef, SessionSnapshot, HistoryPage,
   SessionStreamEvent, PanelContent,
 } from "@pi-pane/plugin-api";
-import { encoded, message, parentNodeId, statusDetail, userTask, type PluginRuntime, type SessionItem, type SessionsPage, type ApiEvent } from "./contracts.js";
+import { AgoraReplyError, encoded, message, parentNodeId, statusDetail, userTask, type PluginRuntime, type SessionItem, type SessionsPage, type ApiEvent } from "./contracts.js";
 
 const USER_TASKS = "agora:root:user-tasks";
 const TASK_PANEL = "agora.task";
@@ -102,7 +102,7 @@ export function createViews(runtime: PluginRuntime): {
   async function get<T = any>(path: string, signal = lifetime.signal): Promise<T> {
     if (disposed) throw new Error("agora 视图已关闭");
     const reply = await runtime.api.request<T>("GET", path, undefined, { signal });
-    if (reply.status < 200 || reply.status >= 300) throw new Error(message(reply));
+    if (reply.status < 200 || reply.status >= 300) throw new AgoraReplyError(reply.status, message(reply));
     return reply.body;
   }
   function remember(items: SessionItem[]) {
@@ -253,7 +253,7 @@ export function createViews(runtime: PluginRuntime): {
           lifetime.signal.throwIfAborted();
           if (latest.changesCursor.epoch !== page.epoch) return { reset: true, epoch: latest.changesCursor.epoch };
         }
-        throw new Error(message(reply));
+        throw new AgoraReplyError(reply.status, message(reply));
       }
       const result: SessionsPage = reply.body;
       if (result.changesCursor.epoch !== page.epoch) return { reset: true, epoch: result.changesCursor.epoch };

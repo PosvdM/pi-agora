@@ -7,7 +7,7 @@ import { createForms } from "./forms.js";
 import { createSecurity, type Security } from "./security.js";
 import { OperationIdentities } from "./identity.js";
 import { createOfflineViews, type ArchiveReader } from "./offline.js";
-import type { AgoraApi, PluginRuntime } from "./contracts.js";
+import { AgoraReplyError, type AgoraApi, type PluginRuntime } from "./contracts.js";
 
 export interface PluginOptions {
   home?: string;
@@ -39,6 +39,8 @@ export default function createPlugin(options: PluginOptions = {}): PanePlugin {
   const treeSubscriptions = new Set<{ emit(change: TreeChange): void; stop(): void }>();
   const sessionSubscriptions = new Set<{ ref: { source: string; id: string }; emit(event: SessionStreamEvent): void; stop(): void }>();
   const inProgress = new Map<string, Promise<any>>();
+  // 底层 API 请求本身失败（传输失败、超时、连接关闭）时抛出的错误；收到 HTTP 响应的不在其中。
+  const transportFailures = new WeakSet<object>();
   const log = (message: string, error: unknown) => context?.log.warn(message, error instanceof Error ? error.name : "unknown");
   const runtime: PluginRuntime = {
     get context() { if (!context) throw new Error("agora 插件尚未启用"); return context; },
@@ -46,7 +48,9 @@ export default function createPlugin(options: PluginOptions = {}): PanePlugin {
       request: async (...args) => {
         if (!api) throw new AgoraConnectionError();
         const token = generation;
-        const response = await api.request(...args);
+        let response;
+        try { response = await api.request(...args); }
+        catch (error) { if (typeof error === "object" && error) transportFailures.add(error); throw error; }
         if (!activated || generation !== token) throw new AgoraConnectionError();
         return response;
       },
@@ -212,15 +216,21 @@ export default function createPlugin(options: PluginOptions = {}): PanePlugin {
     inProgress.set(key, operation);
     return operation;
   }
-  // daemon 刚退出时，变更流断开会先于定时检查触发 reset，宿主随即重取快照。在线读取失败时立即检查连接：
+  /** 读取失败是否可能因 daemon 不可达：传输层失败、连接已换代，或 daemon 返回 5xx（退出前排空时为 503）。 */
+  function connectionFailure(error: unknown): boolean {
+    return error instanceof AgoraConnectionError || typeof error === "object" && error !== null && transportFailures.has(error)
+      || error instanceof AgoraReplyError && error.status >= 500;
+  }
+  // daemon 刚退出时，变更流断开会先于定时检查触发 reset，宿主随即重取快照。在线读取遇到连接类错误时立即检查连接：
   // 确认已离线就改读存档，避免把连接错误交给宿主；daemon 快速重启、检查时已连上新连接就在新连接上重试一次；
-  // 连接没有变化时原样抛出业务错误。
+  // 连接没有变化时原样抛出。daemon 的 4xx 等业务错误直接抛出，不检查连接。
   async function read<T>(live: () => Promise<T>, archived: (reader: Awaited<ReturnType<typeof offline>>) => Promise<T>): Promise<T> {
     active();
     if (online) {
       const token = generation;
       try { return await live(); }
       catch (error) {
+        if (!connectionFailure(error)) throw error;
         await probe().catch(() => {});
         if (!activated) throw error;
         if (online) {
