@@ -629,13 +629,15 @@ test('在线快照扫描全部会话，在 foreignChildCounts 中报告 pane 节
     item('other', { status: 'completed', parent: { kind: 'main', piSessionId: 'other' } }),
     item('user', { status: 'completed', parent: { kind: 'user' } }),
   ];
-  let epoch = 'db';
+  let epoch = 'db', badCursor = false;
   const h = setup(t, ({ url }) => {
     if (url.pathname !== '/v1/sessions') return undefined;
     if (url.searchParams.get('snapshot') === '1') return { status: 200, body: page([all[0]]) };
-    // 扫描分两页，第二页之前可以切换来源 epoch。
+    if (url.searchParams.get('limit') === '1') return { status: 200, body: page([], { changesCursor: { epoch, seq: 12 } }) };
+    // 扫描分两页，第二页之前可以切换来源 epoch。真实 daemon 的游标绑定 epoch，来源切换后对旧游标返回 400。
     if (!url.searchParams.get('cursor')) return { status: 200, body: page(all.slice(0, 4), { nextCursor: 'p2' }) };
-    return { status: 200, body: page(all.slice(4), { changesCursor: { epoch, seq: 11 } }) };
+    if (epoch !== 'db' || badCursor) return { status: 400, body: { error: { code: 'invalid_params', message: '分页游标与查询条件不符' } } };
+    return { status: 200, body: page(all.slice(4)) };
   });
   const req = { openNodeIds: [], recentSince: '2026-01-01T00:00:00Z' };
   const snapshot = await h.views.tree.snapshot(req);
@@ -651,6 +653,10 @@ test('在线快照扫描全部会话，在 foreignChildCounts 中报告 pane 节
   assert.equal(reset.foreignChildCounts, undefined);
   assert.equal(reset.epoch, 'db');
   assert.deepEqual(reset.nodes.map(node => node.id), ['agora:session:hot', 'agora:root:user-tasks']);
+  assert.equal(reset.nodes.find(node => node.id === 'agora:root:user-tasks').childCount, undefined);
+  // 来源未变时游标被拒属于真实错误，快照原样报错。
+  epoch = 'db'; badCursor = true;
+  await assert.rejects(h.views.tree.snapshot(req), /分页游标与查询条件不符/);
 });
 
 test('订阅按用户任务根子节点集合增减根节点 childCount，修订号取变更 seq', async t => {

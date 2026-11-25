@@ -102,7 +102,7 @@ export function createViews(runtime: PluginRuntime): {
   async function get<T = any>(path: string, signal = lifetime.signal): Promise<T> {
     if (disposed) throw new Error("agora 视图已关闭");
     const reply = await runtime.api.request<T>("GET", path, undefined, { signal });
-    if (reply.status < 200 || reply.status >= 300) throw new AgoraReplyError(reply.status, message(reply));
+    if (reply.status < 200 || reply.status >= 300) throw new AgoraReplyError(reply.status, reply);
     return reply.body;
   }
   function remember(items: SessionItem[]) {
@@ -138,7 +138,17 @@ export function createViews(runtime: PluginRuntime): {
     do {
       if (disposed) return undefined;
       if (++pages > MAX_PAGES) throw new Error("任务树分页超过扫描上限");
-      const page = await get<SessionsPage>(query("/v1/sessions", { limit: 200, cursor }));
+      let page: SessionsPage;
+      try { page = await get<SessionsPage>(query("/v1/sessions", { limit: 200, cursor })); }
+      catch (error) {
+        // 游标绑定 epoch，来源切换后 daemon 对旧游标返回 400 invalid_params；核实来源，同 epoch 的错误原样抛出。
+        if (epoch !== undefined && error instanceof AgoraReplyError && error.status === 400 && error.code === "invalid_params") {
+          const latest = await get<SessionsPage>("/v1/sessions?limit=1");
+          if (disposed) return undefined;
+          if (latest.changesCursor.epoch !== epoch) throw new TreeReset();
+        }
+        throw error;
+      }
       if (disposed) return undefined;
       if (epoch !== undefined && page.changesCursor.epoch !== epoch) throw new TreeReset();
       epoch = page.changesCursor.epoch;
@@ -253,7 +263,7 @@ export function createViews(runtime: PluginRuntime): {
           lifetime.signal.throwIfAborted();
           if (latest.changesCursor.epoch !== page.epoch) return { reset: true, epoch: latest.changesCursor.epoch };
         }
-        throw new AgoraReplyError(reply.status, message(reply));
+        throw new AgoraReplyError(reply.status, reply);
       }
       const result: SessionsPage = reply.body;
       if (result.changesCursor.epoch !== page.epoch) return { reset: true, epoch: result.changesCursor.epoch };
