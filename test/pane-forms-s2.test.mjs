@@ -408,6 +408,9 @@ test("提问标题去掉链接时允许 URL 中一层平衡括号，紧挨标点
     dunder: ["请核对 `obj.__init__()`", "提问：请核对 obj.__init__()"],
     codeStar: ["计算 `a * b` 与 `**kwargs`，**加粗**", "提问：计算 a * b 与 **kwargs，加粗"],
     codeEdge: ["_`_x_`_ 与 ``a`b`` 和 `a`_b", "提问：_x_ 与 a`b 和 a_b"],
+    // 三个反引号包住含两个连续反引号的代码：句中的分隔符不是代码块围栏，代码和后文都保留；行首的围栏行去掉。
+    tripleInline: ["请运行 ```a``b``` 后回答：可以吗", "提问：请运行 a``b 后回答：可以吗"],
+    fence: ["看这段：\n```js\nrun()\n```\n能跑吗", "提问：看这段： run() 能跑吗"],
   };
   f.setRequests(Object.entries(cases).map(([id, [question]]) => ({ ...request, id, questions: [{ id: "q", question }] })));
   const controller = createForms(f.runtime, f.security);

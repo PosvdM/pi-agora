@@ -51,7 +51,8 @@ function plainText(markdown: string): string {
   const code: string[] = [];
   return markdown
     .replace(/[\uE000\uE001]/g, "")
-    .replace(/```[^\n]*\n?/g, " ")
+    // 只去掉行首的代码块围栏行（信息串不含反引号）；句中的三个反引号是行内代码的分隔符，交给下一步。
+    .replace(/^ {0,3}(?:`{3,}[^`\n]*|~{3,}[^\n]*)$/gm, " ")
     .replace(INLINE_CODE, (_match, _ticks: string, content: string) => `${CODE_START}${code.push(content) - 1}${CODE_END}`)
     .replace(new RegExp(String.raw`!?\[([^\]]*)\]${LINK_TARGET}`, "g"), "$1")
     .replace(/^\s{0,3}(?:#{1,6}\s+|>\s?|[-*+]\s+|\d+[.)]\s+)/gm, "")
