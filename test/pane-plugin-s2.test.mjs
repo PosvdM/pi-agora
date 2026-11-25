@@ -13,7 +13,9 @@ const RETRY_MS = 100;
 const origin = { client: "browser", connectionId: "tab-a", deviceId: "device-a", receivedAt: AT };
 const ref = { source: "agora", id: "as_lifecycle" };
 const treeRequest = { openNodeIds: [], recentSince: "2025-01-01T00:00:00.000Z" };
-const treeCursor = { epoch: "db-lifecycle", revision: 10 };
+// 树修订号取 seq 10 的切点（seq × 4 + 3），订阅从 seq 11 开始读取。
+const treeSeq = 10;
+const treeCursor = { epoch: "db-lifecycle", revision: treeSeq * 4 + 3 };
 const sessionCursor = { epoch: "run-lifecycle", seq: 0 };
 const alert = { alertId: "alert-one", kind: "devices-reset", revision: 1, createdAt: AT, details: { reason: "测试" } };
 const question = { id: "rq-one", targetId: "user", state: "escalated", revision: 1, createdAt: AT,
@@ -113,7 +115,7 @@ function mockApi(h, handler = () => undefined) {
           if (pathname === `/v1/${endpoint}`) return ok({ items: structuredClone(state[key]) });
         }
         if (pathname === "/v1/sessions") return ok({ items: structuredClone(state.sessions), nextCursor: null,
-          changesCursor: { epoch: treeCursor.epoch, seq: treeCursor.revision } });
+          changesCursor: { epoch: treeCursor.epoch, seq: treeSeq } });
         if (pathname === `/v1/sessions/${ref.id}`) return ok(structuredClone(state.sessions[0]));
         if (pathname === `/v1/sessions/${ref.id}/snapshot`) return ok({ cursor: sessionCursor, leafId: null,
           entries: [], historyBefore: null, status: "running", unfinishedPartials: [] });

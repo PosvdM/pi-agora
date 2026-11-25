@@ -14,6 +14,8 @@ const MAX_PAGES = 10_000;
 const RESULT_LIMIT = 20;
 const MAX_PENDING_CHANGES = 256;
 const MAX_PENDING_CHANGE_BYTES = 8 * 1024 * 1024;
+/** 变更处理器为续订保留的已推送变更条数。 */
+const FEED_LOG_SEQS = 512;
 
 /**
  * 每个变更 seq 占用的来源级修订号个数。pane 协议要求每条 upsert/remove 各分配一个新修订号，同一条变更可能推送
@@ -183,11 +185,12 @@ export function createViews(runtime: PluginRuntime): {
   }
   /**
    * 用户任务根的直接子节点 ID，含历史会话；根节点的 childCount 取集合大小，供“历史（N）”使用。快照扫描建立集合，
-   * 所有订阅处理变更时按会话移入、移出或删除持续增减，新订阅（包括浏览器重连后的续订）从当前集合开始，不回到快照时的副本。
-   * 集合按 ID 增减，订阅回放已计入的变更不会重复计数；没有订阅期间漏掉的变更由续订回放补齐。`seq` 为已计入的
-   * 最新变更序号；之后的结构标记或来源切换使集合作废，直到下一次快照重新扫描。
+   * 来源级的变更处理器（见 subscribeFeed）按会话移入、移出或删除增减，每条变更只计入一次。集合按 ID 增减，
+   * 重新处理已计入的变更不会重复计数。`seq` 为已计入的最新变更序号：快照扫描只在它的切点不早于 `seq` 时替换集合，
+   * 较晚完成的旧扫描不覆盖已计入的变更。`ids` 省略表示集合已作废（结构标记、处理器从更晚的位置开始），直到切点
+   * 不早于 `seq` 的快照重新扫描；来源切换时整个记录删除。
    */
-  let userTasks: { epoch: string; ids: Set<string>; seq: number } | undefined;
+  let userTasks: { epoch: string; seq: number; ids?: Set<string> } | undefined;
   /**
    * 统计挂在 pane 节点下的直接子节点总数，收集用户任务根的直接子节点，含历史会话；扫描期间来源重置时返回 undefined。
    * 扫描晚于快照页，可能读到切点之后才出现或变热的会话。pane 对其他来源父节点的“历史（N）”只扣除经快照或分页取到的
@@ -267,6 +270,210 @@ export function createViews(runtime: PluginRuntime): {
     return holdRefresh;
   }
   const offMains = runtime.context.mainSessions.onChange(() => { void refreshHolds(); });
+  type Frame = Exclude<TreeChange, { type: "reset" }>;
+  type FrameOf = (revision: number) => Frame;
+  /** waiting：起点超前于已处理的变更，核对 daemon 的 head 之前不推送任何帧。 */
+  interface Subscriber { from: number; emit(change: TreeChange): void; stopped: boolean; waiting?: boolean }
+  /**
+   * 一个来源周期（epoch）的变更处理器。每条变更只在这里处理一次：读取详情、更新共享的用户任务集合、决定是否附发
+   * 根节点，算出带修订号的帧，记入 log 后原样推给所有订阅；订阅只按自己的起点过滤（修订号不大于起点的帧不推）。
+   * 同一修订号在所有标签页、续订前后都是同一帧（plugin-api.md“同步”的来源级修订号）。
+   * 没有订阅时停止读取 daemon 变更流，保留状态和 log；之后的订阅从已处理的位置继续读取。
+   */
+  interface Feed {
+    epoch: string;
+    /** 已处理的最新变更 seq。 */
+    seq: number;
+    /** log 覆盖 (base, seq] 的变更；起点早于它的订阅无法补齐。 */
+    base: number;
+    log: { seq: number; frames: Frame[] }[];
+    subscribers: Set<Subscriber>;
+    stream?: ReturnType<typeof listen>;
+    queue: Promise<void>;
+    pendingChanges: number;
+    pendingBytes: number;
+    /** 最近一次推送的根节点 childCount；数目变化时才附发根节点。 */
+    published?: number;
+    closed: boolean;
+  }
+  const feeds = new Map<string, Feed>();
+  /** 与该来源周期一致、仍然有效的用户任务集合。 */
+  const tracked = (epoch: string) => userTasks?.epoch === epoch && userTasks.ids ? userTasks as { epoch: string; seq: number; ids: Set<string> } : undefined;
+  function deliver(sub: Subscriber, frames: readonly Frame[]) {
+    for (const frame of frames) if (!sub.stopped && !sub.waiting && frame.revision > sub.from) sub.emit(frame);
+  }
+  /** 丢弃来源处理器：停止读取，从登记中移除；有订阅时逐个推 reset。 */
+  function closeFeed(feed: Feed, epoch = feed.epoch, notify = true) {
+    if (feed.closed) return;
+    feed.closed = true;
+    feed.stream?.stop(); feed.stream = undefined;
+    if (feeds.get(feed.epoch) === feed) feeds.delete(feed.epoch);
+    if (!notify) return;
+    taskSessions.clear();
+    if (epoch !== feed.epoch && userTasks?.epoch === feed.epoch) userTasks = undefined;
+    for (const sub of feed.subscribers) { sub.stopped = true; sub.emit({ type: "reset", epoch }); }
+    feed.subscribers.clear();
+  }
+  function dropSubscriber(feed: Feed, sub: Subscriber) {
+    sub.stopped = true;
+    feed.subscribers.delete(sub);
+    if (!feed.subscribers.size) { feed.stream?.stop(); feed.stream = undefined; }
+  }
+  function newFeed(epoch: string, afterSeq: number): Feed {
+    const feed: Feed = { epoch, seq: afterSeq, base: afterSeq, log: [], subscribers: new Set(), queue: Promise.resolve(),
+      pendingChanges: 0, pendingBytes: 0, closed: false };
+    // 集合只计入到它的 seq 为止；处理器从更晚的位置开始时中间的变更没有计入，集合作废到下一次快照。
+    if (userTasks?.epoch === epoch && userTasks.seq < afterSeq) userTasks = { epoch, seq: afterSeq };
+    feeds.set(epoch, feed);
+    return feed;
+  }
+  /** 一条变更的全部帧：最后一帧取该 seq 的切点值，前面的帧按顺序往前排。记入 log 并推给所有订阅。 */
+  function commit(feed: Feed, seq: number, frameOf: FrameOf[]) {
+    if (frameOf.length > REVISION_SLOTS) throw new Error(`一条变更最多推送 ${REVISION_SLOTS} 帧`);
+    const first = REVISION_SLOTS - frameOf.length;
+    const frames = frameOf.map((frame, index) => frame(revisionOf(seq, first + index)));
+    for (const frame of frames) if (frame.type === "upsert" && frame.node.id === USER_TASKS) feed.published = frame.node.childCount;
+    feed.seq = seq;
+    feed.log.push({ seq, frames });
+    while (feed.log.length > FEED_LOG_SEQS) feed.base = feed.log.shift()!.seq;
+    if (userTasks?.epoch === feed.epoch && seq > userTasks.seq) userTasks.seq = seq;
+    for (const sub of feed.subscribers) deliver(sub, frames);
+  }
+  /** 处理一条变更。所有读取完成后才同步修改共享状态并提交，读取期间处理器关闭或停止读取时整条放弃，之后重新读取。 */
+  async function processChange(feed: Feed, stream: ReturnType<typeof listen>, change: ApiEvent["data"]) {
+    const active = () => !feed.closed && stream.active();
+    if (!active()) return;
+    if (change.cursor.epoch !== feed.epoch) { closeFeed(feed, change.cursor.epoch); return; }
+    const seq: number = change.cursor.seq;
+    if (seq <= feed.seq) return;
+    const last = cutRevision(seq);
+    if (change.objectType === "tree" && change.objectId === "all") {
+      // 结构迁移改变父关系，集合在下一次快照前不再可信；晚于该标记的快照已重新扫描，不受影响。
+      if (userTasks?.epoch === feed.epoch && userTasks.seq < seq) userTasks = { epoch: feed.epoch, seq };
+      closeFeed(feed);
+      return;
+    }
+    /** 节点移入、移出用户任务根或被删除时更新共享集合；返回根节点是否需要推送新的 childCount。 */
+    const trackUserTask = (id: string, parent: string | null): boolean => {
+      const state = tracked(feed.epoch);
+      if (!state) return false;
+      if (parent === USER_TASKS) state.ids.add(id); else state.ids.delete(id);
+      return state.ids.size !== feed.published;
+    };
+    const rootFrame: FrameOf = revision => ({ type: "upsert", revision, node: group(revision, tracked(feed.epoch)?.ids.size) });
+    if (change.objectType === "task" || change.objectType === "session") {
+      let id = change.objectId as string;
+      let droppedTask: string | undefined;
+      if (change.objectType === "task") {
+        if (change.tombstone) {
+          const known = taskSessions.get(id);
+          if (!known) { closeFeed(feed); return; }
+          droppedTask = id;
+          id = known;
+        } else {
+          const task = await get(`/v1/tasks/${encoded(id)}`, stream.signal);
+          id = task.agoraSessionId;
+          if (!id) throw new Error("任务没有关联会话");
+        }
+      }
+      const item = change.tombstone ? undefined : await get<SessionItem>(`/v1/sessions/${encoded(id)}`, stream.signal);
+      if (!active()) return;
+      if (droppedTask) taskSessions.delete(droppedTask);
+      if (!item) {
+        for (const [taskId, known] of taskSessions) if (known === id) taskSessions.delete(taskId);
+        const root = trackUserTask(nodeId(id), null);
+        commit(feed, seq, [revision => ({ type: "remove", revision, id: nodeId(id) }), ...(root ? [rootFrame] : [])]);
+      } else {
+        remember([item]);
+        treeRevision(item);
+        // 修订号按变更 seq 分配；详情是读取时的最新数据，可能新于本条变更。pane 只应用修订号更大的 upsert，
+        // 同一节点之后的推送或分页只会带来同样新或更新的数据。
+        const probe = node(item, last);
+        const root = trackUserTask(probe.id, probe.parentId);
+        commit(feed, seq, [revision => ({ type: "upsert", revision, node: node(item, revision) }), ...(root ? [rootFrame] : [])]);
+      }
+      runtime.context.panelChanged({ panelId: TASK_PANEL, revision: last, nodeId: nodeId(id) });
+      void refreshHolds();
+      return;
+    }
+    // 非树对象也推进来源水位（推送根节点），避免分页等待一个永远不会推送的修订号。
+    let panelNode: string | undefined;
+    if (change.objectType === "request" && !change.tombstone) {
+      const request = await get(`/v1/requests/${encoded(change.objectId)}`, stream.signal);
+      if (request.taskId) {
+        const task = await get(`/v1/tasks/${encoded(request.taskId)}`, stream.signal);
+        if (task.agoraSessionId) panelNode = nodeId(task.agoraSessionId);
+      }
+    }
+    if (!active()) return;
+    commit(feed, seq, [rootFrame]);
+    if (panelNode) runtime.context.panelChanged({ panelId: TASK_PANEL, revision: last, nodeId: panelNode });
+  }
+  /** 从已处理的位置读取 daemon 变更流；已在读取或已关闭时不做事。 */
+  function startFeed(feed: Feed) {
+    if (feed.closed || feed.stream?.active()) return;
+    const stream: ReturnType<typeof listen> = listen(query("/v1/changes", { epoch: feed.epoch, afterSeq: feed.seq }), event => {
+      if (event.type === "reset") { closeFeed(feed, event.data.epoch); return; }
+      if (event.type !== "change" || feed.closed || !stream.active()) return;
+      const change = event.data;
+      // 计入正在映射的事件；transport 的单帧限制之外再限制整个积压。
+      const bytes = Buffer.byteLength(JSON.stringify(change), "utf8");
+      if (feed.pendingChanges >= MAX_PENDING_CHANGES || bytes > MAX_PENDING_CHANGE_BYTES - feed.pendingBytes) { closeFeed(feed); return; }
+      feed.pendingChanges++;
+      feed.pendingBytes += bytes;
+      feed.queue = feed.queue.then(() => processChange(feed, stream, change))
+        .catch(error => { if (!feed.closed && stream.active()) { warn(error); closeFeed(feed); } })
+        .finally(() => { feed.pendingChanges--; feed.pendingBytes -= bytes; });
+    }, error => { if (!feed.closed) { warn(error); closeFeed(feed); } });
+    feed.stream = stream;
+  }
+  /**
+   * 起点超前于已处理的变更：核对 daemon 的 head，起点在 head 之后时按协议对这个订阅推 reset，不推送其他变更；
+   * 核对通过后从 log 补推起点之后的帧，再调用 ready。
+   */
+  function checkAhead(feed: Feed, sub: Subscriber, ready: () => void) {
+    sub.waiting = true;
+    void get<SessionsPage>("/v1/sessions?limit=1").then(head => {
+      if (sub.stopped || feed.closed) return;
+      if (head.changesCursor.epoch !== feed.epoch) closeFeed(feed, head.changesCursor.epoch);
+      else if (sub.from > cutRevision(head.changesCursor.seq)) { dropSubscriber(feed, sub); sub.emit({ type: "reset", epoch: feed.epoch }); }
+      else {
+        sub.waiting = false;
+        for (const entry of feed.log) deliver(sub, entry.frames);
+        ready();
+      }
+    }).catch(error => {
+      if (sub.stopped || feed.closed) return;
+      warn(error); dropSubscriber(feed, sub); sub.emit({ type: "reset", epoch: feed.epoch });
+    });
+  }
+  function subscribeFeed(from: { epoch: string; revision: number }, emit: (change: TreeChange) => void): () => void {
+    if (disposed) throw new Error("agora 视图已关闭");
+    // 订阅需要的第一条变更：切点落在某个 seq 的中间（连接断在同一条变更的几帧之间）时从该 seq 开始。
+    const fromSeq = Math.floor(from.revision / REVISION_SLOTS);
+    const first = from.revision % REVISION_SLOTS === REVISION_SLOTS - 1 ? fromSeq + 1 : Math.max(1, fromSeq);
+    const sub: Subscriber = { from: from.revision, emit, stopped: false };
+    let feed = feeds.get(from.epoch);
+    if (feed && first <= feed.base) {
+      // log 已不含起点之后的全部帧：有其他订阅时只对这个订阅 reset；没有订阅时从起点重新处理，集合按 ID 增减不会重复计数。
+      if (feed.subscribers.size) { emit({ type: "reset", epoch: from.epoch }); return () => {}; }
+      closeFeed(feed, feed.epoch, false);
+      feed = undefined;
+    } else if (feed && !feed.subscribers.size && first - 1 > feed.seq) {
+      // 没有订阅期间停在较早的位置：起点之前的变更不必再处理，从起点开始（新快照已重新扫描集合，否则集合作废）。
+      closeFeed(feed, feed.epoch, false);
+      feed = undefined;
+    }
+    feed ??= newFeed(from.epoch, first - 1);
+    for (const other of [...feeds.values()]) if (other !== feed && !other.subscribers.size) closeFeed(other, other.epoch, false);
+    const current = feed;
+    current.subscribers.add(sub);
+    // 处理器已在读取时不为核对停下；只有这个订阅时等核对通过再开始读取。
+    if (sub.from > cutRevision(current.seq)) checkAhead(current, sub, () => startFeed(current));
+    else for (const entry of current.log) deliver(sub, entry.frames);
+    if (!sub.waiting) startFeed(current);
+    return () => { if (!sub.stopped) dropSubscriber(current, sub); };
+  }
   const tree: NonNullable<PanePlugin["tree"]> = {
     async snapshot(req) {
       const params = new URLSearchParams({ snapshot: "1", recentSince: req.recentSince });
@@ -275,9 +482,15 @@ export function createViews(runtime: PluginRuntime): {
       remember(page.items);
       const revision = cutRevision(page.changesCursor.seq);
       // 快照只含热节点，用户任务根与 pane 主会话下的冷节点数目需要扫描全部会话才能得到。
-      const counts = await childCounts(page.changesCursor.epoch, revision, new Set(page.items.map(item => nodeId(item.agoraSessionId))), req);
-      userTasks = counts ? { epoch: page.changesCursor.epoch, ids: counts.userTasks, seq: page.changesCursor.seq } : undefined;
-      const userTaskCount = counts?.userTasks.size;
+      const { epoch, seq } = page.changesCursor;
+      const counts = await childCounts(epoch, revision, new Set(page.items.map(item => nodeId(item.agoraSessionId))), req);
+      let userTaskCount: number | undefined;
+      if (counts) {
+        // 只接受不旧于共享集合的扫描。变更处理器已计入更晚的变更时保留它，根节点数目取它的当前值：之后推给本订阅的帧
+        // 都晚于切点，带根节点时也是同样新或更新的数目。
+        if (!userTasks || userTasks.epoch !== epoch || seq >= userTasks.seq) userTasks = { epoch, seq, ids: counts.userTasks };
+        userTaskCount = tracked(epoch)?.ids.size ?? counts.userTasks.size;
+      }
       const nodes = page.items.map(item => node(item, undefined, userTaskCount));
       if (!nodes.some(item => item.id === USER_TASKS)) nodes.push(group(revision, userTaskCount));
       return { source: "agora", epoch: page.changesCursor.epoch, revision, nodes, ...(counts ? { foreignChildCounts: counts.foreign } : {}) };
@@ -307,137 +520,7 @@ export function createViews(runtime: PluginRuntime): {
         nodes: result.items.map(item => node(item)), ...(result.nextCursor ? { nextCursor: result.nextCursor } : {}) };
     },
     subscribe(from, emit) {
-      // 切点落在某个 seq 的中间（例如连接断在同一条变更的两帧之间）时，从该 seq 重新读取，只推送修订号更大的帧。
-      const fromSeq = Math.floor(from.revision / REVISION_SLOTS);
-      const partial = from.revision % REVISION_SLOTS !== REVISION_SLOTS - 1 && fromSeq > 0;
-      let seq = partial ? fromSeq - 1 : fromSeq;
-      let queue = Promise.resolve();
-      let pendingChanges = 0;
-      let pendingBytes = 0;
-      let stopped = false;
-      let stream: ReturnType<typeof listen> | undefined;
-      // 本订阅最近一次推送给宿主的根节点 childCount。宿主手里的数目可能来自更早的快照或其他订阅，
-      // 新订阅在第一条树变更时总会推送一次根节点，之后数目变化才推送。
-      let sentCount: number | undefined;
-      /** 与本订阅同一来源周期的用户任务根子节点集合；没有扫描结果或已作废时为 undefined，根节点不填 childCount。 */
-      const tracked = () => userTasks?.epoch === from.epoch ? userTasks : undefined;
-      function reset(epoch = from.epoch) {
-        if (stopped || disposed) return;
-        stopped = true;
-        stream?.stop();
-        taskSessions.clear();
-        if (epoch !== from.epoch && userTasks?.epoch === from.epoch) userTasks = undefined;
-        emit({ type: "reset", epoch });
-      }
-      /** 推送一帧；重新读取切点所在的 seq 时，跳过宿主已收到的帧（修订号不大于切点）。返回是否推送。 */
-      function push(change: Exclude<TreeChange, { type: "reset" }>): boolean {
-        if (change.revision <= from.revision) return false;
-        emit(change);
-        return true;
-      }
-      type Frame = (revision: number) => Exclude<TreeChange, { type: "reset" }>;
-      /** 带当前 childCount 的根节点（非树对象推进水位时也用它）。 */
-      const rootFrame: Frame = revision => ({ type: "upsert", revision, node: group(revision, tracked()?.ids.size) });
-      /** 推送一条变更的全部帧：最后一帧取该 seq 的切点值，前面的帧按顺序往前排。 */
-      function pushFrames(seq: number, frames: Frame[]) {
-        if (frames.length > REVISION_SLOTS) throw new Error(`一条变更最多推送 ${REVISION_SLOTS} 帧`);
-        const first = REVISION_SLOTS - frames.length;
-        frames.forEach((frame, index) => {
-          const change = frame(revisionOf(seq, first + index));
-          if (push(change) && change.type === "upsert" && change.node.id === USER_TASKS) sentCount = change.node.childCount;
-        });
-      }
-      /** 节点移入、移出用户任务根或被删除时更新共享的子节点集合；返回根节点是否需要推送新的 childCount。 */
-      function trackUserTask(id: string, parent: string | null): boolean {
-        const state = tracked();
-        if (state) { if (parent === USER_TASKS) state.ids.add(id); else state.ids.delete(id); }
-        const count = tracked()?.ids.size;
-        return count !== undefined && count !== sentCount;
-      }
-      // 变更流只能核对 seq：切点落在 head 之后的 seq 中间时，按协议先 reset，不推送其他变更。核对排在所有变更之前。
-      if (partial) queue = queue.then(async () => {
-        if (stopped || !stream?.active()) return;
-        const head = await get<SessionsPage>("/v1/sessions?limit=1", stream.signal);
-        if (stopped || !stream.active()) return;
-        if (head.changesCursor.epoch !== from.epoch) reset(head.changesCursor.epoch);
-        else if (from.revision > cutRevision(head.changesCursor.seq)) reset();
-      }).catch(error => { if (!stopped && stream?.active()) { warn(error); reset(); } });
-      stream = listen(query("/v1/changes", { epoch: from.epoch, afterSeq: seq }), event => {
-        if (event.type === "reset") { reset(event.data.epoch); return; }
-        if (event.type !== "change" || stopped) return;
-        const change = event.data;
-        // 计入正在映射的事件；transport 的单帧限制之外再限制整个积压。
-        const bytes = Buffer.byteLength(JSON.stringify(change), "utf8");
-        if (pendingChanges >= MAX_PENDING_CHANGES || bytes > MAX_PENDING_CHANGE_BYTES - pendingBytes) {
-          reset();
-          return;
-        }
-        pendingChanges++;
-        pendingBytes += bytes;
-        queue = queue.then(async () => {
-          if (stopped || !stream!.active()) return;
-          if (change.cursor.epoch !== from.epoch) { reset(change.cursor.epoch); return; }
-          if (change.cursor.seq <= seq) return;
-          const last = cutRevision(change.cursor.seq);
-          if (change.objectType === "tree" && change.objectId === "all") {
-            // 结构迁移改变父关系，集合在下一次快照前不再可信；晚于该标记的快照已重新扫描，不受影响。
-            const state = tracked();
-            if (state && state.seq < change.cursor.seq) userTasks = undefined;
-            reset();
-            return;
-          }
-          if (change.objectType === "task" || change.objectType === "session") {
-            let id = change.objectId as string;
-            if (change.objectType === "task") {
-              if (change.tombstone) {
-                const known = taskSessions.get(id);
-                if (!known) { reset(); return; }
-                taskSessions.delete(id);
-                id = known;
-              } else {
-                const task = await get(`/v1/tasks/${encoded(id)}`, stream!.signal);
-                id = task.agoraSessionId;
-                if (!id) throw new Error("任务没有关联会话");
-              }
-            }
-            if (stopped || !stream!.active()) return;
-            if (change.tombstone) {
-              for (const [taskId, known] of taskSessions) if (known === id) taskSessions.delete(taskId);
-              const root = trackUserTask(nodeId(id), null);
-              pushFrames(change.cursor.seq, [revision => ({ type: "remove", revision, id: nodeId(id) }), ...(root ? [rootFrame] : [])]);
-            } else {
-              const item = await get<SessionItem>(`/v1/sessions/${encoded(id)}`, stream!.signal);
-              if (stopped || !stream!.active()) return;
-              remember([item]);
-              treeRevision(item);
-              // 每条变更都推送，修订号按变更 seq 分配；详情是读取时的最新数据，可能新于本条变更。
-              // pane 只应用修订号更大的 upsert，同一节点之后的推送或分页只会带来同样新或更新的数据。
-              const probe = node(item, last);
-              const root = trackUserTask(probe.id, probe.parentId);
-              pushFrames(change.cursor.seq, [revision => ({ type: "upsert", revision, node: node(item, revision, tracked()?.ids.size) }), ...(root ? [rootFrame] : [])]);
-            }
-            runtime.context.panelChanged({ panelId: TASK_PANEL, revision: last, nodeId: nodeId(id) });
-            void refreshHolds();
-          } else {
-            // 非树对象也推进来源水位，避免分页等待一个永远不会推送的修订号。
-            pushFrames(change.cursor.seq, [rootFrame]);
-            if (change.objectType === "request" && !change.tombstone) {
-              const request = await get(`/v1/requests/${encoded(change.objectId)}`, stream!.signal);
-              if (stopped || !stream!.active()) return;
-              if (request.taskId) {
-                const task = await get(`/v1/tasks/${encoded(request.taskId)}`, stream!.signal);
-                if (stream!.active() && task.agoraSessionId) runtime.context.panelChanged({ panelId: TASK_PANEL, revision: last, nodeId: nodeId(task.agoraSessionId) });
-              }
-            }
-          }
-          seq = change.cursor.seq;
-          const state = tracked();
-          if (state && seq > state.seq) state.seq = seq;
-        }).catch(error => { if (!stopped && stream!.active()) { warn(error); reset(); } })
-          .finally(() => { pendingChanges--; pendingBytes -= bytes; });
-      }, error => { warn(error); reset(); });
-      if (stopped) stream.stop();
-      return () => { stopped = true; stream!.stop(); };
+      return subscribeFeed(from, emit);
     },
   };
   const sessions: NonNullable<PanePlugin["sessions"]> = {
