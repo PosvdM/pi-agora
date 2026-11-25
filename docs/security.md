@@ -240,7 +240,7 @@ daemon 启动时、以及在线检测到状态变化时，检查以下情况，�
 
 1. pane 插件调用 `POST /v1/security/alerts/:alertId/acknowledge`，带用户看到的 `revision`；daemon 生成待确认和挑战（`action: "agora.security.acknowledge"`、`target: alertId`，`paramsHash` 覆盖 `revision`），返回 `202`。
 2. 浏览器签名后，插件走通用的 `POST /v1/confirmations/:id/sign`。签名设备必须是已配对设备（离线重置后重新配对的设备也算）。
-3. daemon 在同一个事务里：校验警告仍为未确认、`revision` 未变；记录已知悉（设备、时间）；消费 nonce；写审计；产生变更事件。`revision` 已变时返回 `409 conflict`，用户需要按新内容重新确认，旧的确认不能清掉新的警告。
+3. daemon 在同一个事务里：校验警告仍为未确认、`revision` 未变；记录已知悉（设备、时间）；消费 nonce；写审计；产生变更事件。`revision` 已变时返回 `409 conflict`，旧知悉的待确认结束为 `failed`（见[验签](#验签)），用户需要按新内容重新确认，旧的确认不能清掉新的警告。
 4. pane 插件收到警告状态变为已知悉的变更后，才清除横幅。
 
 ## 只用终端

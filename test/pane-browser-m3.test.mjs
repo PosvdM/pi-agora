@@ -401,7 +401,9 @@ test('三类安全横幅：所有标签页可见、不能关闭，跨 pi-pane �
   await byId(tabs[0], 'toast').filter({ hasText: '警告已变化' }).waitFor();
   const second = await until(async () => { const value = await devicesAlert(); return value?.revision > first.revision && value; });
   assert.equal(second.alertId, first.alertId);
-  assert.ok((await audit(w, first.alertId)).some(row => row.action === 'agora.security.acknowledge' && row.outcome === 'rejected'), '旧 revision 的签名被拒并写审计');
+  // 签名有效、执行时 revision 已变：旧知悉的待确认结束为 failed，审计记下冲突，不留下无法完成的待确认。
+  assert.ok((await audit(w, first.alertId)).some(row => row.action === 'agora.security.acknowledge' && row.outcome === 'failed' && row.reason === 'conflict'), '旧 revision 的知悉执行失败并写审计');
+  assert.deepEqual((await confirmationsFor(w, first.alertId)).filter(item => item.state === 'pending'), [], '旧知悉的待确认不再待处理');
   for (const page of tabs) {
     banner = await expand(page, BANNERS.devices);
     await banner.locator('.g-banner-body').filter({ hasText: `警告版本：${second.revision}` }).waitFor();
