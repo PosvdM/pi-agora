@@ -499,7 +499,7 @@ pi-pane 只有一个“待处理”区，承载所有插件的持久表单。ago
 
 规则：
 
-- **标题前缀**：`title` 以事项类型开头，pi-pane 的待处理区据此区分类型。提问的标题取首个问题的文字，去掉 Markdown 标记（强调、行内代码、链接和图片只留文字，标题、引用和列表标记删去）并合并空白，尖括号按普通文字保留（如 `Promise<string>`），超过 40 个字符时保留前 40 个字符并加“…”；去掉标记后为空时标题为“提问”。无法归类的事项使用兜底标题“待处理事项”，不加前缀。
+- **标题前缀**：`title` 以事项类型开头，pi-pane 的待处理区据此区分类型。提问的标题取首个问题的文字，去掉 Markdown 标记（强调、链接和图片只留文字，行内代码只去掉反引号、内容原样保留（如 `obj.__init__()`、`a * b`），标题、引用和列表标记删去）并合并空白，尖括号按普通文字保留（如 `Promise<string>`），超过 40 个字符时保留前 40 个字符并加“…”；去掉标记后为空时标题为“提问”。无法归类的事项使用兜底标题“待处理事项”，不加前缀。
 - `FormSpec.revision` 取 daemon 中对象的 `revision`；`expiresAt` 只用于显示。
 - **关联节点**：`nodeId` 填相关的树节点，pi-pane 据此在树节点上显示待处理数，并在子会话顶部显示“待处理：…”和“处理”。转给用户的提问填发起提问的任务当前会话节点 `agora:session:<agoraSessionId>`，插件按提问的 `taskId` 读取 `GET /v1/tasks/:id` 得到；答复或取消提问的待确认（`action` 为 `agora.request.answer`、`agora.request.cancel`，`target` 为提问 ID）填同一节点。提问没有 `taskId` 或任务读取失败时省略 `nodeId`，待处理区照常列出。中断任务的决策填该任务的当前会话节点；待批准设备不填。pi-pane 只接受同一表单更高的 `revision`，首次列出时省略的 `nodeId` 要等该事项的 `revision` 变化或 pi-pane 重启后才会显示。离线时表单来自上次在线时写入的缓存，保留当时的 `nodeId`。
 - **提交**：`forms.submit(submission, origin)` 中，用户级事项先用 `origin` 调 `ctx.userPresence.confirm()`（确认框出现在提交的标签页），再把签名交给 daemon。结果映射（`FormSubmitResult`）：成功为 `accepted`；`202` 且尚未结束（等待用户确认、处理中）为 `pending`；`409 already_handled` 为 `alreadyHandled`；`revision` 落后为 `stale`（附新表单）；`409 idempotency_mismatch` 为 `idempotencyConflict`；其他错误为 `failed`。

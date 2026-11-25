@@ -393,7 +393,7 @@ test("持久表单标题按事项类型加前缀，提问标题取首个问题�
   controller.dispose();
 });
 
-test("提问标题去掉链接时允许 URL 中一层平衡括号，紧挨标点的强调下划线也去掉，尖括号原样保留", async () => {
+test("提问标题去掉链接时允许 URL 中一层平衡括号，紧挨标点的强调下划线也去掉，尖括号和行内代码的内容原样保留", async () => {
   const f = fixture();
   const cases = {
     link: ["请选 [选项](https://example.com/a(b)) 后继续", "提问：请选 选项 后继续"],
@@ -404,6 +404,10 @@ test("提问标题去掉链接时允许 URL 中一层平衡括号，紧挨标点
     // pane 按纯文本渲染标题，尖括号原样保留，不当作 HTML 标签删除。
     generic: ["返回 `Promise<string>` 吗", "提问：返回 Promise<string> 吗"],
     compare: ["a < 10 且 b > 5 时怎么办", "提问：a < 10 且 b > 5 时怎么办"],
+    // 行内代码只去掉反引号，里面的下划线、星号和反引号原样保留。
+    dunder: ["请核对 `obj.__init__()`", "提问：请核对 obj.__init__()"],
+    codeStar: ["计算 `a * b` 与 `**kwargs`，**加粗**", "提问：计算 a * b 与 **kwargs，加粗"],
+    codeEdge: ["_`_x_`_ 与 ``a`b`` 和 `a`_b", "提问：_x_ 与 a`b 和 a_b"],
   };
   f.setRequests(Object.entries(cases).map(([id, [question]]) => ({ ...request, id, questions: [{ id: "q", question }] })));
   const controller = createForms(f.runtime, f.security);

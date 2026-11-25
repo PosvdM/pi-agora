@@ -42,15 +42,23 @@ function removedReason(kind: string, object: any): FormRemovedReason {
 const QUESTION_TITLE_LENGTH = 40;
 /** 链接和图片的目标部分，允许一层平衡括号，如 `https://example.com/a(b)`。 */
 const LINK_TARGET = String.raw`\((?:[^()]|\([^()]*\))*\)`;
-/** 去掉常见的 Markdown 标记并合并空白，用于表单标题。 */
+/** 行内代码：成对的等长反引号串，内容不以反引号开头或结尾。 */
+const INLINE_CODE = /(?<!`)(`+)(?!`)([\s\S]*?[^`])\1(?!`)/g;
+/** 行内代码的占位符，取私用区字符；下划线规则把它当作词内字符，与原样保留的代码文字相邻时行为一致。 */
+const CODE_START = "\uE000", CODE_END = "\uE001";
+/** 去掉常见的 Markdown 标记并合并空白，用于表单标题。行内代码只去掉反引号，内容原样保留。 */
 function plainText(markdown: string): string {
+  const code: string[] = [];
   return markdown
+    .replace(/[\uE000\uE001]/g, "")
     .replace(/```[^\n]*\n?/g, " ")
+    .replace(INLINE_CODE, (_match, _ticks: string, content: string) => `${CODE_START}${code.push(content) - 1}${CODE_END}`)
     .replace(new RegExp(String.raw`!?\[([^\]]*)\]${LINK_TARGET}`, "g"), "$1")
     .replace(/^\s{0,3}(?:#{1,6}\s+|>\s?|[-*+]\s+|\d+[.)]\s+)/gm, "")
     .replace(/[`*]+|~~/g, "")
     // 只去掉前面或后面不是字母、数字的下划线（开头、结尾、空白或标点），保留 snake_case 这类词内下划线。
-    .replace(/(?<![\p{L}\p{N}\p{M}_])_+|_+(?![\p{L}\p{N}\p{M}_])/gu, "")
+    .replace(/(?<![\p{L}\p{N}\p{M}_\uE000\uE001])_+|_+(?![\p{L}\p{N}\p{M}_\uE000\uE001])/gu, "")
+    .replace(/\uE000(\d+)\uE001/g, (_match, index: string) => code[Number(index)]!)
     .replace(/\s+/g, " ")
     .trim();
 }
