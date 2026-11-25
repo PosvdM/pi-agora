@@ -298,8 +298,8 @@ const agoraOffline = w => until(() => { try { return w.server.plugins.runtime.ge
 const agoraOnline = w => until(() => { try { return w.server.plugins.runtime.get('agora').actions.list().length > 0; } catch { return false; } }, 40_000);
 
 test('三类安全横幅：所有标签页可见、不能关闭，跨 pi-pane 重启、daemon 重启、插件停用和加载失败保留；按规则消失，旧 revision 的知悉被拒', { timeout: 300_000, skip }, async t => {
-  // pi-pane 重启后旧凭证的请求返回 401，页面随后重新配对。
-  const w = await createWorld(t, pane, { allowedErrors: [/status of 50[234]/, /status of 409/, /status of 401/] }); if (!w) return;
+  // pi-pane 停止期间页面的请求连接被拒，重启后旧凭证的请求返回 401，页面随后重新配对。
+  const w = await createWorld(t, pane, { allowedErrors: [/status of 50[234]/, /status of 409/, /status of 401/, /net::ERR_CONNECTION_REFUSED/] }); if (!w) return;
   await w.startDaemon(); await w.startPane();
   const a = await namedDevice(w, '设备甲');
   await pair(w, a);
