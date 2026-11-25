@@ -88,12 +88,23 @@ test("快照仅包含热会话及其祖先，不包含冷兄弟节点", async ()
   views.dispose();
 });
 
-test("没有热节点时不返回虚拟分组，打开分组不会加载全部后代", async () => {
-  const { reader } = mock([summary("cold")]);
-  const views = createOfflineViews(reader);
-  assert.deepEqual((await views.tree.snapshot(request())).nodes, []);
-  const open = await views.tree.snapshot(request(["agora:root:user-tasks"]));
-  assert.deepEqual(open.nodes.map(node => node.id), ["agora:root:user-tasks"]);
+test("用户任务全是冷历史时快照仍带用户任务根及子节点总数，可按需加载，打开分组不会加载全部后代", async () => {
+  const { reader } = mock([summary("cold"), summary("old", { isCurrent: false }),
+    summary("grandchild", { parent: { kind: "task", taskId: "cold-task", sessionId: "cold" } })]);
+  const views = createOfflineViews(reader, "cold-user");
+  for (const openNodeIds of [[], ["agora:root:user-tasks"]]) {
+    const snapshot = await views.tree.snapshot(request(openNodeIds));
+    assert.deepEqual(snapshot.nodes.map(node => node.id), ["agora:root:user-tasks"]);
+    const [root] = snapshot.nodes;
+    assert.equal(root.childCount, 2, "直接子节点总数含历史会话，不含孙节点");
+    assert.equal(root.hasChildren, true);
+  }
+  const children = await views.tree.children("agora:root:user-tasks", { epoch: "cold-user", limit: 10 });
+  assert.deepEqual(children.nodes.map(node => node.id).sort(), [nodeId("cold"), nodeId("old")]);
+  // 没有用户任务时不虚构用户任务根。
+  const none = createOfflineViews(mock([summary("main-child", { convenerId: "main", parent: { kind: "main", piSessionId: "main" } })]).reader);
+  assert.deepEqual((await none.tree.snapshot(request())).nodes, []);
+  none.dispose();
   views.dispose();
 });
 
@@ -466,7 +477,7 @@ test("快照在 foreignChildCounts 中报告 pane 节点下的直接子节点总
   const cold = await views.tree.snapshot(request());
   // 会议分组计为主会话的一个直接子节点；孙节点和用户任务不计入。
   assert.deepEqual(cold.foreignChildCounts, { "pane:session:main": 3, "pane:session:other": 1 });
-  assert.deepEqual(cold.nodes.map(node => node.id), [nodeId("hot")]);
+  assert.deepEqual(cold.nodes.map(node => node.id), [nodeId("hot"), "agora:root:user-tasks"]);
   const children = await views.tree.children("pane:session:main", { epoch: "foreign", limit: 10 });
   assert.equal(children.nodes.length, cold.foreignChildCounts["pane:session:main"]);
   const empty = createOfflineViews(mock([summary("user")]).reader);
