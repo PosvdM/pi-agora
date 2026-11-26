@@ -205,6 +205,8 @@ test('回放时历史会话的存档删除照常推送，即使共享任务随�
   });
   const emitted = [];
   h.views.tree.subscribe({ epoch: 'db', revision: cut(4) }, value => emitted.push(value));
+  // 起点晚于已知的 head，先核对 daemon 再读取变更流。
+  for (let i = 0; i < 4; i++) await tick();
   change(h.streams[0], 5, 'session', 'A'); change(h.streams[0], 6, 'task', 'T');
   for (let i = 0; i < 8; i++) await tick();
   assert.deepEqual(emitted.map(value => [value.type, value.revision, value.node.id, value.node.revision, value.node.availability]), [
@@ -456,6 +458,7 @@ test('树变更刷新保活，停用释放保活与事件流', async t => {
   await h.views.refreshHolds();
   assert.equal(h.held[0].releases, 0);
   h.views.tree.subscribe({ epoch: 'db', revision: cut(10) }, () => {});
+  for (let i = 0; i < 4; i++) await tick();
   const ref = { source: 'agora', id: 's1' };
   const events = [];
   const offSession = h.views.sessions.subscribe(ref, { epoch: 'run', seq: 0 }, value => events.push(value));
@@ -732,15 +735,18 @@ test('快照扫描失败或来源不符时，订阅推送的用户任务根不�
   });
   epoch = 'db-2';
   await h.views.tree.snapshot({ openNodeIds: [], recentSince: '2026-01-01T00:00:00Z' });
+  // 扫描读到的 epoch 与快照页不符，集合没有建立；订阅核对时 daemon 报告的仍是快照的 epoch。
+  epoch = 'db';
   const emitted = [];
   h.views.tree.subscribe({ epoch: 'db', revision: cut(10) }, value => emitted.push(value));
+  for (let i = 0; i < 4; i++) await tick();
   change(h.streams[0], 11, 'session', 'fresh'); change(h.streams[0], 12, 'device', 'd1');
   for (let i = 0; i < 6; i++) await tick();
   assert.deepEqual(emitted.map(value => [value.revision, value.node.id, value.node.childCount]), [
     [cut(11), 'agora:session:fresh', undefined], [cut(12), 'agora:root:user-tasks', undefined]]);
 });
 
-test('同一变更推送的节点与根节点各有递增的修订号，断在两帧之间续订时重放第二帧', async t => {
+test('同一变更推送的节点与根节点各有递增的修订号，断在两帧之间续订时从缓存补推第二帧', async t => {
   const cold = item('cold', { status: 'completed', parent: { kind: 'user' } });
   let head = 10;
   const h = setup(t, ({ path, url }) => {
@@ -760,28 +766,26 @@ test('同一变更推送的节点与根节点各有递增的修订号，断在�
   const shape = list => list.map(value => value.type === 'reset' ? value : [value.revision, value.node.id, value.node.childCount]);
   assert.deepEqual(shape(first), [[mid(11), 'agora:session:a', undefined], [cut(11), 'agora:root:user-tasks', 2]]);
   assert.ok(first[0].revision < first[1].revision);
-  // 宿主只收到第一帧就断开：处理器保留已推送的帧，从它的修订号续订时补推根节点这一帧，之后从已处理的位置继续读取。
+  // 宿主只收到第一帧就断开：处理器保留已推送的帧，核对 daemon 的 epoch 后从它的修订号补推根节点这一帧，之后从已处理的位置继续读取。
   off();
   assert.equal(h.streams[0].closed, true, '没有订阅时停止读取');
   const second = [];
   h.views.tree.subscribe({ epoch: 'db', revision: mid(11) }, value => second.push(value));
+  for (let i = 0; i < 4; i++) await tick();
   assert.deepEqual(second, [first[1]]);
   assert.equal(h.streams[1].path, '/v1/changes?epoch=db&afterSeq=11');
   // 两帧都已收到时续订不重复推送。
   const third = [];
   h.views.tree.subscribe({ epoch: 'db', revision: cut(11) }, value => third.push(value));
   assert.deepEqual(third, []);
-  // 处理器重置后不再保留这条变更的帧：从两帧之间续订时重新读取 seq 11，只推送根节点这一帧。
+  // daemon 对处理器的位置返回同 epoch 的 reset 后，缓存不再可续：从两帧之间续订收到 reset，不重新读取 seq 11。
   h.streams[1].emit({ type: 'reset', data: { epoch: 'db' } });
   assert.deepEqual(second.at(-1), { type: 'reset', epoch: 'db' });
   const fourth = [];
   h.views.tree.subscribe({ epoch: 'db', revision: mid(11) }, value => fourth.push(value));
-  // 起点在已处理位置之后：先核对 daemon 的 head，再开始读取。
   for (let i = 0; i < 4; i++) await tick();
-  assert.equal(h.streams[2].path, '/v1/changes?epoch=db&afterSeq=10');
-  change(h.streams[2], 11, 'session', 'a');
-  for (let i = 0; i < 8; i++) await tick();
-  assert.deepEqual(shape(fourth), [[cut(11), 'agora:root:user-tasks', 2]]);
+  assert.deepEqual(fourth, [{ type: 'reset', epoch: 'db' }]);
+  assert.equal(h.streams.length, 2);
   assert.deepEqual(h.warnings, []);
 });
 
@@ -1028,5 +1032,172 @@ test('每处理完一条变更，订阅推送的最大修订号等于同一 seq 
     assert.equal(page.revision, cut(seq));
     assert.equal(watermark(), page.revision, `seq ${seq} 处理完后水位应等于分页修订号`);
   }
+  assert.deepEqual(h.warnings, []);
+});
+
+test('处理器空闲后被更晚的订阅推进，旧游标续订收到 reset，不重新读取已处理的变更，同一修订号的帧内容不变', async t => {
+  const w = userTaskWorld(t), { h } = w;
+  const req = { openNodeIds: [], recentSince: '2026-01-01T00:00:00Z' };
+  const snapshot = await h.views.tree.snapshot(req);
+  const all = [];
+  const record = list => value => { list.push(value); all.push(value); };
+  const x = [], y = [];
+  const offX = h.views.tree.subscribe({ epoch: 'db', revision: snapshot.revision }, record(x));
+  const offY = h.views.tree.subscribe({ epoch: 'db', revision: snapshot.revision }, record(y));
+  w.create(11, 'a', h.streams[0]);
+  await flush();
+  // 一个标签页断开，另一个继续收到不改变数目的变更和非树对象。
+  offY();
+  change(h.streams[0], 12, 'session', 'a');
+  w.other(13, h.streams[0]);
+  await flush();
+  assert.deepEqual(x.map(value => [value.revision, value.node.id]), [
+    [mid(11), 'agora:session:a'], [cut(11), 'agora:root:user-tasks'], [cut(12), 'agora:session:a'], [cut(13), 'agora:root:user-tasks']]);
+  offX();
+  assert.equal(h.streams[0].closed, true);
+  // 全部关闭后，新标签页从更晚的快照订阅：处理器跳到新切点，不处理中间的变更。
+  w.create(14, 'b'); w.other(15);
+  const later = await h.views.tree.snapshot(req);
+  assert.equal(later.revision, cut(15));
+  const z = [];
+  const offZ = h.views.tree.subscribe({ epoch: 'db', revision: later.revision }, record(z));
+  await flush();
+  assert.equal(h.streams[1].path, '/v1/changes?epoch=db&afterSeq=15');
+  w.create(16, 'c', h.streams[1]);
+  await flush();
+  assert.deepEqual(rootCounts(z), [[cut(16), 4]]);
+  offZ();
+  // 最早断开的标签页从旧游标续订。
+  const reads = h.requests.length, streams = h.streams.length;
+  const resumed = [];
+  h.views.tree.subscribe({ epoch: 'db', revision: cut(11) }, record(resumed));
+  await flush();
+  for (const stream of h.streams.slice(streams)) { change(stream, 12, 'session', 'a'); change(stream, 13, 'device', 'd13'); }
+  await flush();
+  const frames = new Map();
+  for (const value of all) {
+    if (value.type === 'reset') continue;
+    if (frames.has(value.revision)) assert.deepEqual(value, frames.get(value.revision), `修订号 ${value.revision} 的帧内容不变`);
+    else frames.set(value.revision, value);
+  }
+  assert.deepEqual(resumed, [{ type: 'reset', epoch: 'db' }]);
+  assert.equal(h.streams.length, streams, '不重新读取 daemon 变更流');
+  assert.equal(h.requests.length, reads, '不读取变更详情');
+  assert.deepEqual(h.warnings, []);
+});
+
+test('核对超前起点期间缓存淘汰了起点之后的帧时，新订阅收到 reset，不从剩余记录补推', async t => {
+  let head = 10, gate;
+  const h = setup(t, async ({ url }) => {
+    if (url.pathname !== '/v1/sessions') return undefined;
+    // 核对请求在放行后才读取 head。
+    if (url.searchParams.get('limit') === '1' && gate) await gate.promise;
+    return { status: 200, body: page([], { changesCursor: { epoch: 'db', seq: head } }) };
+  });
+  const snapshot = await h.views.tree.snapshot({ openNodeIds: [], recentSince: '2026-01-01T00:00:00Z' });
+  const one = [];
+  h.views.tree.subscribe({ epoch: 'db', revision: snapshot.revision }, value => one.push(value));
+  // 新订阅的起点晚于已知的 head，核对请求被扣住。
+  gate = deferred();
+  const ahead = [];
+  h.views.tree.subscribe({ epoch: 'db', revision: cut(12) }, value => ahead.push(value));
+  await flush();
+  // 期间已有订阅处理 590 条变更，缓存只保留最近 512 条，seq 13 之后的帧已有一部分被挤出。
+  for (let seq = 11; seq <= 600; seq++) {
+    head = seq; change(h.streams[0], seq, 'device', `d${seq}`);
+    if (seq % 100 === 0) await flush();
+  }
+  await flush();
+  assert.equal(one.at(-1).revision, cut(600));
+  gate.resolve();
+  await flush();
+  assert.deepEqual(ahead, [{ type: 'reset', epoch: 'db' }]);
+  assert.ok(one.every(value => value.type !== 'reset'), '已有订阅不受影响');
+  assert.equal(h.streams.length, 1);
+});
+
+test('换 epoch 后从旧游标续订：空闲处理器留有旧缓存时第一帧就是 reset，之前没有旧帧', async t => {
+  let epoch = 'db';
+  const h = setup(t, ({ path, url }) => {
+    if (url.pathname === '/v1/sessions') {
+      if (url.searchParams.get('limit') === '1') return { status: 200, body: page([], { changesCursor: { epoch, seq: 11 } }) };
+      return { status: 200, body: page([]) };
+    }
+    if (path === '/v1/sessions/s1') return { status: 200, body: item() };
+  });
+  const snapshot = await h.views.tree.snapshot({ openNodeIds: [], recentSince: '2026-01-01T00:00:00Z' });
+  const first = [];
+  const off = h.views.tree.subscribe({ epoch: 'db', revision: snapshot.revision }, value => first.push(value));
+  change(h.streams[0], 11, 'session', 's1');
+  await flush();
+  assert.equal(first.at(-1).revision, cut(11));
+  off();
+  // daemon 数据库重建，epoch 改变；插件的处理器空闲，缓存里还有 seq 11 的帧。
+  epoch = 'db-2';
+  const resumed = [];
+  h.views.tree.subscribe({ epoch: 'db', revision: snapshot.revision }, value => resumed.push(value));
+  await flush();
+  assert.deepEqual(resumed, [{ type: 'reset', epoch: 'db-2' }]);
+  assert.equal(h.streams.length, 1, '不为旧 epoch 打开变更流');
+});
+
+test('起点超出 head 的订阅被拒后不改共享状态，之后从快照切点订阅的根节点带正确的 childCount', async t => {
+  const w = userTaskWorld(t), { h } = w;
+  const snapshot = await h.views.tree.snapshot({ openNodeIds: [], recentSince: '2026-01-01T00:00:00Z' });
+  assert.equal(snapshot.nodes.find(node => node.id === 'agora:root:user-tasks').childCount, 1);
+  const future = [];
+  h.views.tree.subscribe({ epoch: 'db', revision: cut(20) }, value => future.push(value));
+  await flush();
+  assert.deepEqual(future, [{ type: 'reset', epoch: 'db' }]);
+  assert.equal(h.streams.length, 0);
+  const valid = [];
+  h.views.tree.subscribe({ epoch: 'db', revision: snapshot.revision }, value => valid.push(value));
+  await flush();
+  assert.equal(h.streams[0].path, '/v1/changes?epoch=db&afterSeq=10');
+  w.create(11, 'a', h.streams[0]); w.other(12, h.streams[0]);
+  await flush();
+  assert.deepEqual(rootCounts(valid), [[cut(11), 2], [cut(12), 2]]);
+  assert.deepEqual(h.warnings, []);
+});
+
+test('迟到的旧节点详情不改动较晚快照建立的用户任务集合', async t => {
+  const cold = item('cold', { status: 'completed', parent: { kind: 'user' } });
+  const sessions = new Map([['cold', cold], ['a', item('a', { parent: { kind: 'main', piSessionId: 'main' } })]]);
+  let head = 10, held;
+  const h = setup(t, async ({ path, url }) => {
+    if (url.pathname === '/v1/sessions') {
+      const cursor = { changesCursor: { epoch: 'db', seq: head } };
+      if (url.searchParams.get('limit') === '1') return { status: 200, body: page([], cursor) };
+      return { status: 200, body: page(url.searchParams.get('snapshot') === '1' ? [] : [...sessions.values()], cursor) };
+    }
+    const id = /^\/v1\/sessions\/([^/]+)$/.exec(path)?.[1];
+    if (id && sessions.has(id)) {
+      // 先读出当时的详情，再扣住响应。
+      const body = sessions.get(id);
+      if (held && id === 'a') { const gate = held; held = undefined; await gate.promise; }
+      return { status: 200, body };
+    }
+  });
+  const req = { openNodeIds: [], recentSince: '2026-01-01T00:00:00Z' };
+  const snapshot = await h.views.tree.snapshot(req);
+  assert.equal(snapshot.nodes.find(node => node.id === 'agora:root:user-tasks').childCount, 1);
+  const one = [];
+  h.views.tree.subscribe({ epoch: 'db', revision: snapshot.revision }, value => one.push(value));
+  // seq 11 的处理读到 a 仍挂在主会话下，详情响应迟到。
+  const gate = deferred(); held = gate;
+  head = 11; change(h.streams[0], 11, 'session', 'a');
+  await flush();
+  // seq 12 用户接管 a，另一标签页完成快照，a 已计入用户任务根。
+  head = 12; sessions.set('a', item('a', { parent: { kind: 'user' } }));
+  const later = await h.views.tree.snapshot(req);
+  assert.equal(later.nodes.find(node => node.id === 'agora:root:user-tasks').childCount, 2);
+  change(h.streams[0], 12, 'session', 'a');
+  gate.resolve();
+  await flush();
+  head = 13; change(h.streams[0], 13, 'device', 'd13');
+  await flush();
+  assert.deepEqual(rootCounts(one), [[cut(11), 2], [cut(13), 2]]);
+  const last = await h.views.tree.snapshot(req);
+  assert.equal(last.nodes.find(node => node.id === 'agora:root:user-tasks').childCount, 2);
   assert.deepEqual(h.warnings, []);
 });
