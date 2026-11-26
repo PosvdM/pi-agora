@@ -87,12 +87,15 @@ export default function createPlugin(options: PluginOptions = {}): PanePlugin {
       subscription.stop(); subscription.emit({ ref: subscription.ref, cursor: { epoch: `agora:connection:${generation}`, seq: 0 }, event: { type: "resync" } });
     }
   }
+  // 连接断开、重建或领域变更流 reset 时调用。daemon 可能已换 epoch，树的修订号序列一并结束（views.invalidateTree），
+  // pane 之后重取的快照带新的 epoch，旧游标续订时直接 reset。
   function resetSubscribers() {
     const previous = [...treeSubscriptions];
     treeSubscriptions.clear();
     for (const subscription of previous) {
       subscription.stop(); subscription.emit({ type: "reset", epoch: `agora:connection:${generation}` });
     }
+    views?.invalidateTree();
     resetSessionSubscribers();
   }
   function disconnect() {

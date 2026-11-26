@@ -174,7 +174,10 @@ test('真实 pi 在线往返：插件创建任务，读取快照、历史、实�
     assert.deepEqual(restored.entries, online.entries);
     const onlineTree = tree.snapshots.at(-1);
     assert.equal(onlineTree.nodes.find(node => node.id === nodeId).availability, 'online');
-    assert.equal(onlineTree.epoch, initialTree.epoch, '数据库 epoch 跨 daemon 重启保持不变');
+    // 复合 epoch 为 <daemon epoch>.<实例随机标识>：数据库 epoch 跨 daemon 重启保持不变，重连后修订号序列换新实例。
+    const source = value => value.slice(0, value.lastIndexOf('.'));
+    assert.equal(source(onlineTree.epoch), source(initialTree.epoch), '数据库 epoch 跨 daemon 重启保持不变');
+    assert.notEqual(onlineTree.epoch, initialTree.epoch, '重连后换新的修订号序列');
     assert.ok(onlineTree.nodes.find(node => node.id === nodeId).capabilities.includes('send'));
     assert.equal(JSON.parse(rows(await plugin.panels.content('agora.task', nodeId))['任务用量']).requests, 2);
     assert.deepEqual(await plugin.sessions.send(ref, { text: '请返工' }, { idempotencyKey: 'online-steer', origin }), sent, '重启后同 key 复用最终结果');
