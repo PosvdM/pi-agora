@@ -379,6 +379,48 @@ test('HTTP 失败触发重置，仅 tombstone 删除节点', async t => {
   ]);
 });
 
+test('持续失败的变更：重取快照后处理器跳到切点，订阅能继续', async t => {
+  let head = 0;
+  const h = setup(t, ({ path, url }) => {
+    if (path === '/v1/sessions/s1') return { status: 404, body: { error: { message: 'missing metadata' } } };
+    if (path === '/v1/sessions/s2') return { status: 200, body: item('s2') };
+    if (url.pathname === '/v1/sessions') return { status: 200, body: page([], { changesCursor: { epoch: 'db', seq: head } }) };
+  });
+  const frames = list => list.map(value => value.type === 'upsert' ? [value.revision, value.node.id] : value.type);
+  const from = await open(h);
+  const first = [];
+  h.views.tree.subscribe(from, value => first.push(value));
+  change(h.streams[0], 1);
+  await tick();
+  assert.deepEqual(first, [{ type: 'reset', epoch: from.epoch }]);
+  // pane 重取快照，切点已在失败的变更之后：处理器跳到切点，实例不变，变更流从切点读取，daemon 重放的旧变更被忽略。
+  head = 1;
+  const again = await open(h);
+  assert.equal(again.epoch, from.epoch);
+  const second = [];
+  h.views.tree.subscribe(again, value => second.push(value));
+  assert.equal(h.streams.length, 2);
+  assert.match(h.streams[1].path, /afterSeq=1$/);
+  change(h.streams[1], 1);
+  change(h.streams[1], 2, 'session', 's2');
+  await tick(); await tick();
+  assert.deepEqual(frames(second), [[mid(2), 'agora:session:s2'], [cut(2), 'agora:root:user-tasks']]);
+  assert.ok(h.warnings.some(([, value]) => /seq 1 处理失败，变更处理器跳到快照切点 seq 1/.test(String(value))));
+
+  // 找不到会话的任务 tombstone 同样处理。
+  change(h.streams[1], 3, 'task', 't-unknown', { tombstone: true });
+  await tick();
+  assert.deepEqual(second.at(-1), { type: 'reset', epoch: from.epoch });
+  head = 3;
+  const third = [];
+  h.views.tree.subscribe(await open(h), value => third.push(value));
+  assert.match(h.streams[2].path, /afterSeq=3$/);
+  change(h.streams[2], 3, 'task', 't-unknown', { tombstone: true });
+  change(h.streams[2], 4, 'session', 's2');
+  await tick(); await tick();
+  assert.deepEqual(frames(third), [[mid(4), 'agora:session:s2'], [cut(4), 'agora:root:user-tasks']]);
+});
+
 test('会话视图透传条目与历史，仅映射 agora 协议事件', async t => {
   const entries = [{ opaquePiShape: { content: ['no parsing'] } }];
   const inFlight = { phase: 'streaming', tools: [], queue: { steering: [], followUp: [] } };

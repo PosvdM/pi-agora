@@ -312,6 +312,11 @@ export function createViews(runtime: PluginRuntime): {
     rootCount?: number;
     /** 实例结束后，进行中的处理整条放弃。 */
     dead: boolean;
+    /**
+     * 处理失败（读取详情出错、任务 tombstone 找不到会话）的变更 seq。处理器停在它之前，切点不早于它的快照让处理器直接
+     * 跳到切点（见 tree.snapshot），快照已经反映了这条变更之后的状态；否则从该快照订阅会再次读到这条变更，反复 reset。
+     */
+    failedSeq?: number;
   }
   let current: Feed | undefined;
   /** 还没有处理器实例时 reset 携带的 epoch；任何快照都不会报告它，pane 收到 reset 后重新取快照。 */
@@ -363,6 +368,7 @@ export function createViews(runtime: PluginRuntime): {
     feed.log = [];
     feed.base = feed.seq = seq;
     feed.rootCount = undefined;
+    feed.failedSeq = undefined;
     if (userTasks?.epoch === feed.source && userTasks.seq < seq) userTasks = { epoch: feed.source, seq };
   }
   /** 结束实例：修订号序列作废，订阅收到 reset。之后的快照创建新实例、换随机标识。 */
@@ -386,6 +392,7 @@ export function createViews(runtime: PluginRuntime): {
     const frames = frameOf.map((frame, index) => frame(revisionOf(seq, first + index)));
     for (const frame of frames) if (frame.type === "upsert" && frame.node.id === USER_TASKS) feed.rootCount = frame.node.childCount;
     feed.seq = seq;
+    if (feed.failedSeq !== undefined && seq >= feed.failedSeq) feed.failedSeq = undefined;
     feed.issued = Math.max(feed.issued, cutRevision(seq));
     feed.log.push({ seq, frames });
     while (feed.log.length > FEED_LOG_SEQS) feed.base = feed.log.shift()!.seq;
@@ -426,7 +433,7 @@ export function createViews(runtime: PluginRuntime): {
       if (change.objectType === "task") {
         if (change.tombstone) {
           const known = taskSessions.get(id);
-          if (!known) { stopFeed(feed); return; }
+          if (!known) { feed.failedSeq = seq; stopFeed(feed); return; }
           droppedTask = id;
           id = known;
         } else {
@@ -488,7 +495,9 @@ export function createViews(runtime: PluginRuntime): {
       pendingChanges++;
       pendingBytes += bytes;
       queue = queue.then(() => processChange(feed, stream, change))
-        .catch(error => { if (!feed.dead && feed.stream === stream && stream.active()) { warn(error); stopFeed(feed); } })
+        .catch(error => {
+          if (!feed.dead && feed.stream === stream && stream.active()) { warn(error); feed.failedSeq = change.cursor.seq; stopFeed(feed); }
+        })
         .finally(() => { pendingChanges--; pendingBytes -= bytes; });
     }, error => { if (!feed.dead && feed.stream === stream) { warn(error); stopFeed(feed); } });
     feed.stream = stream;
@@ -537,6 +546,10 @@ export function createViews(runtime: PluginRuntime): {
       if (stale) feed = undefined;
       else if (feed?.source !== source) feed = createFeed(source, seq, ticket);
       else if (!feed.stream?.active() && seq - feed.seq > CATCH_UP_SEQS) moveFeed(feed, seq);
+      else if (!feed.stream?.active() && feed.failedSeq !== undefined && seq >= feed.failedSeq) {
+        warn(`树变更 seq ${feed.failedSeq} 处理失败，变更处理器跳到快照切点 seq ${seq}`);
+        moveFeed(feed, seq);
+      }
       if (feed) feed.issued = Math.max(feed.issued, revision);
       const epoch = feed?.epoch ?? `${source}.${randomUUID()}`;
       // 快照只含热节点，用户任务根与 pane 主会话下的冷节点数目需要扫描全部会话才能得到。
