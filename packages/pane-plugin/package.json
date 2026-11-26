@@ -16,7 +16,7 @@
     "@pi-agora/protocol": "0.1.0"
   },
   "peerDependencies": {
-    "@pi-pane/plugin-api": "github:PosvdM/pi-pane#c788b54230610adb982c8a891162583a916bc963"
+    "@pi-pane/plugin-api": "github:PosvdM/pi-pane#8aeca0466d518034af2373c76ef05ced47744c05"
   },
   "devDependencies": {
     "@pi-pane/plugin-api": "file:vendor/plugin-api"

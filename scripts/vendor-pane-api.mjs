@@ -8,7 +8,7 @@ const root = fileURLToPath(new URL("../", import.meta.url));
 const destination = path.join(root, "packages/pane-plugin/vendor/plugin-api");
 const sourceFile = path.join(destination, "SOURCE.json");
 const repository = "https://github.com/PosvdM/pi-pane.git";
-const commit = "c788b54230610adb982c8a891162583a916bc963";
+const commit = "8aeca0466d518034af2373c76ef05ced47744c05";
 const files = ["package.json", "src/index.ts", "tsconfig.json"];
 const hash = data => createHash("sha256").update(data).digest("hex");
 const command = process.argv[2] ?? "verify";
