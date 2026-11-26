@@ -347,6 +347,54 @@ test("两个标签用不同幂等键提交同一 revision，真实签名后只�
   assert.equal(audit.filter(item => item.action === "agora.request.answer" && item.target === question.id && item.outcome === "confirmed").length, 1);
 });
 
+// 模拟任务重开或换人迁移提问：与 daemon 迁移一致，递增 revision 并写变更记录，提问仍待用户处理。
+function migrateQuestion(f, id) {
+  f.daemon.store.transaction(() => {
+    f.daemon.store.run("UPDATE requests SET revision=revision+1,updated_at=? WHERE id=?", new Date().toISOString(), id);
+    f.daemon.store.change("request", id);
+  });
+}
+
+test("提问迁移后按旧 revision 提交，插件直接得到 stale 和新表单，不产生待确认", limits, async t => {
+  const f = await fixture(t), tab = await f.tab();
+  assert.equal((await f.pair(tab)).status, "ok");
+  const question = await f.question(), form = await f.requestForm(tab, question), prompts = tab.confirmations.length;
+  migrateQuestion(f, question.id);
+  const result = await f.submit(tab, form);
+  assert.equal(result.status, "stale", JSON.stringify(result));
+  assert.equal(result.form.id, form.id); assert.equal(result.form.revision, form.revision + 1);
+  assert.deepEqual(post(f, `/v1/requests/${question.id}/answer`).map(call => [call.status, call.reply.error?.code]), [[409, "conflict"]]);
+  assert.equal(tab.confirmations.length, prompts, "旧答复不应进入用户在场确认");
+  assert.equal(f.daemon.store.get("SELECT COUNT(*) AS n FROM pending_confirmations WHERE target=?", question.id).n, 0);
+  const pending = await tab.plugin.forms.pending();
+  assert.equal(pending.some(item => item.id.startsWith("agora:confirmation:")), false);
+  assert.equal(pending.find(item => item.id === form.id).revision, form.revision + 1);
+  assert.equal((await detail(f, question.id)).state, "open");
+});
+
+test("待确认建立后提问被迁移，签名执行返回 409 后待确认结束，插件不再列出", limits, async t => {
+  const f = await fixture(t), tab = await f.tab();
+  assert.equal((await f.pair(tab)).status, "ok");
+  const question = await f.question(), form = await f.requestForm(tab, question);
+  tab.onConfirm = async () => { throw Object.assign(new Error("没有用户授权"), { code: "timeout" }); };
+  assert.equal((await f.submit(tab, form)).status, "pending");
+  const confirmation = challengeFor(f, `/v1/requests/${question.id}/answer`), confirmationForm = `agora:confirmation:${confirmation.confirmationId}`;
+  assert.ok((await tab.plugin.forms.pending()).some(item => item.id === confirmationForm));
+  migrateQuestion(f, question.id);
+  tab.onConfirm = request => tab.device.proof(request.payload);
+  const result = await f.confirmPending(tab, confirmation);
+  assert.equal(result.status, "alreadyHandled", JSON.stringify(result));
+  assert.match(result.message, /所确认的事项已经变化，这次确认已作废/, "提示与实际一致，不说成在其他标签页处理");
+  assert.deepEqual(post(f, `/v1/confirmations/${confirmation.confirmationId}/sign`).map(call => [call.status, call.reply.error?.code]), [[409, "conflict"]]);
+  const ended = (await f.api.request("GET", `/v1/confirmations/${confirmation.confirmationId}`)).body;
+  assert.equal(ended.state, "failed"); assert.equal(ended.failureReason, "conflict");
+  const pending = await tab.plugin.forms.pending();
+  assert.equal(pending.some(item => item.id === confirmationForm), false, "结束的待确认不再列在待处理中");
+  assert.ok(tab.events.some(event => event.type === "formRemoved" && event.id === confirmationForm));
+  assert.equal(pending.find(item => item.id === form.id).revision, form.revision + 1);
+  assert.equal((await detail(f, question.id)).state, "open");
+});
+
 test("host:pane 在保护 off 时仍不能绕过设备签名", limits, async t => {
   const f = await fixture(t), tab = await f.tab();
   assert.equal((await f.pair(tab)).status, "ok");

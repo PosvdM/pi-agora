@@ -370,3 +370,137 @@ test("权威列表中旧事项缺少状态时不静默移除", async () => {
   await assert.rejects(controller.refresh(), /终态/); assert.equal(f.removed.length, 0);
   controller.dispose();
 });
+
+test("持久表单标题按事项类型加前缀，提问标题取首个问题的纯文本并截断", async () => {
+  const f = fixture();
+  const long = "请在 **方案甲** 与 [方案乙](https://example.com) 之间选择，并说明 `snake_case` 字段 my_field 是否保留以及迁移顺序和回滚办法";
+  f.setRequests([{ ...request, questions: [{ id: "q", question: long }, { id: "r", question: "第二个问题" }] },
+    { ...request, id: "rq-short", questions: [{ id: "q", question: "# 标题\n\n> 引用的 _说明_" }] },
+    { ...request, id: "rq-empty", questions: [{ id: "q", question: "**  **" }] }]);
+  f.setConfirmations([{ confirmationId: "cf", state: "pending", title: "答复提问", summary: "摘要", createdAt: request.createdAt }]);
+  f.setDevices([{ deviceId: "dv", state: "pending", label: "工作电脑", fingerprint: "指纹", createdAt: request.createdAt }]);
+  f.setDecisions([{ taskId: "tk", status: "interrupted", title: "中断任务", agoraSessionId: "session", revision: 1, createdAt: request.createdAt }]);
+  const controller = createForms(f.runtime, f.security);
+  const titles = Object.fromEntries((await controller.forms.pending()).map(form => [form.id, form.title]));
+  const plain = Array.from("请在 方案甲 与 方案乙 之间选择，并说明 snake_case 字段 my_field 是否保留以及迁移顺序和回滚办法");
+  assert.equal(titles["agora:request:rq-one"], `提问：${plain.slice(0, 40).join("")}…`);
+  assert.equal(Array.from(titles["agora:request:rq-one"]).length, "提问：".length + 41);
+  assert.equal(titles["agora:request:rq-short"], "提问：标题 引用的 说明");
+  assert.equal(titles["agora:request:rq-empty"], "提问");
+  assert.equal(titles["agora:confirmation:cf"], "待确认：答复提问");
+  assert.equal(titles["agora:device:dv"], "待批准设备：工作电脑");
+  assert.equal(titles["agora:decision:tk"], "决策：处理中断任务：中断任务");
+  controller.dispose();
+});
+
+test("提问标题去掉链接时允许 URL 中一层平衡括号，紧挨标点的强调下划线也去掉，尖括号和行内代码的内容原样保留", async () => {
+  const f = fixture();
+  const cases = {
+    link: ["请选 [选项](https://example.com/a(b)) 后继续", "提问：请选 选项 后继续"],
+    image: ["![示意图](https://example.com/p(1).png)说明", "提问：示意图说明"],
+    emphasis: ["_确认_？", "提问：确认？"],
+    punctuated: ["（_重要_）请看 __说明__。", "提问：（重要）请看 说明。"],
+    identifier: ["字段 snake_case 与 my__field 保留", "提问：字段 snake_case 与 my__field 保留"],
+    // pane 按纯文本渲染标题，尖括号原样保留，不当作 HTML 标签删除。
+    generic: ["返回 `Promise<string>` 吗", "提问：返回 Promise<string> 吗"],
+    compare: ["a < 10 且 b > 5 时怎么办", "提问：a < 10 且 b > 5 时怎么办"],
+    // 行内代码只去掉反引号，里面的下划线、星号和反引号原样保留。
+    dunder: ["请核对 `obj.__init__()`", "提问：请核对 obj.__init__()"],
+    codeStar: ["计算 `a * b` 与 `**kwargs`，**加粗**", "提问：计算 a * b 与 **kwargs，加粗"],
+    codeEdge: ["_`_x_`_ 与 ``a`b`` 和 `a`_b", "提问：_x_ 与 a`b 和 a_b"],
+    // 三个反引号包住含两个连续反引号的代码：句中的分隔符不是代码块围栏，代码和后文都保留；行首的围栏行去掉。
+    tripleInline: ["请运行 ```a``b``` 后回答：可以吗", "提问：请运行 a``b 后回答：可以吗"],
+    fence: ["看这段：\n```js\nrun()\n```\n能跑吗", "提问：看这段： run() 能跑吗"],
+  };
+  f.setRequests(Object.entries(cases).map(([id, [question]]) => ({ ...request, id, questions: [{ id: "q", question }] })));
+  const controller = createForms(f.runtime, f.security);
+  const titles = Object.fromEntries((await controller.forms.pending()).map(form => [form.id, form.title]));
+  for (const [id, [, title]] of Object.entries(cases)) assert.equal(titles[`agora:request:${id}`], title, id);
+  controller.dispose();
+});
+
+test("提问及其待确认填发起任务的当前会话节点，任务读取失败时省略 nodeId，设备批准不填", async t => {
+  const f = fixture(await directory(t));
+  const base = f.runtime.api.request;
+  const reads = [];
+  f.runtime.api.request = async (method, path, body) => {
+    if (path.startsWith("/v1/tasks/")) {
+      reads.push(path);
+      if (path === "/v1/tasks/tk-a") return { status: 200, body: { taskId: "tk-a", agoraSessionId: "as-a2" } };
+      if (path === "/v1/tasks/tk-broken") throw new Error("断线");
+      return { status: 404, body: { error: { code: "not_found" } } };
+    }
+    if (path === "/v1/requests/rq-other") return { status: 200, body: { ...request, id: "rq-other", targetId: "agent", state: "open", taskId: "tk-a" } };
+    return base(method, path, body);
+  };
+  f.setRequests([{ ...request, id: "rq-a", taskId: "tk-a" }, { ...request, id: "rq-a-second", taskId: "tk-a" },
+    { ...request, id: "rq-broken", taskId: "tk-broken" }, { ...request, id: "rq-missing", taskId: "tk-missing" },
+    { ...request, id: "rq-user", taskId: null }]);
+  const confirmation = (id, action, target) => ({ confirmationId: id, state: "pending", action, target, title: action, summary: "摘要", createdAt: request.createdAt });
+  f.setConfirmations([confirmation("cf-a", "agora.request.answer", "rq-a"), confirmation("cf-other", "agora.request.cancel", "rq-other"),
+    confirmation("cf-task", "agora.task.spawn", "tk-a")]);
+  f.setDevices([{ deviceId: "dv", state: "pending", label: "工作电脑", fingerprint: "指纹", createdAt: request.createdAt }]);
+  const controller = createForms(f.runtime, f.security);
+  const nodes = Object.fromEntries((await controller.forms.pending()).map(form => [form.id, form.nodeId]));
+  assert.deepEqual(nodes, {
+    "agora:request:rq-a": "agora:session:as-a2", "agora:request:rq-a-second": "agora:session:as-a2",
+    "agora:request:rq-broken": undefined, "agora:request:rq-missing": undefined, "agora:request:rq-user": undefined,
+    "agora:confirmation:cf-a": "agora:session:as-a2", "agora:confirmation:cf-other": "agora:session:as-a2",
+    "agora:confirmation:cf-task": undefined, "agora:device:dv": undefined,
+  });
+  assert.deepEqual(reads, ["/v1/tasks/tk-a", "/v1/tasks/tk-broken", "/v1/tasks/tk-missing"], "同一次对齐中每个任务只读取一次");
+  assert.equal(f.added.find(form => form.id === "agora:request:rq-a").nodeId, "agora:session:as-a2");
+  // 离线时从缓存读出的表单保留 nodeId。
+  f.setOnline(false);
+  const offline = createForms(f.runtime, f.security);
+  assert.equal((await offline.forms.pending()).find(form => form.id === "agora:request:rq-a").nodeId, "agora:session:as-a2");
+  controller.dispose(); offline.dispose();
+});
+
+test("任务重开或换人迁移提问后，表单以新 revision 和新会话节点推送，按旧 revision 提交返回 stale", async t => {
+  const f = fixture(await directory(t));
+  const base = f.runtime.api.request;
+  let session = "as-old";
+  f.runtime.api.request = async (method, path, body) => path === "/v1/tasks/tk-a"
+    ? { status: 200, body: { taskId: "tk-a", agoraSessionId: session } } : base(method, path, body);
+  const migrated = { ...structuredClone(request), id: "rq-one", taskId: "tk-a" };
+  f.setRequests([migrated]);
+  const controller = createForms(f.runtime, f.security);
+  await controller.forms.pending();
+  assert.deepEqual(f.added.map(form => [form.revision, form.nodeId]), [[1, "agora:session:as-old"]]);
+  // 只换当前会话、提问 revision 不变时，宿主会忽略同 revision 的表单，插件也不重复推送。
+  session = "as-new";
+  await controller.forms.pending();
+  assert.equal(f.added.length, 1);
+  // daemon 迁移提问时递增 revision，表单随之以新 revision 和新节点推送。
+  migrated.revision = 2;
+  const forms = await controller.forms.pending();
+  assert.deepEqual(f.added.map(form => [form.revision, form.nodeId]), [[1, "agora:session:as-old"], [2, "agora:session:as-new"]]);
+  assert.equal(forms.find(form => form.id === "agora:request:rq-one").nodeId, "agora:session:as-new");
+  const result = await controller.forms.submit(submission("before-migration"), origin);
+  assert.equal(result.status, "stale");
+  assert.equal(result.form.revision, 2); assert.equal(result.form.nodeId, "agora:session:as-new");
+  controller.dispose();
+});
+
+test("列表读取进行中再次请求待处理表单时另读一轮，不返回早于这次请求的列表", async () => {
+  const f = fixture(), controller = createForms(f.runtime, f.security);
+  const original = f.runtime.api.request;
+  let release, started;
+  const gate = new Promise(yes => { release = yes; }), ready = new Promise(yes => { started = yes; });
+  let held = false;
+  f.runtime.api.request = async (method, path, body) => {
+    if (!held && path.startsWith("/v1/devices?")) { held = true; started(); await gate; }
+    return original(method, path, body);
+  };
+  const first = controller.forms.pending(); await ready;
+  // 第一轮已读过提问列表时新增一条提问（如刚创建的待确认）；之后的请求必须看到它。
+  f.setRequests([structuredClone(request), { ...structuredClone(request), id: "rq-two" }]);
+  const second = controller.forms.pending(), third = controller.forms.pending();
+  assert.notEqual(second, first, "不复用进行中的一轮");
+  assert.equal(second, third, "期间的调用方共用新的一轮");
+  release();
+  assert.ok(!(await first).some(item => item.id === "agora:request:rq-two"));
+  assert.ok((await second).some(item => item.id === "agora:request:rq-two"));
+  controller.dispose();
+});

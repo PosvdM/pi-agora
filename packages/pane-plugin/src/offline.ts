@@ -234,8 +234,15 @@ export function createOfflineViews(reader: ArchiveReader, epoch = `offline:${ran
             current = current.parentId ? data.nodes.get(current.parentId) : undefined;
           }
         }
+        // 冷的用户任务只能从用户任务根按需加载。与在线快照一致，有用户任务时总是带上该根，childCount 为直接子节点总数。
+        if (data.nodes.has(USER_TASKS)) selected.add(USER_TASKS);
+        // pane 节点不在索引里，挂在它们下面的直接子节点数另在 foreignChildCounts 中报告。
+        const foreignChildCounts: Record<string, number> = {};
+        for (const [parentId, siblings] of data.children) {
+          if (parentId?.startsWith("pane:")) foreignChildCounts[parentId] = siblings.length;
+        }
         return { source: "agora", epoch, revision: data.revision,
-          nodes: [...selected].map(id => copyNode(data.nodes.get(id)!)) };
+          nodes: [...selected].map(id => copyNode(data.nodes.get(id)!)), foreignChildCounts };
       }),
       children: (parentId, page) => run(async () => {
         if (page.epoch !== epoch) return { reset: true, epoch };

@@ -39,6 +39,37 @@ function removedReason(kind: string, object: any): FormRemovedReason {
   if (kind === "decision" && state === "interrupted") throw new Error("事项仍待处理，保留待处理表单");
   return "handled";
 }
+const QUESTION_TITLE_LENGTH = 40;
+/** 链接和图片的目标部分，允许一层平衡括号，如 `https://example.com/a(b)`。 */
+const LINK_TARGET = String.raw`\((?:[^()]|\([^()]*\))*\)`;
+/** 行内代码：成对的等长反引号串，内容不以反引号开头或结尾。 */
+const INLINE_CODE = /(?<!`)(`+)(?!`)([\s\S]*?[^`])\1(?!`)/g;
+/** 行内代码的占位符，取私用区字符；下划线规则把它当作词内字符，与原样保留的代码文字相邻时行为一致。 */
+const CODE_START = "\uE000", CODE_END = "\uE001";
+/** 去掉常见的 Markdown 标记并合并空白，用于表单标题。行内代码只去掉反引号，内容原样保留。 */
+function plainText(markdown: string): string {
+  const code: string[] = [];
+  return markdown
+    .replace(/[\uE000\uE001]/g, "")
+    // 只去掉行首的代码块围栏行（信息串不含反引号）；句中的三个反引号是行内代码的分隔符，交给下一步。
+    .replace(/^ {0,3}(?:`{3,}[^`\n]*|~{3,}[^\n]*)$/gm, " ")
+    .replace(INLINE_CODE, (_match, _ticks: string, content: string) => `${CODE_START}${code.push(content) - 1}${CODE_END}`)
+    .replace(new RegExp(String.raw`!?\[([^\]]*)\]${LINK_TARGET}`, "g"), "$1")
+    .replace(/^\s{0,3}(?:#{1,6}\s+|>\s?|[-*+]\s+|\d+[.)]\s+)/gm, "")
+    .replace(/[`*]+|~~/g, "")
+    // 只去掉前面或后面不是字母、数字的下划线（开头、结尾、空白或标点），保留 snake_case 这类词内下划线。
+    .replace(/(?<![\p{L}\p{N}\p{M}_\uE000\uE001])_+|_+(?![\p{L}\p{N}\p{M}_\uE000\uE001])/gu, "")
+    .replace(/\uE000(\d+)\uE001/g, (_match, index: string) => code[Number(index)]!)
+    .replace(/\s+/g, " ")
+    .trim();
+}
+/** 提问表单的标题：首个问题的纯文本，超过 40 个字符时截断并加省略号。 */
+function questionTitle(questions: unknown): string {
+  const first = Array.isArray(questions) ? questions[0]?.question : undefined;
+  const text = typeof first === "string" ? Array.from(plainText(first)) : [];
+  if (!text.length) return "提问";
+  return `提问：${text.slice(0, QUESTION_TITLE_LENGTH).join("")}${text.length > QUESTION_TITLE_LENGTH ? "…" : ""}`;
+}
 function ok(reply: ApiReply): boolean { return reply.status >= 200 && reply.status < 300 && reply.status !== 202; }
 export function createForms(runtime: PluginRuntime, security: Security) {
   const current = new Map<string, FormRecord>();
@@ -99,24 +130,53 @@ export function createForms(runtime: PluginRuntime, security: Security) {
     for (const [kind, items] of [["request", requests], ["confirmation", confirmations], ["device", devices], ["decision", decisions]] as const) {
       for (const item of items) businessState(kind, item);
     }
+    // 提问及其待确认挂在发起提问的任务当前会话节点上；任务读取失败时省略 nodeId，不影响待处理区。
+    const taskNodes = new Map<string, Promise<string | undefined>>();
+    const taskNode = (taskId: unknown): Promise<string | undefined> => {
+      if (typeof taskId !== "string" || !taskId) return Promise.resolve(undefined);
+      let value = taskNodes.get(taskId);
+      if (!value) {
+        value = runtime.api.request("GET", `/v1/tasks/${encoded(taskId)}`).then(reply => {
+          const id = reply.status === 200 ? reply.body?.agoraSessionId : undefined;
+          return typeof id === "string" && id ? `agora:session:${id}` : undefined;
+        }, () => undefined);
+        taskNodes.set(taskId, value);
+      }
+      return value;
+    };
+    const requestNode = async (requestId: unknown): Promise<string | undefined> => {
+      if (typeof requestId !== "string" || !requestId) return undefined;
+      let request = requests.find(item => item.id === requestId);
+      if (!request) {
+        const reply = await runtime.api.request("GET", `/v1/requests/${encoded(requestId)}`).catch(() => undefined);
+        if (reply?.status === 200 && reply.body?.id === requestId) request = reply.body;
+      }
+      return taskNode(request?.taskId);
+    };
+    const nodeOf = (nodeId: string | undefined) => nodeId ? { nodeId } : {};
     const next = new Map<string, FormRecord>();
     const add = (item: FormRecord) => {
       if (next.has(item.form.id)) throw new Error("agora 待处理事项标识重复");
       next.set(item.form.id, item);
     };
     for (const request of requests) if (request.targetId === "user" && ["open", "escalated"].includes(request.state)) {
-      add(record("request", request.id, request, { title: "答复提问", description: request.context ?? undefined,
-        questions: request.questions, cancel: { label: "不答复，取消提问" }, expiresAt: request.expiresAt ?? undefined }));
+      const nodeId = await taskNode(request.taskId);
+      active();
+      add(record("request", request.id, request, { title: questionTitle(request.questions), description: request.context ?? undefined,
+        questions: request.questions, cancel: { label: "不答复，取消提问" }, expiresAt: request.expiresAt ?? undefined, ...nodeOf(nodeId) }));
     }
     for (const confirmation of confirmations) if (["pending", "executing"].includes(confirmation.state)) {
-      add(record("confirmation", confirmation.confirmationId ?? confirmation.id, confirmation, { title: confirmation.title,
-        description: `${confirmation.summary}\n\n发起方：${confirmation.requestedBy ?? "未知"}`, expiresAt: confirmation.expiresAt, cancel: { label: "拒绝" } }));
+      // 答复或取消提问的待确认以提问 ID 为目标。
+      const nodeId = typeof confirmation.action === "string" && confirmation.action.startsWith("agora.request.") ? await requestNode(confirmation.target) : undefined;
+      active();
+      add(record("confirmation", confirmation.confirmationId ?? confirmation.id, confirmation, { title: `待确认：${confirmation.title}`,
+        description: `${confirmation.summary}\n\n发起方：${confirmation.requestedBy ?? "未知"}`, expiresAt: confirmation.expiresAt, cancel: { label: "拒绝" }, ...nodeOf(nodeId) }));
     }
     for (const device of devices) if (device.state === "pending") {
-      add(record("device", device.deviceId, device, { title: "批准设备", description: `设备：${device.label}\n\n公钥指纹：${device.fingerprint}\n\n请求时间：${device.createdAt}`, cancel: { label: "拒绝" } }));
+      add(record("device", device.deviceId, device, { title: `待批准设备：${device.label}`, description: `设备：${device.label}\n\n公钥指纹：${device.fingerprint}\n\n请求时间：${device.createdAt}`, cancel: { label: "拒绝" } }));
     }
     for (const task of decisions) if (task.status === "interrupted") {
-      add(record("decision", task.taskId, task, { title: `处理中断任务：${task.title}`, nodeId: `agora:session:${task.agoraSessionId}`,
+      add(record("decision", task.taskId, task, { title: `决策：处理中断任务：${task.title}`, nodeId: `agora:session:${task.agoraSessionId}`,
         fields: [{ id: "mode", label: "处理方式", type: "select", required: true, options: ["resume", "reopen", "replace", "abandon"] },
           { id: "model", label: "换人时的模型", type: "text" }, { id: "profile", label: "换人时的权限档位", type: "select", options: ["explore", "review", "implement"] }] }));
     }
@@ -151,10 +211,17 @@ export function createForms(runtime: PluginRuntime, security: Security) {
     current.clear(); for (const [id, item] of next) current.set(id, item);
     return sorted();
   }
+  // 进行中的一轮可能在调用方关心的变化（如刚创建的待确认）之前就读过列表：此时排一轮新的，在当前这轮结束后开始，
+  // 期间的调用方共用这一轮，不直接拿进行中那轮的结果。
+  let again: Promise<FormSpec[]> | undefined;
   function pending(): Promise<FormSpec[]> {
     if (disposed) return Promise.reject(new Error("agora 插件已停用"));
-    if (!refresh) refresh = load().finally(() => { refresh = undefined; });
-    return refresh;
+    if (!refresh) {
+      refresh = load().finally(() => { refresh = undefined; });
+      return refresh;
+    }
+    again ??= refresh.catch(() => {}).then(() => { again = undefined; return pending(); });
+    return again;
   }
   async function mapped(response: ApiReply, req: FormSubmission): Promise<FormSubmitResult> {
     active();
@@ -167,7 +234,9 @@ export function createForms(runtime: PluginRuntime, security: Security) {
       if (refresh) await refresh;
       const latest = (await pending()).find(form => form.id === req.formId);
       if (latest && latest.revision !== req.revision) return { status: "stale", form: latest };
-      if (!latest) return { status: "alreadyHandled", message: "该事项已在其他标签页处理" };
+      // 待确认签名后执行时 409：所确认的事项（如提问转到任务的新会话）已经变化，daemon 把这条待确认结束为 failed。
+      if (!latest) return { status: "alreadyHandled", message: req.formId.startsWith("agora:confirmation:")
+        ? "所确认的事项已经变化，这次确认已作废；如仍需处理，请在待处理区重新打开该事项" : "该事项已在其他标签页处理" };
     }
     return { status: "failed", message: message(response) };
   }

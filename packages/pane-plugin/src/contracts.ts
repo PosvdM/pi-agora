@@ -35,6 +35,15 @@ export function statusDetail(item: { takenOver?: boolean; statusDetail?: string 
   return [item.takenOver ? "已由用户接管" : undefined, item.statusDetail || undefined].filter(Boolean).join("；") || undefined;
 }
 export function encoded(value: string): string { return encodeURIComponent(value); }
+/** daemon 返回的非 2xx 响应，`status` 为 HTTP 状态码，`code` 为错误体中的错误码，供调用方区分业务拒绝与服务不可用。 */
+export class AgoraReplyError extends Error {
+  readonly code?: string;
+  constructor(readonly status: number, reply: ApiReply) {
+    super(message(reply));
+    this.name = "AgoraReplyError";
+    if (typeof reply.body?.error?.code === "string") this.code = reply.body.error.code;
+  }
+}
 export function message(reply: ApiReply): string {
   return typeof reply.body?.error?.message === "string" ? reply.body.error.message : "agora 操作未完成，请重新读取状态";
 }

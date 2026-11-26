@@ -171,7 +171,7 @@ shutdown 默认排空，超时后保留 daemon；force 中断并清理运行。�
 | `test/security-core.test.mjs` | JCS 与 P-256 验签、挑战绑定、重放拒绝、同步事务与回滚、异步 nonce 消费及重启 failed、TOFU / reTOFU、设备撤销与重置、离线锁、持久警告、严格设置与审计脱敏、v4→v5 WAL 一致性备份和 DDL 回滚 |
 | `test/security-http-1c.test.mjs` | 真实 daemon / HTTP / CLI 的设备签名答复、host.key 与伪造身份不能冒充用户、幂等结果随确认更新、参数和 revision 变化拒绝、租约接管、在线签名关闭与终端离线关闭 / 重启 / 直接答复 / 重新开启的闭环；不依赖浏览器界面 |
 | `test/task-security-1c.test.mjs` | main / child / host 资源矩阵、提问 ACL 与证明、可达召集人显式接管及 none 通路、接管边界 / 排队复核 / task_busy / outbox 回滚与重投、祖先替换保留接管；共享日授予与增额差额、settings 优先级和计数口径、整子树预算暂停与尾量去重、同代逐次暂停事件及分别确认、回滚立即重试、单名额与回收后的上级唤醒、quota 自动恢复门禁、逐项显式恢复及重启账本 |
-| `test/task-1b.test.mjs` | generation、幂等 steer / answer、送达追踪、中断旧代结果与用量、D14 七项规则、失败与额度通知唤醒、静默投递、直接停止孙任务、恢复后的提问路由、父提交 worktree、回收、看门狗、配置及 v2 旧库至当前版本迁移 |
+| `test/task-1b.test.mjs` | generation、幂等 steer / answer、送达追踪、中断旧代结果与用量、D14 七项规则、失败与额度通知唤醒、静默投递、直接停止孙任务、恢复后的提问路由及迁移提问的 revision 递增、父提交 worktree、回收、看门狗、配置及 v2 旧库至当前版本迁移 |
 | `test/task-d15.test.mjs`、`driver-d15.test.mjs`、`d15-e2e.test.mjs` | 子代理标记、skill 白名单与只读授权、同项目双主会话的提问路由、任务 / 代 / 树用量及 stop / interrupt 收尾记账、静默终态唤醒与未知重置时间提示的持久化恢复、相同重置时间下同代多次暂停通知、额度暂停与通知 / 自动恢复、v3 旧库备份和迁移回滚；真实 pi 的本地 429 与 skill 加载 |
 | `test/cache-warming-e2e.test.mjs` | 真实 pi 使用 `cacheWarming: "idle"`（pi 1.5.1 起的默认值），假 Provider 声明 11 秒缓存寿命：agent 运行期间的预热请求按 `cache-warm:<条目 ID>` 记入逐请求用量和预算、不更新 `contextTokens`；受管会话空闲后不再发预热请求。`extension-hooks.test.mjs`、`harness-pi.test.mjs`、`driver-d15.test.mjs`、`task-d15.test.mjs` 分别覆盖空闲判断、预热用量转换、驱动去重和任务层入账 |
 | `test/budget-wake-e2e.test.mjs` | 真实 pi 单名额预算循环：silent 下级触发父真实回合，agora_task limits 增额后显式恢复，同代第二次耗尽再次通知并停止；覆盖父进程复用及回收重拉、两条事件各自落盘确认 |
@@ -191,8 +191,34 @@ shutdown 默认排空，超时后保留 daemon；force 中断并清理运行。�
 | `test/cli.test.mjs`、`protocol-cli.test.mjs` | 独立 CLI 进程、单实例复用、参数和协议 |
 | `test/changes-s2.test.mjs`、`pane-daemon-s2.test.mjs` | daemon 重启与变更流 reset、原子热快照、按父分页、持续鉴权和背压；真实 HTTP 插件树重新收敛 |
 | `test/pane-*-s2.test.mjs`、`pane-api-vendor.test.mjs` | 插件在线/离线映射、动态动作、持久表单、确认与横幅、重启幂等和生命周期；详细映射见 [pane-plugin.md](pane-plugin.md#测试) |
+| `test/pane-browser-m3.test.mjs` | 真实 Chrome 中的 pi-pane 插件界面与真实 daemon 联调，见下文“pane 浏览器联调” |
 
-CI 在 Windows、macOS、Linux auto / snapshot 四个组合上，分别安装 pi 1.5.0 和 1.6.0 执行 npm test，共八个任务，并通过 `HOSTKIT_TEST_PI_VERSION` 断言测试实际使用的 pi 版本。Linux auto 要求真实 cgroup 可用。Windows 完整测试后额外重复 shell 后代退出核对十次；每次在停止报告返回后立即查询独立 oracle 的已知身份，保留完整 StopReport 和单次观测诊断，不设置额外观察窗口，也不补杀。driver-faults 在 Windows 与 Linux 隔离 worker 中均断言单次核对、失败保锁及显式重试不重放底层停止。
+### pane 浏览器联调
+
+`test/pane-browser-m3.test.mjs` 从 `AGORA_PANE_DIR` 指向的 pi-pane checkout 动态导入服务端、`test/fixtures/` 的浏览器测试设施和 playwright-core，在同一进程中启动 pi-pane 服务端并加载 `packages/pane-plugin`；daemon、主会话和子代理都使用真实 pi 与本地假 provider。公共现场在 `test/fixtures/pane-browser/world.mjs`，每个用例使用独立的 `AGORA_HOME`、daemon、pi-pane 数据目录和 Chrome。覆盖范围见 [pane-plugin.md](pane-plugin.md#测试)。
+
+准备 pi-pane checkout（固定提交与 `scripts/vendor-pane-api.mjs` 中的提交相同）：
+
+```sh
+git clone https://github.com/PosvdM/pi-pane.git <目录>
+cd <目录>
+git checkout <固定提交>
+npm ci
+npm run build
+```
+
+在 agora 仓库运行：
+
+```sh
+AGORA_PANE_DIR=<pi-pane 目录的绝对路径> node --test --test-concurrency=1 test/pane-browser-m3.test.mjs
+```
+
+- 未设置 `AGORA_PANE_DIR` 时跳过整个文件；设置 `AGORA_TEST_REQUIRE_PANE=1` 时，未设置或缺少构建产物（服务端、前端 dist、playwright-core）直接失败。
+- Chrome 的定位沿用 pi-pane 的规则：`CHROME_PATH`、`CHROME_BIN` 或三平台的常见安装路径；`PANE_TEST_REQUIRE_CHROME=1` 时找不到 Chrome 即失败。`PANE_SCREENSHOTS=<目录>` 保存失败用例的截图。
+- 文件约需四分钟，其中在场确认超时用例等待 pi-pane 的 120 秒确认期限。用例会重启 daemon 和 pi-pane，同一台机器上不要并行运行其他 Chrome 端到端测试。
+- 变更流过期用例写入十万条占位变更，再以八天后的时间调用 daemon 的 `pruneChanges`，使浏览器持有的游标落到保留范围之外；其余用例不调整时钟或数据库内容。
+
+CI 在 Windows、macOS、Linux auto / snapshot 四个组合上，分别安装 pi 1.5.0 和 1.6.0 执行 npm test，共八个任务。每个任务先检出并构建固定提交的 pi-pane，用它比对协议副本，再以 `AGORA_PANE_DIR`、`AGORA_TEST_REQUIRE_PANE=1` 和 `PANE_TEST_REQUIRE_CHROME=1` 运行 npm test，使浏览器联调不能被跳过；并通过 `HOSTKIT_TEST_PI_VERSION` 断言测试实际使用的 pi 版本。Linux auto 要求真实 cgroup 可用。Windows 完整测试后额外重复 shell 后代退出核对十次；每次在停止报告返回后立即查询独立 oracle 的已知身份，保留完整 StopReport 和单次观测诊断，不设置额外观察窗口，也不补杀。driver-faults 在 Windows 与 Linux 隔离 worker 中均断言单次核对、失败保锁及显式重试不重放底层停止。
 
 macOS 完整测试后额外执行 25 次“忽略 abort 的 provider”真实用例；`CI` 环境下 `AGORA_STOP_PROVIDER_REPEATS` 控制该用例的注册次数（1–100，默认 1）。每次都保留原停止期限、报告校验和独立身份断言，单次失败即使后续成功也使测试失败。
 

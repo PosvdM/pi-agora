@@ -13,7 +13,9 @@ const RETRY_MS = 100;
 const origin = { client: "browser", connectionId: "tab-a", deviceId: "device-a", receivedAt: AT };
 const ref = { source: "agora", id: "as_lifecycle" };
 const treeRequest = { openNodeIds: [], recentSince: "2025-01-01T00:00:00.000Z" };
-const treeCursor = { epoch: "db-lifecycle", revision: 10 };
+// daemon 变更流的 epoch 与快照切点 seq 10；树修订号取 seq 10 的切点（seq × 4 + 3），订阅从 seq 11 开始读取。
+const treeSeq = 10;
+const treeEpoch = "db-lifecycle";
 const sessionCursor = { epoch: "run-lifecycle", seq: 0 };
 const alert = { alertId: "alert-one", kind: "devices-reset", revision: 1, createdAt: AT, details: { reason: "测试" } };
 const question = { id: "rq-one", targetId: "user", state: "escalated", revision: 1, createdAt: AT,
@@ -35,6 +37,12 @@ async function eventually(predicate, message) {
   assert.ok(predicate(), message);
 }
 async function settle() { await turn(); await turn(); await turn(); }
+/** 在线取快照建立处理器实例，返回快照切点处的树订阅起点（epoch 是插件报告的复合 epoch）。 */
+async function treeFrom(plugin) {
+  const snapshot = await plugin.tree.snapshot(treeRequest);
+  assert.equal(snapshot.revision, treeSeq * 4 + 3);
+  return { epoch: snapshot.epoch, revision: snapshot.revision };
+}
 
 async function host(t) {
   t.mock.timers.enable({ apis: ["setInterval"] });
@@ -113,7 +121,7 @@ function mockApi(h, handler = () => undefined) {
           if (pathname === `/v1/${endpoint}`) return ok({ items: structuredClone(state[key]) });
         }
         if (pathname === "/v1/sessions") return ok({ items: structuredClone(state.sessions), nextCursor: null,
-          changesCursor: { epoch: treeCursor.epoch, seq: treeCursor.revision } });
+          changesCursor: { epoch: treeEpoch, seq: treeSeq } });
         if (pathname === `/v1/sessions/${ref.id}`) return ok(structuredClone(state.sessions[0]));
         if (pathname === `/v1/sessions/${ref.id}/snapshot`) return ok({ cursor: sessionCursor, leafId: null,
           entries: [], historyBefore: null, status: "running", unfinishedPartials: [] });
@@ -153,7 +161,7 @@ function mockApi(h, handler = () => undefined) {
     domainChange(seq = 11) {
       const stream = streams.find(value => value.path.startsWith("/v1/changes?") && value.stops === 0);
       assert.ok(stream, "领域变更流应已订阅");
-      stream.emit({ type: "change", data: { cursor: { epoch: treeCursor.epoch, seq }, objectType: "security_alert", objectId: alert.alertId } });
+      stream.emit({ type: "change", data: { cursor: { epoch: treeEpoch, seq }, objectType: "security_alert", objectId: alert.alertId } });
     },
   };
 }
@@ -186,6 +194,7 @@ async function activated(t, handler) {
 test("在线启用拉取安全警告、持久表单与保活，并从 changes 游标订阅领域变更", { timeout: 5_000 }, async t => {
   const { h, a, plugin } = await activated(t);
   assert.equal(plugin.id, "agora");
+  assert.equal(plugin.displayName, "pi-agora");
   assert.deepEqual(plugin.paneProtocol, [1, 1]);
   for (const endpoint of ["security/alerts", "requests", "confirmations", "devices", "tasks", "sessions"]) {
     assert.ok(a.calls.some(call => call.method === "GET" && call.url.pathname === `/v1/${endpoint}`), `启用时应读取 ${endpoint}`);
@@ -302,7 +311,7 @@ test("周期健康检测断线触发离线 reset，恢复在线再次 reset 并�
   await plugin.activate(h.context);
   await eventually(() => first.polls.size === 1, "首次在线启用应挂起通知轮询");
   const treeEvents = [], sessionEvents = [];
-  plugin.tree.subscribe(treeCursor, event => treeEvents.push(event));
+  plugin.tree.subscribe(await treeFrom(plugin), event => treeEvents.push(event));
   plugin.sessions.subscribe(ref, sessionCursor, event => sessionEvents.push(event));
   first.state.health = 503; current = undefined;
   t.mock.timers.tick(RETRY_MS);
@@ -410,7 +419,7 @@ test("接管结构 marker 使打开的会话重取权限，重入订阅不会被
   });
   a.state.sessions[0].parent = { kind: 'user' };
   const domain = a.streams.find(stream => stream.path.startsWith('/v1/changes?') && stream.stops === 0);
-  const marker = seq => ({ type: 'change', data: { cursor: { epoch: treeCursor.epoch, seq }, objectType: 'tree', objectId: 'all' } });
+  const marker = seq => ({ type: 'change', data: { cursor: { epoch: treeEpoch, seq }, objectType: 'tree', objectId: 'all' } });
   domain.emit(marker(11));
   assert.equal(first.length, 1); assert.equal(first[0].event.type, 'resync');
   assert.equal((await plugin.sessions.snapshot(ref)).readonly, false);
@@ -439,7 +448,7 @@ test("领域变更流过期必发树 reset，宿主据此重新对齐持久表�
   const { h, a, plugin } = await activated(t, call => call.path === `/v1/requests/${question.id}` ? ok({ ...question, state: "answered" }) : undefined);
   const events = [];
   let alignment;
-  plugin.tree.subscribe(treeCursor, event => {
+  plugin.tree.subscribe(await treeFrom(plugin), event => {
     events.push(event);
     if (event.type === "reset") alignment = plugin.forms.pending();
   });
@@ -456,7 +465,7 @@ test("领域变更流过期必发树 reset，宿主据此重新对齐持久表�
 test("停用取消领域流和会话流、终止通知轮询、释放保活但保留持久横幅与表单", { timeout: 5_000 }, async t => {
   const { h, a, plugin } = await activated(t);
   const treeEvents = [], sessionEvents = [];
-  const stopTree = plugin.tree.subscribe(treeCursor, event => treeEvents.push(event));
+  const stopTree = plugin.tree.subscribe(await treeFrom(plugin), event => treeEvents.push(event));
   const stopSession = plugin.sessions.subscribe(ref, sessionCursor, event => sessionEvents.push(event));
   const before = structuredClone([...h.banners.values()]);
   const forms = structuredClone([...h.pendingForms.values()]);
@@ -472,7 +481,7 @@ test("停用取消领域流和会话流、终止通知轮询、释放保活但�
   assert.equal(h.events.filter(event => event.type === "clearBanner" || event.type === "formRemoved").length, 0);
   const requestCount = a.calls.length;
   for (const stream of streams) {
-    stream.emit({ type: "change", data: { cursor: { epoch: treeCursor.epoch, seq: 11 }, objectType: "session", objectId: ref.id } });
+    stream.emit({ type: "change", data: { cursor: { epoch: treeEpoch, seq: 11 }, objectType: "session", objectId: ref.id } });
     stream.emit({ type: "session", data: { cursor: { epoch: sessionCursor.epoch, seq: 1 }, event: { type: "message_end" } } });
   }
   t.mock.timers.tick(RETRY_MS * 10); await settle();
@@ -512,9 +521,9 @@ test("停用中止树流正在读取的请求，迟到响应不能更新宿主",
     if (call.path === `/v1/sessions/${ref.id}`) { read = call; return pending.promise; }
   });
   const emitted = [];
-  plugin.tree.subscribe(treeCursor, event => emitted.push(event));
+  plugin.tree.subscribe(await treeFrom(plugin), event => emitted.push(event));
   const stream = a.streams.at(-1);
-  stream.emit({ type: "change", data: { cursor: { epoch: treeCursor.epoch, seq: 11 }, objectType: "session", objectId: ref.id } });
+  stream.emit({ type: "change", data: { cursor: { epoch: treeEpoch, seq: 11 }, objectType: "session", objectId: ref.id } });
   await eventually(() => read !== undefined, "树变更应开始读取对应会话");
   assert.equal(read.options.signal.aborted, false);
   await plugin.deactivate();
@@ -778,4 +787,87 @@ test("领域刷新挂起时大量变更事件只置脏标记，不为每条事�
   await eventually(() => a.calls.filter(alerts).length === reruns + 1, "挂起期间的变更合并为一次补刷");
   await delay(20);
   assert.equal(a.calls.filter(alerts).length, reruns + 1);
+});
+
+test("在线读取失败后检查时已连上快速重启的 daemon，在新连接上重试一次读取", { timeout: 5_000 }, async t => {
+  const h = await host(t);
+  const snapshotCall = call => call.url.pathname === "/v1/sessions" && call.url.searchParams.get("snapshot") === "1";
+  // 旧 daemon 在快照读取时退出，之后的健康检查也连不上；新 daemon 已在监听。
+  const first = mockApi(h, (call, state) => { if (snapshotCall(call)) { state.closed++; throw new AgoraConnectionError(); } });
+  const second = mockApi(h);
+  const apis = [first.api, second.api];
+  let connects = 0;
+  const plugin = h.plugin({ connect: async () => apis[connects++], openArchive: async () => { throw new Error("在线测试不能打开存档"); } });
+  await plugin.activate(h.context);
+  await eventually(() => first.polls.size === 1, "启用后应有一个挂起的通知轮询");
+  const snapshot = await plugin.tree.snapshot(treeRequest);
+  assert.equal(connects, 2);
+  assert.ok(snapshot.epoch.startsWith(`${treeEpoch}.`), "复合 epoch 以 daemon epoch 开头");
+  assert.ok(snapshot.nodes.some(node => node.id === `agora:session:${ref.id}`));
+  assert.equal(first.calls.filter(snapshotCall).length, 1);
+  assert.equal(second.calls.filter(snapshotCall).length, 1, "新连接上只重试一次");
+  assert.deepEqual(second.unexpected, []);
+});
+
+test("在线读取遇到 daemon 5xx 时检查连接，连接未变就原样抛出，不重试也不改读存档", { timeout: 5_000 }, async t => {
+  const snapshotCall = call => call.url.pathname === "/v1/sessions" && call.url.searchParams.get("snapshot") === "1";
+  const { a, plugin } = await activated(t, call => snapshotCall(call)
+    ? { status: 500, body: { error: { code: "internal", message: "快照读取失败" } } } : undefined);
+  await assert.rejects(plugin.tree.snapshot(treeRequest), /快照读取失败/);
+  assert.equal(a.calls.filter(snapshotCall).length, 1);
+  assert.equal(a.calls.filter(call => call.path === "/v1/health").length, 1, "5xx 可能来自正在退出的 daemon，需要检查连接");
+  assert.equal(a.state.closed, 0);
+});
+
+for (const code of ["token_expired", "unauthenticated"]) test(`在线读取遇到 401 ${code} 时检查连接，凭证失效就重建连接并重试一次读取`, { timeout: 5_000 }, async t => {
+  const h = await host(t);
+  const snapshotCall = call => call.url.pathname === "/v1/sessions" && call.url.searchParams.get("snapshot") === "1";
+  // 旧连接的 token 已失效：读取和认证检查都返回 401，daemon 本身仍在运行。
+  const first = mockApi(h, (call, state) => {
+    if (snapshotCall(call)) { state.authorization = 401; return { status: 401, body: { error: { code, message: "请重新认证" } } }; }
+  });
+  const second = mockApi(h);
+  const apis = [first.api, second.api];
+  let connects = 0;
+  const plugin = h.plugin({ connect: async () => apis[connects++], openArchive: async () => { throw new Error("在线测试不能打开存档"); } });
+  await plugin.activate(h.context);
+  await eventually(() => first.polls.size === 1, "启用后应有一个挂起的通知轮询");
+  const snapshot = await plugin.tree.snapshot(treeRequest);
+  assert.equal(connects, 2, "凭证失效时检查连接并重建");
+  assert.equal(first.calls.filter(call => call.path === "/v1/status").length, 1, "读取失败后用 /v1/status 核对凭证");
+  assert.equal(first.state.closed, 1);
+  assert.ok(snapshot.nodes.some(node => node.id === `agora:session:${ref.id}`));
+  assert.equal(second.calls.filter(snapshotCall).length, 1, "新连接上只重试一次");
+  assert.deepEqual(second.unexpected, []);
+});
+
+test("在线读取的 4xx 业务错误直接抛出，不检查连接", { timeout: 5_000 }, async t => {
+  const missing = call => call.url.pathname.startsWith("/v1/sessions/as_missing");
+  const { a, plugin } = await activated(t, call => missing(call)
+    ? { status: 404, body: { error: { code: "not_found", message: "会话不存在" } } } : undefined);
+  const missingRef = { source: "agora", id: "as_missing" };
+  await assert.rejects(plugin.sessions.snapshot(missingRef), /会话不存在/);
+  await assert.rejects(plugin.sessions.history(missingRef, { limit: 1 }), /会话不存在/);
+  await assert.rejects(plugin.panels.content("agora.task", "agora:session:as_missing"), /会话不存在/);
+  assert.equal(a.calls.filter(call => call.path === "/v1/health").length, 0, "业务错误不能触发连接检查");
+  assert.equal(a.state.closed, 0);
+});
+
+test("daemon 刚退出、定时检查之前打开任务面板时改读存档", { timeout: 5_000 }, async t => {
+  const h = await host(t), archive = archiveReader();
+  // daemon 在面板读取时退出，之后健康检查和重连都失败。
+  const a = mockApi(h, (call, state) => {
+    if (call.url.pathname === `/v1/sessions/${ref.id}`) { state.closed++; throw new AgoraConnectionError(); }
+  });
+  let connects = 0, opened = 0;
+  const plugin = h.plugin({ connect: async () => { if (connects++) throw new AgoraConnectionError(); return a.api; },
+    openArchive: async () => { opened++; return archive.reader; } });
+  await plugin.activate(h.context);
+  await eventually(() => a.polls.size === 1, "启用后应有一个挂起的通知轮询");
+  const content = await plugin.panels.content("agora.task", `agora:session:${ref.id}`);
+  assert.equal(content.type, "keyValue");
+  assert.deepEqual(content.rows.find(row => row.key === "会话"), { key: "会话", value: ref.id });
+  assert.equal(connects, 2);
+  assert.equal(opened, 1);
+  assert.deepEqual(plugin.actions.list(), []);
 });

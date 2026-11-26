@@ -9,7 +9,7 @@ import { signingData } from '../packages/daemon/dist/security.js';
 import { changesCursor, readChanges } from '../packages/daemon/dist/changes.js';
 import { listSessions, sessionDetail } from '../packages/daemon/dist/session-list.js';
 import { connectHost } from '../packages/protocol/dist/client.js';
-import { createViews } from '../packages/pane-plugin/dist/views.js';
+import { createViews, REVISION_SLOTS } from '../packages/pane-plugin/dist/views.js';
 
 const USER_ROOT = 'agora:root:user-tasks';
 const nodeId = id => `agora:session:${id}`;
@@ -136,8 +136,15 @@ function pluginFixture(t, f) {
     },
   });
   t.after(() => views.dispose());
-  return { views, events, requests, stopped: () => stopped,
-    subscribe(cursor) { views.tree.subscribe({ epoch: cursor.epoch, revision: cursor.seq }, event => events.push(event)); },
+  let epoch;
+  return { views, events, requests, stopped: () => stopped, epoch: () => epoch,
+    /** 先取快照建立处理器实例（切点即 cursor），再用快照的 epoch 从 cursor 订阅。 */
+    async subscribe(cursor) {
+      const snapshot = await views.tree.snapshot({ openNodeIds: [], recentSince: '2999-01-01T00:00:00.000Z' });
+      assert.equal(snapshot.revision, cursor.seq * REVISION_SLOTS + REVISION_SLOTS - 1);
+      epoch = snapshot.epoch;
+      views.tree.subscribe({ epoch, revision: snapshot.revision }, event => events.push(event));
+    },
     async replay(cursor) {
       const batch = readChanges(f.store, cursor.epoch, cursor.seq);
       assert.equal(batch.reset, false);
@@ -151,7 +158,7 @@ function pluginFixture(t, f) {
 }
 
 function projection(item) {
-  return { id: item.agoraSessionId, parentId: item.parentId, childCount: item.childCount, hasChildren: item.hasChildren, revision: item.treeRevision };
+  return { id: item.agoraSessionId, parentId: item.parentId, childCount: item.childCount, hasChildren: item.hasChildren, revision: item.treeRevision * REVISION_SLOTS };
 }
 async function snapshotMatchesSql(plugin, f, ids) {
   const req = { openNodeIds: ids.map(nodeId), recentSince: '2999-01-01T00:00:00.000Z' };
@@ -160,8 +167,8 @@ async function snapshotMatchesSql(plugin, f, ids) {
   req.openNodeIds.forEach(id => params.append('openNodeId', id));
   const conn = f.daemon.auth.authenticate(`Bearer ${f.pane.token}`);
   const sql = listSessions(f.store, conn, params, 50);
-  assert.equal(snapshot.epoch, sql.changesCursor.epoch);
-  assert.equal(snapshot.revision, sql.changesCursor.seq);
+  assert.ok(snapshot.epoch.startsWith(`${sql.changesCursor.epoch}.`), '复合 epoch 以 daemon epoch 开头');
+  assert.equal(snapshot.revision, sql.changesCursor.seq * REVISION_SLOTS + REVISION_SLOTS - 1);
   assert.deepEqual(snapshot.nodes.filter(node => node.kind === 'session').map(node => ({
     id: node.sessionRef.id, parentId: node.parentId, childCount: node.childCount, hasChildren: node.hasChildren, revision: node.revision,
   })), sql.items.map(projection));
@@ -204,7 +211,7 @@ test('签名接管嵌套任务移动全部历史及下属投影，保留预算�
   const plugin = pluginFixture(t, f);
   await snapshotMatchesSql(plugin, f, ids);
   const cursor = changesCursor(f.store);
-  plugin.subscribe(cursor); plugin.requests.length = 0;
+  await plugin.subscribe(cursor); plugin.requests.length = 0;
   const result = await f.signConfirmation(cf);
   assert.equal(result.status, 200, JSON.stringify(result.body));
   await f.tasks.flush();
@@ -212,7 +219,7 @@ test('签名接管嵌套任务移动全部历史及下属投影，保留预算�
   assert.equal(markers.length, 1);
   assert.ok(rows.some(row => row.object_type === 'task' && row.object_id === branch.taskId));
   assert.equal(changesCursor(f.store).epoch, cursor.epoch);
-  assert.deepEqual(plugin.events, [{ type: 'reset', epoch: cursor.epoch }]);
+  assert.deepEqual(plugin.events, [{ type: 'reset', epoch: plugin.epoch() }]);
   assert.equal(plugin.stopped(), 1);
   assert.deepEqual(plugin.requests, [], 'marker 后不再处理 task 和 confirmation 事件');
 

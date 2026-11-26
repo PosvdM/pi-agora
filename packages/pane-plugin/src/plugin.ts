@@ -7,7 +7,7 @@ import { createForms } from "./forms.js";
 import { createSecurity, type Security } from "./security.js";
 import { OperationIdentities } from "./identity.js";
 import { createOfflineViews, type ArchiveReader } from "./offline.js";
-import type { AgoraApi, PluginRuntime } from "./contracts.js";
+import { AgoraReplyError, type AgoraApi, type PluginRuntime } from "./contracts.js";
 
 export interface PluginOptions {
   home?: string;
@@ -39,6 +39,8 @@ export default function createPlugin(options: PluginOptions = {}): PanePlugin {
   const treeSubscriptions = new Set<{ emit(change: TreeChange): void; stop(): void }>();
   const sessionSubscriptions = new Set<{ ref: { source: string; id: string }; emit(event: SessionStreamEvent): void; stop(): void }>();
   const inProgress = new Map<string, Promise<any>>();
+  // 底层 API 请求本身失败（传输失败、超时、连接关闭）时抛出的错误；收到 HTTP 响应的不在其中。
+  const transportFailures = new WeakSet<object>();
   const log = (message: string, error: unknown) => context?.log.warn(message, error instanceof Error ? error.name : "unknown");
   const runtime: PluginRuntime = {
     get context() { if (!context) throw new Error("agora 插件尚未启用"); return context; },
@@ -46,7 +48,9 @@ export default function createPlugin(options: PluginOptions = {}): PanePlugin {
       request: async (...args) => {
         if (!api) throw new AgoraConnectionError();
         const token = generation;
-        const response = await api.request(...args);
+        let response;
+        try { response = await api.request(...args); }
+        catch (error) { if (typeof error === "object" && error) transportFailures.add(error); throw error; }
         if (!activated || generation !== token) throw new AgoraConnectionError();
         return response;
       },
@@ -83,12 +87,15 @@ export default function createPlugin(options: PluginOptions = {}): PanePlugin {
       subscription.stop(); subscription.emit({ ref: subscription.ref, cursor: { epoch: `agora:connection:${generation}`, seq: 0 }, event: { type: "resync" } });
     }
   }
+  // 连接断开、重建或领域变更流 reset 时调用。daemon 可能已换 epoch，树的修订号序列一并结束（views.invalidateTree），
+  // pane 之后重取的快照带新的 epoch，旧游标续订时直接 reset。
   function resetSubscribers() {
     const previous = [...treeSubscriptions];
     treeSubscriptions.clear();
     for (const subscription of previous) {
       subscription.stop(); subscription.emit({ type: "reset", epoch: `agora:connection:${generation}` });
     }
+    views?.invalidateTree();
     resetSessionSubscribers();
   }
   function disconnect() {
@@ -212,6 +219,35 @@ export default function createPlugin(options: PluginOptions = {}): PanePlugin {
     inProgress.set(key, operation);
     return operation;
   }
+  /**
+   * 读取失败是否可能因连接不可用：传输层失败、连接已换代、daemon 返回 5xx（退出前排空时为 503），
+   * 或当前凭证已失效（`401 token_expired`、`401 unauthenticated`）。
+   */
+  function connectionFailure(error: unknown): boolean {
+    return error instanceof AgoraConnectionError || typeof error === "object" && error !== null && transportFailures.has(error)
+      || error instanceof AgoraReplyError && (error.status >= 500 || error.status === 401 && ["token_expired", "unauthenticated"].includes(error.code ?? ""));
+  }
+  // daemon 刚退出时，变更流断开会先于定时检查触发 reset，宿主随即重取快照。在线读取遇到连接类错误时立即检查连接：
+  // 确认已离线就改读存档，避免把连接错误交给宿主；daemon 快速重启或凭证失效、检查时已连上新连接就在新连接上重试一次；
+  // 连接没有变化时原样抛出。检查用 `/v1/status` 核对凭证，凭证失效时返回 401，连接因此被判为需要重建。
+  // daemon 的其他 4xx 业务错误直接抛出，不检查连接。
+  async function read<T>(live: () => Promise<T>, archived: (reader: Awaited<ReturnType<typeof offline>>) => Promise<T>): Promise<T> {
+    active();
+    if (online) {
+      const token = generation;
+      try { return await live(); }
+      catch (error) {
+        if (!connectionFailure(error)) throw error;
+        await probe().catch(() => {});
+        if (!activated) throw error;
+        if (online) {
+          if (generation === token) throw error;
+          return live();
+        }
+      }
+    }
+    return archived(await offline());
+  }
   function securityAction(actionId: string): string | undefined {
     return actionId === "agora.security.acknowledge" ? "devices-reset" : actionId === "agora.security.acknowledge-budget" ? "budget-config-changed" : undefined;
   }
@@ -221,7 +257,7 @@ export default function createPlugin(options: PluginOptions = {}): PanePlugin {
       description: `警告类型：${alert.kind}\n\n警告版本：${alert.revision}\n\n${JSON.stringify(alert.details ?? {})}`, createdAt: alert.createdAt ?? new Date(0).toISOString(), submitLabel: "我已知悉" } : null;
   }
   const plugin: PanePlugin = {
-    id: "agora", paneProtocol: [1, 1],
+    id: "agora", displayName: "pi-agora", paneProtocol: [1, 1],
     async activate(ctx) {
       if (activated) throw new Error("agora 插件已经启用");
       context = ctx; activated = true; generation++;
@@ -245,8 +281,8 @@ export default function createPlugin(options: PluginOptions = {}): PanePlugin {
       if (archive) { await archive.then(value => value.dispose()).catch(() => {}); archive = undefined; }
     },
     tree: {
-      async snapshot(req) { active(); return online ? views.tree.snapshot(req) : (await offline()).tree.snapshot(req); },
-      async children(parentId, page) { active(); return online ? views.tree.children(parentId, page) : (await offline()).tree.children(parentId, page); },
+      snapshot: req => read(() => views.tree.snapshot(req), reader => reader.tree.snapshot(req)),
+      children: (parentId, page) => read(() => views.tree.children(parentId, page), reader => reader.tree.children(parentId, page)),
       subscribe(from, emit) {
         active();
         const subscription = { emit, stop: () => {} };
@@ -261,8 +297,8 @@ export default function createPlugin(options: PluginOptions = {}): PanePlugin {
       },
     },
     sessions: {
-      async snapshot(ref) { active(); return online ? views.sessions.snapshot(ref) : (await offline()).sessions.snapshot(ref); },
-      async history(ref, page) { active(); return online ? views.sessions.history(ref, page) : (await offline()).sessions.history(ref, page); },
+      snapshot: ref => read(() => views.sessions.snapshot(ref), reader => reader.sessions.snapshot(ref)),
+      history: (ref, page) => read(() => views.sessions.history(ref, page), reader => reader.sessions.history(ref, page)),
       subscribe(ref, after, emit) {
         active();
         const subscription = { ref, emit, stop: () => {} };
@@ -293,13 +329,10 @@ export default function createPlugin(options: PluginOptions = {}): PanePlugin {
     },
     panels: {
       list: () => views?.panels.list() ?? [],
-      async content(id, nodeId) {
-        active();
-        if (online) return views.panels.content(id, nodeId);
-        const reader = await offline();
+      content: (id, nodeId) => read(() => views.panels.content(id, nodeId), reader => {
         if (!reader.panels) throw new Error(offlineMessage);
         return reader.panels.content(id, nodeId);
-      },
+      }),
     },
     actions: {
       list: () => online ? [...actions.list(), { id: "agora.device.pair", source: "agora", title: "配对当前浏览器", scope: ["global"], timeoutMs: 60_000 },
@@ -317,6 +350,8 @@ export default function createPlugin(options: PluginOptions = {}): PanePlugin {
           } else return actions.invoke(inv, origin);
           if (response.status === 202) return { status: "pending" };
           if (response.body?.error?.code === "idempotency_mismatch") return { status: "idempotencyConflict", message: "幂等键对应了不同操作" };
+          // 已有设备配对后，新设备的自签只登记为待批准，不能提示为已配对。
+          if (inv.actionId === "agora.device.pair" && response.status < 300 && response.body?.state === "pending") return { status: "ok", message: "已提交配对请求，请在已配对的设备上批准" };
           return response.status < 300 ? { status: "ok" } : { status: "failed", message: response.body?.error?.message ?? "操作未执行" };
         });
       },

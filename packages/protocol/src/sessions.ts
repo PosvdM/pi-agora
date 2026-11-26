@@ -69,7 +69,7 @@ export interface SessionSummary extends SessionMetadata {
   statusDetail: string | null;
   /** 会话行修订号：存档删除的 expectedRevision、签名挑战和 agora_status 事件使用它。 */
   revision: number;
-  /** 变更流口径的树修订号，pane 插件用它填 TreeNode.revision。 */
+  /** 变更流口径的树修订号，pane 插件据此换算 TreeNode.revision。 */
   treeRevision: number;
   parentId: string | null;
   hasChildren: boolean;

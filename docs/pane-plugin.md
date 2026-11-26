@@ -10,11 +10,11 @@
 { "plugins": ["<仓库绝对路径>/packages/pane-plugin"] }
 ```
 
-包入口为 `dist/plugin.js`，声明的 pane 协议范围为 `[1, 1]`，插件 id 为 `agora`。插件使用 `AGORA_HOME` 指定的数据目录；未设置时使用 agora 的默认目录。插件不自动启动 daemon。在线连接以 `host:pane` 身份握手，浏览器不持有 daemon 凭证。
+包入口为 `dist/plugin.js`，声明的 pane 协议范围为 `[1, 1]`，插件 id 为 `agora`，界面显示名称（`displayName`）为 `pi-agora`。插件使用 `AGORA_HOME` 指定的数据目录；未设置时使用 agora 的默认目录。插件不自动启动 daemon。在线连接以 `host:pane` 身份握手，浏览器不持有 daemon 凭证。
 
 ## 协议副本
 
-`@pi-pane/plugin-api` 位于 pi-pane 的 monorepo 子目录，npm git 依赖不能直接选择该子包。插件的 peer 依赖声明固定仓库提交，本地开发依赖指向 `vendor/plugin-api` 的只读副本，构建时不联网。固定提交为 `03f7916c1a7e3787fc4eaddbdfb10667a217fae7`。
+`@pi-pane/plugin-api` 位于 pi-pane 的 monorepo 子目录，npm git 依赖不能直接选择该子包。插件的 peer 依赖声明固定仓库提交，本地开发依赖指向 `vendor/plugin-api` 的只读副本，构建时不联网。固定提交为 `8aeca0466d518034af2373c76ef05ced47744c05`。
 
 副本保留原始的 `package.json`、`tsconfig.json` 和 `src/index.ts`；`SOURCE.json` 记录仓库、完整提交及各文件的 SHA-256。构建使用插件自己的 `tsconfig.api.json`，不修改副本的构建配置。`.gitattributes` 禁止对副本做换行转换。
 
@@ -45,9 +45,9 @@ node scripts/vendor-pane-api.mjs generate <pi-pane仓库路径>
 
 ## 同步与离线
 
-在线树使用数据库级变更游标。普通子节点分页先核实当前 epoch，再传递 cursor；跨在线/离线或数据库周期时返回 reset，同周期的非法 cursor 仍报错。热快照在同一事务内返回热节点及其祖先，不截断成默认列表的第一页。结构迁移的持久 `tree/all` 标记使整个来源树重建，覆盖父关系、历史会话及父节点计数的派生变化。节点的 revision 取会话的 `treeRevision`（变更流口径），不使用会话行 `revision`；列表项或详情缺少 `treeRevision` 时按旧版 daemon 报错。订阅对每条会话或任务变更都推送 upsert，修订号取该变更的 `seq`，节点数据取读取时的最新详情，可能新于该条变更；pi-pane 只应用修订号更大的 upsert，不会用旧数据覆盖新数据。非树对象的变更以虚拟用户任务根的更新推进来源水位，使分页的 revision 可以与订阅对齐。断流、后台恢复或 epoch 失配时向宿主发送 `reset`；会话流对应发送 `resync`。领域变更流过期也会触发树 `reset`，宿主据此调用 `forms.pending()` 对齐待处理区；对齐期间又到达变更时，插件继续执行一轮对齐，不能静默丢掉这次变化。
+在线树使用数据库级变更游标，对 pi-pane 报告的 epoch 是 `<数据库 epoch>.<处理器实例的随机标识>`：插件重启、与 daemon 的连接断开或重建、数据库 epoch 改变时换随机标识，pi-pane 的旧游标续订或分页时直接得到 reset，插件不向 daemon 核对（规则见 [integration.md](integration.md#同步与按需加载)）。离线 epoch 为 `offline:<随机标识>`，与在线的不会相同。子节点分页的 epoch 与当前实例相符时才传递 cursor；daemon 拒绝 cursor 时核实数据库 epoch，已改变就返回 reset，同周期的非法 cursor 仍报错。热快照在同一事务内返回热节点及其祖先，不截断成默认列表的第一页；挂在 pane 主会话下的子节点总数与虚拟用户任务根的子节点总数（根节点的 `childCount`，供“历史（N）”使用）由同一次分页扫描全部会话得出，主会话部分填入 `foreignChildCounts`，其中扫描读到的、快照切点之后才出现或变热的热会话由订阅推送显示，不计入；用户任务根的子会话集合由扫描建立，由来源级的变更处理器随变更增减，较晚完成的旧扫描不覆盖它，会话移入、移出或删除时推送带新数目的根节点，主会话部分只在快照时报告，口径见 [integration.md](integration.md#同步与按需加载)。结构迁移的持久 `tree/all` 标记使整个来源树重建，覆盖父关系、历史会话及父节点计数的派生变化。节点的 revision 由会话的 `treeRevision`（变更流口径）换算，不使用会话行 `revision`；列表项或详情缺少 `treeRevision` 时按旧版 daemon 报错。每个处理器实例只读取一条 daemon 变更流，每条变更只处理一次，算出的帧记录后原样推给所有订阅，订阅只按自己的起点过滤，同一修订号在所有标签页都是同一帧。订阅对每条会话或任务变更都推送 upsert，修订号由该变更的 `seq` 换算，同一变更推送的节点和用户任务根各取一个子序号，断在两帧之间续订时从处理器保留的记录补发后一帧；节点数据取读取时的最新详情，可能新于该条变更；pi-pane 只应用修订号更大的 upsert，不会用旧数据覆盖新数据。非树对象的变更以虚拟用户任务根的更新推进来源水位，使分页的 revision 可以与订阅对齐。断流、后台恢复或 epoch 失配时向宿主发送 `reset`；会话流对应发送 `resync`。领域变更流过期也会触发树 `reset`，宿主据此调用 `forms.pending()` 对齐待处理区；对齐期间又到达变更时，插件继续执行一轮对齐，不能静默丢掉这次变化。宿主或提交流程在一轮列表读取进行中再次请求待处理表单时，插件在这一轮结束后另读一轮，不把可能早于请求的列表交出去。
 
-插件每 15 秒检查连接和认证状态。daemon 不运行时，通过 `openArchive({ home, apiVersion: 1 })` 只读读取，节点保留业务状态，只有 `open` 能力，会话标为只读。恢复在线时关闭 archive reader，并重置已订阅的树和会话。未知认证或协议错误不会在启用时冒充正常的离线状态。
+插件每 15 秒检查连接和认证状态；在线读取树、会话快照、历史或任务面板遇到连接类错误时立即检查一次，确认 daemon 已不可达就改读存档；这次检查已连上快速重启的新 daemon，或因凭证失效重建了连接时，在新连接上重试一次读取；连接没有变化时原样返回错误。连接类错误指底层请求的传输失败、超时或连接已换代、daemon 返回的 5xx（退出前排空时为 503），以及表示当前凭证已失效的 `401 token_expired`、`401 unauthenticated`；检查用 `/v1/status` 核对凭证，返回非 200 时关闭旧连接并重新认证。daemon 返回的其他 4xx 业务错误（如 400、404）直接返回，不检查连接。daemon 刚退出时变更流断开会先于定时检查触发 `reset`，宿主随即重取的快照因此直接得到存档内容。daemon 不运行时，通过 `openArchive({ home, apiVersion: 1 })` 只读读取，节点保留业务状态，只有 `open` 能力，会话标为只读。恢复在线时关闭 archive reader，并重置已订阅的树和会话。未知认证或协议错误不会在启用时冒充正常的离线状态。
 
 离线元数据扫描每页 128 条，最多 64 页、4096 个会话；超限明确报错，不返回截断的树。每次打开 reader 使用新的离线 epoch，同一 epoch 使用固定元数据索引。归档条目和历史经 adapter 透传；流片段由 archive 的 `projectPartialsAsync` 分批转成协议中的未完成内容，不由插件解析 pi 格式。离线任务面板使用 adapter 的 `usage` 和 `isCurrent` 显示用量、上下文及历史会话标记。父关系缺失时进入未归属，不能用祖先的 pi 会话 ID 猜测直接父节点。
 
@@ -74,12 +74,13 @@ HTTP JSON 响应最多 8 MiB，单个 SSE 事件最多 4 MiB。树变更映射�
 | `changes-s2.test.mjs`、`pane-daemon-s2.test.mjs` | 重启、游标过期和缺口、保留范围、按父分页、热节点祖先、原子切点、鉴权、背压与关闭；真实 HTTP 变更流驱动插件树并在 daemon 重启后收敛 |
 | `pane-api-vendor.test.mjs` | 固定协议副本的来源与哈希 |
 | `pane-transport-s2.test.mjs` | 相对端点、协议与幂等头、受控重试、分片 SSE 与取消 |
-| `pane-views-s2.test.mjs`、`pane-cursor-s2.test.mjs`、`pane-history-race-s2.test.mjs`、`tree-projection-s2.test.mjs` | 树水位、串行映射、结构迁移重建、跨周期分页、会话流、composer/abort、历史只读及会话重开竞态、条件停止、任务用量和保活 |
+| `pane-views-s2.test.mjs`、`pane-cursor-s2.test.mjs`、`pane-history-race-s2.test.mjs`、`tree-projection-s2.test.mjs` | 树水位、同一变更多帧的修订号及断在两帧之间的续订、用户任务根数目跨续订与空窗的维护、多个订阅在同一修订号收到同一帧、较晚完成的旧快照不覆盖已计入的集合、被排除出计数的热节点仍出现在分页里（数目与分页游标）、串行映射、结构迁移重建、跨周期分页、跨来源子节点数及其与快照切点的一致、会话流、composer/abort 及停止入口去重、历史只读及会话重开竞态、条件停止、任务用量和保活 |
 | `pane-actions-s2.test.mjs`、`pane-action-store-s2.test.mjs`、`pane-action-daemon-s2.test.mjs` | 六个任务动作、动态表单、显式签名接管、分步换人、pending 查询、跨重启固定请求、损坏和容量拒绝；真实 daemon 路径、创建目录及重复查询只执行一次 |
-| `pane-forms-s2.test.mjs`、`pane-form-cache-s2.test.mjs`、`pane-form-states-s2.test.mjs` | 表单排序、并发提交、取消、旧 revision、结果未知、跨插件重启的离线保留、容量、写入故障和停用竞态 |
+| `pane-forms-s2.test.mjs`、`pane-form-cache-s2.test.mjs`、`pane-form-states-s2.test.mjs` | 表单排序、标题前缀、并发提交、取消、旧 revision、任务重开后提问以新 revision 和新节点推送、结果未知、读取进行中的再次请求、跨插件重启的离线保留、容量、写入故障和停用竞态 |
 | `pane-security-s2.test.mjs`、`pane-security-daemon-s2.test.mjs`、`pane-takeover-s2.test.mjs`、`pane-takeover-action-s2.test.mjs` | 用户拒绝/超时/缺少设备、去重确认、设备自签、旧警告 revision 和持久横幅；真实 HTTP 与 P-256 签名、双标签答复、接管后权限/父链/预算和事务 marker |
 | `pane-identities-s2.test.mjs` | 跨重启完整调用身份、最终结果与并发登记 |
-| `pane-offline-s2.test.mjs`、`pane-archive-real-s2.test.mjs`、`schema-s2.test.mjs` | 离线热树与中立父关系、分页、只读内容、缺失文件、扫描上限与取消 |
-| `pane-plugin-s2.test.mjs` | 生命周期、通知展示后确认、离线恢复、停用竞态、重启幂等和无效安全状态保留 |
+| `pane-offline-s2.test.mjs`、`pane-archive-real-s2.test.mjs`、`schema-s2.test.mjs` | 离线热树与中立父关系、跨来源子节点数、分页、只读内容、缺失文件、扫描上限与取消 |
+| `pane-plugin-s2.test.mjs` | 生命周期、通知展示后确认、离线恢复、读取失败时的连接检查（5xx、凭证失效的 401）、停用竞态、重启幂等和无效安全状态保留 |
+| `pane-browser-m3.test.mjs` | pi-pane 浏览器联调：真实 daemon、真实 pi 与假 provider、同进程的 pi-pane 服务端和本插件、真实 Chrome。覆盖子会话流式输出时断网再恢复后与 daemon 记录逐字一致；两个标签页同时答复同一提问只生效一次；确认被拒、超时和没有可接收确认的浏览器时 daemon 不执行；首台设备自签、新设备待批准、两台浏览器同时首次配对只有一台成功、离线重置后的单次 TOFU；三类安全横幅在所有标签页显示、不能关闭，跨 pi-pane 重启、daemon 重启、插件停用和加载失败保留，按规则消失，旧 revision 的知悉被拒；接管后打开的会话开放输入框、返工和停止；排队中的任务有停止入口并能停止；daemon 重启及变更流过期后侧栏与 daemon 一致；主会话下的子任务、工具卡片与通知卡片链接、唯一停止入口、用户任务根和主会话下的冷历史（主会话列不出时计入“未归属”）和显示名称 |
 
-这些测试在 agora 侧使用模拟主机，其中安全和接管测试通过真实 daemon HTTP 及 P-256 签名验证后台协议；它们不代替 pane M3 的浏览器联调。流式输出断网恢复、多标签页交互、设备密钥与签名、横幅跨宿主重启及插件不可用提示，需由 pane 的浏览器测试验收。
+除 `pane-browser-m3.test.mjs` 外，这些测试在 agora 侧使用模拟主机，其中安全和接管测试通过真实 daemon HTTP 及 P-256 签名验证后台协议。浏览器中的流式恢复、多标签页交互、设备密钥与签名、横幅跨宿主重启及插件不可用提示由 `pane-browser-m3.test.mjs` 验收，运行方式见 [development.md](development.md#pane-浏览器联调)。

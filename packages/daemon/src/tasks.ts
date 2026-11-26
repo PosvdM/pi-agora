@@ -898,8 +898,12 @@ export class TaskManager {
           this.store.run("INSERT INTO agora_sessions(id,task_id,principal_id,convener_id,parent_principal_id,inherits_from,inherit_reason,session_file,profile,model,thinking,cwd,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'created',?)", newSession, taskId, child, task.convener_id, task.requested_by, oldSession.id, String(mode), path.join(this.options.home, "sessions", newSession, "session.jsonl"), profile, model, task.thinking, task.cwd, at);
           this.store.run("UPDATE tasks SET agora_session_id=?,profile=?,model=?,recovery_attempts=0 WHERE id=?", newSession, profile, model, taskId);
           this.store.run("UPDATE tasks SET convener_id=?,requested_by=? WHERE parent_task_id=? AND taken_over_from IS NULL", child, child, taskId);
-          this.store.run("UPDATE requests SET target_id=? WHERE target_id=?", child, oldSession.principal_id);
-          this.store.run("UPDATE requests SET asker_id=? WHERE asker_id=? AND state IN ('open','escalated')", child, oldSession.principal_id);
+          // 迁移改变提问的接收方或提问者，也改变表单关联的当前会话节点：逐条递增 revision 并写变更记录，
+          // 客户端据此重读提问；按迁移前 revision 提交的答复返回 409 conflict。
+          const moved = this.store.all<{ id: string }>("SELECT id FROM requests WHERE target_id=? OR asker_id=? AND state IN ('open','escalated')", oldSession.principal_id, oldSession.principal_id);
+          this.store.run("UPDATE requests SET target_id=CASE WHEN target_id=? THEN ? ELSE target_id END,asker_id=CASE WHEN asker_id=? AND state IN ('open','escalated') THEN ? ELSE asker_id END,revision=revision+1,updated_at=? WHERE target_id=? OR asker_id=? AND state IN ('open','escalated')",
+            oldSession.principal_id, child, oldSession.principal_id, child, at, oldSession.principal_id, oldSession.principal_id);
+          for (const request of moved) this.store.change("request", request.id);
           this.store.run("UPDATE outbox SET recipient_id=? WHERE recipient_id=? AND acked_at IS NULL", child, oldSession.principal_id);
           this.store.changeTreeStructure();
         });

@@ -289,17 +289,35 @@ test('主代理与子代理同时提问不互相阻塞；孙代理提问逐级�
   assert.equal((await confirmUser(cli, await cli.request('POST', `/v1/requests/${rootQ.id}/answer`, answer))).answeredVia.confirmedBy, 'device');
 });
 
-for (const mode of ['reopen', 'replace']) test(`F5：父任务 ${mode} 后现存下级 ask 与更深下级 escalate 路由当前 principal`, async t => {
+for (const mode of ['reopen', 'replace']) test(`F5：父任务 ${mode} 后现存下级 ask 与更深下级 escalate 路由当前 principal，迁移的提问递增 revision`, async t => {
   const f = await setup(t, { maxTaskDepth: 3 }), main = await f.main(), parent = await f.spawn(main), p = await f.handle(parent);
   const child = await f.spawn(p.client), c = await f.handle(child), grand = await f.spawn(c.client), g = await f.handle(grand);
   const questions = [{ id: 'q', question: '由当前父代理决定' }];
   const existing = await c.client.request('POST', '/v1/requests', { questions });
+  // 父任务自己的未答提问：一条由主 Agent 答复，一条转给用户。
+  const own = await p.client.request('POST', '/v1/requests', { questions });
+  const toUser = await p.client.request('POST', '/v1/requests', { questions });
+  assert.equal((await main.request('POST', `/v1/requests/${toUser.id}/escalate`, {})).targetId, 'user');
   const oldPrincipal = f.daemon.store.session(parent.agoraSessionId).principal_id;
+  const before = id => f.daemon.store.get('SELECT revision,updated_at FROM requests WHERE id=?', id);
+  const revisions = Object.fromEntries([existing.id, own.id, toUser.id].map(id => [id, before(id)]));
   p.emit({ type: 'agent_settled', aborted: true }); await f.daemon.tasks.flush();
+  const head = f.daemon.store.get("SELECT COALESCE(MAX(seq),0) AS seq FROM changes").seq;
   const reopened = await main.request('POST', `/v1/tasks/${parent.taskId}/recover`, { mode });
   const p2 = await f.handle(reopened), current = f.daemon.store.session(reopened.agoraSessionId).principal_id;
   assert.notEqual(current, oldPrincipal);
   assert.equal(f.daemon.store.get('SELECT target_id FROM requests WHERE id=?', existing.id).target_id, current);
+  // 迁移改动的提问各递增一次 revision、更新时间并写变更记录，客户端据此重读提问及其关联节点。
+  for (const [id, { revision, updated_at }] of Object.entries(revisions)) {
+    const row = f.daemon.store.get('SELECT revision,updated_at,asker_id,target_id FROM requests WHERE id=?', id);
+    assert.equal(row.revision, revision + 1, id);
+    assert.ok(row.updated_at >= updated_at, id);
+    assert.ok(f.daemon.store.get("SELECT COUNT(*) AS n FROM changes WHERE object_type='request' AND object_id=? AND seq>?", id, head).n >= 1, id);
+  }
+  assert.equal(f.daemon.store.get('SELECT asker_id FROM requests WHERE id=?', toUser.id).asker_id, current);
+  // 按迁移前 revision 提交的答复返回冲突，按新 revision 答复成功。
+  await assert.rejects(main.request('POST', `/v1/requests/${own.id}/answer`, { expectedRevision: revisions[own.id].revision, answers: [{ id: 'q', selected: [], custom: '旧版本' }] }), e => e.code === 'conflict');
+  assert.equal((await main.request('POST', `/v1/requests/${own.id}/answer`, { expectedRevision: revisions[own.id].revision + 1, answers: [{ id: 'q', selected: [], custom: '新版本' }] })).state, 'answered');
   const asked = await c.client.request('POST', '/v1/requests', { questions }); assert.equal(asked.targetId, current);
   const deep = await g.client.request('POST', '/v1/requests', { questions });
   const forwarded = await c.client.request('POST', `/v1/requests/${deep.id}/escalate`, {});
@@ -310,6 +328,63 @@ for (const mode of ['reopen', 'replace']) test(`F5：父任务 ${mode} 后现存
   const result = await p2.client.request('POST', `/v1/requests/${deep.id}/answer`, { answers: [{ id: 'q', selected: [], custom: '按新决定执行' }] });
   assert.equal(result.state, 'answered');
   assert.ok((await g.client.request('GET', '/v1/inbox')).items.some(n => n.kind === 'request:answered' && n.payload.requestId === deep.id));
+});
+
+// 父任务向用户提问后中断，返回提问、迁移前的 revision 和重开任务的函数。
+async function userQuestionBeforeMigration(f, main) {
+  const parent = await f.spawn(main), p = await f.handle(parent);
+  const question = await p.client.request('POST', '/v1/requests', { questions: [{ id: 'q', question: '由用户决定' }] });
+  const escalated = await main.request('POST', `/v1/requests/${question.id}/escalate`, {});
+  assert.equal(escalated.targetId, 'user');
+  p.emit({ type: 'agent_settled', aborted: true }); await f.daemon.tasks.flush();
+  const migrate = async mode => {
+    const reopened = await main.request('POST', `/v1/tasks/${parent.taskId}/recover`, { mode });
+    await f.handle(reopened);
+    assert.equal(f.daemon.store.get('SELECT revision FROM requests WHERE id=?', question.id).revision, escalated.revision + 1);
+  };
+  return { question, revision: escalated.revision, migrate };
+}
+const confirmationsOf = (f, requestId) => f.daemon.store.all('SELECT * FROM pending_confirmations WHERE target=?', requestId);
+
+for (const action of ['answer', 'cancel']) test(`任务换人迁移提问后，主机按旧 revision ${action} 直接返回 409，不建待确认`, async t => {
+  const f = await setup(t), main = await f.main(), cli = await f.main('host:cli');
+  const { question, revision, migrate } = await userQuestionBeforeMigration(f, main);
+  await migrate('replace');
+  const body = { expectedRevision: revision, ...(action === 'answer' ? { answers: [{ id: 'q', selected: [], custom: '旧表单' }] } : {}) };
+  await assert.rejects(cli.request('POST', `/v1/requests/${question.id}/${action}`, body, { idempotencyKey: randomUUID() }), e => e.code === 'conflict');
+  assert.equal(confirmationsOf(f, question.id).length, 0);
+  assert.equal((await cli.request('GET', '/v1/confirmations?state=pending')).items.length, 0);
+  // 已处理的提问同样在建待确认之前返回 409。
+  const current = await cli.request('GET', `/v1/requests/${question.id}`);
+  assert.equal(current.state, 'escalated');
+  await confirmUser(cli, await cli.request('POST', `/v1/requests/${question.id}/cancel`, { expectedRevision: current.revision }));
+  await assert.rejects(cli.request('POST', `/v1/requests/${question.id}/${action}`, { ...body, expectedRevision: current.revision + 1 }), e => e.code === 'already_handled');
+  assert.deepEqual(confirmationsOf(f, question.id).map(row => row.state), ['confirmed']);
+});
+
+test('待确认建立后提问被重开迁移，设备签名执行返回 409，待确认结束为 failed 且等待它的操作得到失败结果', async t => {
+  const f = await setup(t), main = await f.main(), cli = await f.main('host:cli');
+  const { question, revision, migrate } = await userQuestionBeforeMigration(f, main);
+  const key = randomUUID(), body = { expectedRevision: revision, answers: [{ id: 'q', selected: [], custom: '迁移前的答复' }] };
+  const waiting = await cli.request('POST', `/v1/requests/${question.id}/answer`, body, { idempotencyKey: key });
+  const confirmationId = waiting.confirmation.confirmationId;
+  assert.equal(confirmationsOf(f, question.id)[0].state, 'pending');
+  await migrate('reopen');
+  const head = f.daemon.store.get('SELECT COALESCE(MAX(seq),0) AS seq FROM changes').seq;
+  await assert.rejects(confirmUser(cli, waiting), e => e.code === 'conflict');
+  const row = f.daemon.store.get('SELECT * FROM pending_confirmations WHERE id=?', confirmationId);
+  assert.equal(row.state, 'failed'); assert.equal(row.failure_reason, 'conflict');
+  assert.equal((await cli.request('GET', '/v1/confirmations?state=pending')).items.some(item => item.confirmationId === confirmationId), false);
+  assert.ok(f.daemon.store.get("SELECT COUNT(*) AS n FROM changes WHERE object_type='confirmation' AND object_id=? AND seq>?", confirmationId, head).n >= 1, '插件据变更记录重读待处理列表');
+  const audit = f.daemon.store.all('SELECT outcome,reason,confirmed_by FROM security_audit WHERE confirmation_id=? ORDER BY seq', confirmationId);
+  assert.deepEqual({ ...audit.at(-1) }, { outcome: 'failed', reason: 'conflict', confirmed_by: 'device' });
+  // 提问保持迁移后的状态，同一待确认不能再次签名执行。
+  const current = await cli.request('GET', `/v1/requests/${question.id}`);
+  assert.equal(current.state, 'escalated'); assert.equal(current.revision, revision + 1);
+  await assert.rejects(confirmUser(cli, waiting), e => e.code === 'already_handled');
+  // 等待该待确认的幂等操作以 409 结束，不再停在 202。
+  await assert.rejects(cli.request('POST', `/v1/requests/${question.id}/answer`, body, { idempotencyKey: key }), e => e.code === 'conflict' && e.status === 409);
+  assert.equal(f.daemon.store.get("SELECT state FROM operations WHERE key=?", key).state, 'failed');
 });
 
 test('提问校验依赖与自定义答复；取消不算同意；等待答复可回收并由答案重新排队', async t => {

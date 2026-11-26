@@ -296,6 +296,8 @@ open ──► answered
 - **逐级转交**（escalate）保留原 `requestId`。下级先向直接上级提问，上级答不了时转给自己的召集人，直到主代理再转给用户。新提问和转交均通过鉴权 principal 找到所属任务，以任务树当前的 `tasks.convener_id` 解析直接上级，不使用会话创建时保存的上级关系；父任务 reopen / replace 后，现存下级也遵循当前任务树。`targetId` 表示当前接收方，`route` 保留经过的上级；答复始终送回原提问者。主代理自己的 ask 直接发给用户。
 - **取消、过期都不算同意**。提问者收到的结果明确写“未获答复”，任务书要求它停在安全状态，不得自行假设批准。可选 expiresAt 由 daemon 定时裁定；转给用户后停止计时，工具的 waitSeconds 超时只返回 pending，不使提问过期。
 - 同一提问并发答复时只接受一次（按 `revision` 条件更新），其余返回 `409 already_handled`。
+- **重开或换人时迁移提问**：任务 reopen / replace 时，以旧会话为接收方的提问和旧会话提出的未答提问（`open`、`escalated`）在同一事务里改由新会话接收或提出，每条被改动的提问 `revision` 加一、更新 `updatedAt` 并写入变更流，客户端据此重读提问及其关联的当前会话节点。迁移前读到的 `revision` 随之失效：带旧 `expectedRevision` 的答复、取消或转交返回 `409 conflict`，调用方重新读取后再提交。
+- **用户答复与待确认**：host 答复或取消提问要生成待确认。daemon 在生成之前先核对提问状态和 `expectedRevision`：提问已不是 `open`、`escalated` 时返回 `409 already_handled`，版本不符时返回 `409 conflict`，都不生成待确认。host 本就可以读取任何提问，提前核对不暴露额外信息；Agent 的答复仍先经过访问控制。待确认生成后提问又被迁移或在别处处理时，签名执行返回同样的 `409`，该待确认结束为 `failed`（见 [security.md](security.md#验签)），用户按新 `revision` 重新答复。
 
 ### `agora_request` 接口
 

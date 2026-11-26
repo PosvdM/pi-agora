@@ -34,7 +34,7 @@ pi-hostkit        ◄── daemon、extension（pi-pane 服务端也依赖它�
 
 - `daemon`、`extension`、`cli`、`archive`、`protocol` 都不依赖 pi-pane。不装 pi-pane 时 pi-agora 完整可用。
 - 只有 `packages/pane-plugin` 把 `@pi-pane/plugin-api` 作为 peer 依赖，负责把 agora 的数据翻译成 pane 协议。pane 协议升级时只需改这个包。
-- 插件固定使用 pi-pane 提交 `03f7916c1a7e3787fc4eaddbdfb10667a217fae7` 的协议源码。monorepo 子包通过只读 `vendor/plugin-api` 副本参与离线构建；来源记录、哈希、CI 比对和升级步骤见 [pane-plugin.md](pane-plugin.md#协议副本)。禁止手工修改副本。
+- 插件固定使用 pi-pane 提交 `8aeca0466d518034af2373c76ef05ced47744c05` 的协议源码。monorepo 子包通过只读 `vendor/plugin-api` 副本参与离线构建；来源记录、哈希、CI 比对和升级步骤见 [pane-plugin.md](pane-plugin.md#协议副本)。禁止手工修改副本。
 - `packages/archive` 提供 `projectUserView` 和 `projectPartials`，在线与离线共用用户聊天分支和中断块投影（见 [archive.md](archive.md#三种投影)）。pi 专有文件解析位于共享的 `packages/harness-pi`，archive 不依赖 daemon。
 
 
@@ -105,7 +105,7 @@ cleanup 在有未提交改动且未指定 `discard` 时返回 `409 worktree_dirt
 
 host 可读取全部待确认，主 Agent 只能读取 `requestedBy` 为自己的记录。host 可取消其他 host 或主 Agent 发起的待确认，用于浏览器拒绝 CLI 请求；主 Agent 只能取消自己发起的待确认。取消与过期不等于同意。
 
-HTTP 签名入口的同步动作（包括 task takeover、limits、提问答复与取消）与 nonce、待确认状态及审计共用事务；spawn、recover 和 archive delete 使用异步确认，先提交 `executing` 并消费 nonce，再执行文件或进程操作。重启把遗留 `executing` 标为 `failed`、`operation_interrupted`，不重放。字段与回滚规则见 [security.md](security.md#验签)。
+HTTP 签名入口的同步动作（包括 task takeover、limits、提问答复与取消）与 nonce、待确认状态及审计共用事务；spawn、recover 和 archive delete 使用异步确认，先提交 `executing` 并消费 nonce，再执行文件或进程操作。重启把遗留 `executing` 标为 `failed`、`operation_interrupted`，不重放。同步动作执行时业务状态已变（`409 conflict`、`409 already_handled`）的待确认同样结束为 `failed`。字段与回滚规则见 [security.md](security.md#验签)。
 
 ### 主会话重连
 
@@ -119,7 +119,7 @@ HTTP 签名入口的同步动作（包括 task takeover、limits、提问答复�
 - **不重复执行**：同一 key 的请求只执行一次。
 - **重复请求返回当前状态**：同一 key 再次请求时，操作已结束则返回最终结果（成功或失败，与第一次结束时相同）；尚未结束则返回 `202` 和当前状态（如 `{ "operation": { "id": "op_…", "state": "awaiting_confirmation", "confirmation": { … } } }`），不返回旧的中间响应。只有最终结果被缓存。
 - **参数不同**：同一 key、请求指纹不同，返回 `409 idempotency_mismatch`，不执行，也不返回原操作的结果。
-- **后台完成**：用户级操作在待确认被签名、执行之后，daemon 把操作记录更新为最终结果；之后用同一 key 查询得到的就是这个结果。待确认被拒绝或过期时，操作记录的最终结果为失败（`confirmation_cancelled`、`confirmation_expired`）。
+- **后台完成**：用户级操作在待确认被签名、执行之后，daemon 把操作记录更新为最终结果；之后用同一 key 查询得到的就是这个结果。待确认被拒绝或过期时，操作记录的最终结果为失败（`confirmation_cancelled`、`confirmation_expired`）；待确认因执行失败结束为 `failed` 时为其失败原因，如业务状态已变时为 `409 conflict` 或 `409 already_handled`。
 - **pane 插件侧**：把 `ActionInvocation.idempotencyKey` 原样作为该头的值，每次 `invoke` 都把请求转给 daemon，不在插件里缓存中间结果；按 daemon 返回的当前状态映射 `ActionResult`（见“动作”）。`needsInput` 之后的再次提交使用 pi-pane 生成的 `<原 key>/<n>`，是另一次操作。与 pane 协议的约定一致：同一 key 只执行一次，还在处理时返回 `pending`，结束后返回最终结果。
 
 ### 任务预算、额度与用量字段
@@ -147,7 +147,7 @@ HTTP 签名入口的同步动作（包括 task takeover、limits、提问答复�
 会话的两个修订号用途不同：
 
 - `revision`：会话行修订号，不受其他会话影响。以下变化使它递增：任务状态迁移写入会话状态（包括预算暂停）、用户接管改写任务当前会话的召集人、存档状态或校验结果更新。返工开始新一代时会话状态改回 `running`，以及停止中标记、pi 会话 ID、结束时间的变化，都不递增；因此它不能用来判断会话状态是否变过，只用于存档删除的版本核对。列表、详情、快照响应和 `agora_status` 事件返回的 `revision` 都是它，存档删除的 `expectedRevision` 也与它比较；客户端回填刚读到的值即可。
-- `treeRevision`：列表和详情返回的树修订号，取该会话及其任务最近一次变更的 `seq` 与最近 `tree/all` 结构标记 `seq` 的较大值，与变更流同一口径。pane 插件用它填 `TreeNode.revision`。它会随其他任务的结构迁移变化，不能用作删除等条件操作的版本。
+- `treeRevision`：列表和详情返回的树修订号，取该会话及其任务最近一次变更的 `seq` 与最近 `tree/all` 结构标记 `seq` 的较大值，与变更流同一口径。pane 插件按[修订号的换算](#同步与按需加载)用它填 `TreeNode.revision`。它会随其他任务的结构迁移变化，不能用作删除等条件操作的版本。
 
 `packages/protocol` 的 `SessionSummary`（列表项和详情）声明这两个字段，`SessionSnapshot` 声明 `revision`。daemon 协议版本仍为 1，`treeRevision` 不另行协商：pane 插件读到缺少 `treeRevision` 的列表项或详情时，判定对方是旧版 daemon，树快照、子节点分页和树订阅都报错，提示运行 `agora shutdown` 后重新启动后台，不用会话行 `revision` 顶替。
 
@@ -361,11 +361,21 @@ agora:root:user-tasks            〔用户任务〕   用户通过 CLI 或 pi-pa
 
 #### 同步与按需加载
 
-- **修订号**：pane 插件的来源级 `revision` 直接用变更流的 `seq`，`epoch` 用变更流的 `epoch`。普通对象变更对应一条 `TreeChange`：`upsert` 的 `revision` 和 `node.revision` 为该变更的 `seq`，修订号按变更序号单调分配；节点数据是插件处理该变更时读到的最新详情，可能新于该条变更（例如回放时后面已提交的变更），但不会更旧。pi-pane 只应用修订号大于已知值的 upsert，同一节点之后的推送或分页只会带来同样新或更新的数据，因此不会出现旧数据覆盖新数据。提问、设备等非树对象以虚拟用户任务根的 `upsert` 推进来源水位，避免分页等待不会推送的修订号；`tree/all` 结构标记对应 `reset`，重建整棵来源树。
+- **修订号**：插件对 pane 报告的 `epoch` 是 `<变更流 epoch>.<处理器实例的随机标识>`（见下一条），来源级 `revision` 由变更流的 `seq` 换算：每个 `seq` 占 4 个修订号（`REVISION_SLOTS`），第 `i` 帧的修订号为 `seq × 4 + i`。pane 协议要求每条 `upsert`/`remove` 各分配一个新修订号，而一条变更可能推送多帧。一条变更的最后一帧总是取子序号 3，前面的帧按顺序往前排：只推一帧时（节点本身，或非树对象推进水位的根节点 `upsert`）取 3；节点本身之后还要推送用户任务根的 `childCount` 更新时，两帧分别取 2、3。因此一条变更最多推送 4 帧，超过时插件报错并按 `reset` 处理；目前最多 2 帧。节点在快照和分页里的 `revision` 为 `treeRevision × 4`。快照和分页的切点包含该 `seq` 的全部帧，修订号取 `seq × 4 + 3`。pi-pane 以收到的最大修订号为水位，分页的 `revision` 大于水位时要等订阅追上，超过 5 秒按 `reset` 处理；最后一帧取切点值，处理完一条变更后水位就等于同一 `seq` 的分页修订号，展开“历史”不必等待。节点数据是插件处理该变更时读到的最新详情，可能新于该条变更（例如回放时后面已提交的变更），但不会更旧。pi-pane 只应用修订号大于已知值的 upsert，同一节点之后的推送或分页只会带来同样新或更新的数据，因此不会出现旧数据覆盖新数据。提问、设备等非树对象以虚拟用户任务根的 `upsert` 推进来源水位，避免分页等待不会推送的修订号；`tree/all` 结构标记对应 `reset`，重建整棵来源树。
 - **删除**：`agora archive delete` 只删存档文件、保留元数据，节点仍可列出，插件发 `upsert`，节点的 `availability` 变为 `missing`。只有对象的元数据也被删除、不再能列出时，才发带 `revision` 的 `remove`（tombstone）；MVP 没有删除元数据的操作。
-- **订阅与重置**：`tree.subscribe` 以快照的 `{ epoch, revision }` 为起点（参数形状以 pi-pane `docs/plugin-api.md` 为准），插件用它作为变更流的 `epoch` 和 `afterSeq`。`epoch` 不符、`revision` 大于当前 head 或早于保留范围时，变更流返回 `reset`，插件向 pi-pane 发 `TreeChange` 的 `reset`。
-- **快照**：`tree.snapshot(req)` 只返回热节点及其祖先，热节点的定义以 pane 协议为准（`req.openNodeIds` 中的节点、`status` 为 `running`/`waiting`/`paused` 的节点、`lastActivityAt` 晚于 `req.recentSince` 的节点）。插件把这些条件转成 daemon 的列表查询，响应里的 `changesCursor.seq` 就是快照的 `revision`。
-- **子节点**：`tree.children(parentId, page)` 对应 `GET /v1/sessions?parent=<nodeId>&cursor=&limit=`，响应带 `changesCursor`，插件把其中的 `epoch` 和 `seq` 作为分页结果的 `epoch` 和 `revision`；`epoch` 与当前订阅不同时，pi-pane 按 pane 协议重置。`parentId` 为 `pane:session:<piSessionId>` 时返回该主会话召集的任务和会议。节点都填 `hasChildren`，已知时填 `childCount`。
+- **订阅与重置**：`tree.subscribe` 以快照或上次收到的 `{ epoch, revision }` 为起点（参数形状以 pi-pane `docs/plugin-api.md` 为准）。插件维护一个来源级的变更处理器实例：只读取一条 daemon 变更流，每条变更只处理一次，算出带修订号的帧（含是否附发用户任务根），记入缓存后原样推给所有订阅；各订阅只按自己的起点过滤，不推修订号不大于起点的帧。帧只在第一次处理时生成，之后只从缓存取，已分配修订号的变更不会重新计算，因此同一修订号在所有标签页、续订前后都是同一帧。缓存保留最近 512 条变更的帧，缓存下界及更早的变更不能续订。没有订阅时处理器停止读取变更流，保留已处理的位置和缓存。
+
+  处理器实例就是对 pi-pane 报告的修订号序列。pi-pane 看到的 `epoch` 是 `<变更流 epoch>.<实例随机标识>`，插件只接受本实例发出过的游标，其余一律 `reset`，不向 daemon 核对。daemon 读取的先后按发出顺序判断：daemon 的 `epoch` 只向前更换，发出得更晚的读取不会读到更旧的 `epoch`。
+  - 创建：快照读到的变更流 `epoch` 与当前实例不同、或还没有实例时新建实例，换新的随机标识，位置和缓存下界都取快照切点的 `seq`；同一变更流 `epoch` 内的快照沿用当前实例。更晚发出的读取已读到另一个变更流 `epoch` 时，这次快照是旧响应：不建实例、不动当前实例，报告的 `epoch` 不属于任何实例，pi-pane 订阅时收到 `reset`。
+  - 结束：修订号序列需要重建时实例结束，其订阅收到 `reset`，之后的快照建立新实例、换新的随机标识。包括插件重启（新建 views）；与 daemon 的连接断开、重建或领域变更流 `reset`（`plugin.ts` 调用 `invalidateTree`，daemon 可能已换 `epoch`，pi-pane 同时收到 `reset`）；在实例创建之后发出的读取（快照的计数扫描、分页、变更流）读到另一个变更流 `epoch`；daemon 对处理器的位置返回同一 `epoch` 的 `reset`（早于保留范围，序列无法接上）。
+  - 保留实例：修订号序列没有重建的情况不换随机标识。读取详情失败、积压超限、删除未知任务的 tombstone 时，全部订阅 `reset`，处理器保留位置和缓存，未处理完的变更之后重新读取。读取详情失败和未知任务的 tombstone 另记下该变更的 `seq`：下一次切点不早于它的快照时处理器空闲，就直接跳到切点并清空缓存（同下面超前超过 128 的处理），并写一条警告。这条变更的结果已经包含在快照里；不跳过时，从该快照订阅会让处理器再次读到这条持续失败的变更，反复 `reset`。`tree/all` 结构标记使起点早于标记的订阅 `reset`，缓存下界移到标记，标记之前的游标不能再续订，用户任务集合作废到切点不早于标记的快照；起点不早于标记的订阅来自标记之后的快照，照常接收后面的帧。
+  - 订阅判断同步完成，不读取 daemon：`epoch` 不是当前实例的（包括还没有实例）、`revision` 大于本实例发出过的最大修订号（快照和分页的切点、推过的帧，因此帧内的未来修订号也会被拒）、或起点需要缓存下界及更早的变更时，第一帧就是 `reset`，处理器的位置和缓存不变。其余订阅从缓存补推起点之后的帧（包括起点落在某个 `seq` 中间，如连接断在同一变更的两帧之间），再接收实时推送。
+  - 快照切点超前于处理器（处理器空闲时停在较早的位置）：订阅接入后处理器从自己的位置读取变更流追上，中间的变更照常计算并缓存，只是不推给起点更晚的订阅，停在中间位置的标签页之后仍能续订。超前的 `seq` 数超过 128（积压上限 256 的一半）时，追赶要逐条读取的详情过多，可能触发积压上限而反复 `reset`，所以快照时处理器空闲就直接跳到切点并清空缓存，缓存下界移到切点，跳过的范围不能再续订。
+  - `reset` 携带当前实例的 `epoch`，没有实例时携带 `agora:unsynced`，任何快照都不报告该值。pi-pane 收到 `reset` 后重新取快照，以快照的 `epoch` 为准，不使用 `reset` 里的值。插件向 pi-pane 发的都是 `TreeChange` 的 `reset`。
+- **快照**：`tree.snapshot(req)` 只返回热节点及其祖先，热节点的定义以 pane 协议为准（`req.openNodeIds` 中的节点、`status` 为 `running`/`waiting`/`paused` 的节点、`lastActivityAt` 晚于 `req.recentSince` 的节点）。插件把这些条件转成 daemon 的列表查询，快照的 `revision` 由响应里的 `changesCursor.seq` 换算为 `seq × 4 + 3`，`epoch` 取处理器实例的复合 `epoch`。
+- **子节点**：`tree.children(parentId, page)` 对应 `GET /v1/sessions?parent=<nodeId>&cursor=&limit=`。`page.epoch` 不是当前实例的 `epoch` 时直接返回 `{ reset: true, epoch }`（`epoch` 的取值与订阅的 `reset` 相同），不读取 daemon。否则读取分页：响应 `changesCursor` 的 `epoch` 与实例的变更流 `epoch` 不同时实例结束，返回 reset；daemon 换 `epoch` 后对旧游标只返回 `400 invalid_params`，不带 `epoch`，插件此时读取 `GET /v1/sessions?limit=1` 核实，变更流 `epoch` 已变就同样结束实例并返回 reset，未变时原样报错。分页结果的 `epoch` 是实例的 `epoch`，`revision` 由 `seq` 换算为 `seq × 4 + 3`，计入本实例发出过的最大修订号。分页切点可能超前于处理器，pi-pane 等订阅追上，超过 5 秒按 `reset` 处理；pi-pane 展开“历史”时持有该来源的订阅，处理器正在读取变更流，会追上。`parentId` 为 `pane:session:<piSessionId>` 时返回该主会话召集的任务和会议。节点都填 `hasChildren`，已知时填 `childCount`。
+- **用户任务根的子节点数**：pi-pane 按 `childCount` 减去已加载的子节点数显示“历史（N）”，所以 `agora:root:user-tasks` 的 `childCount` 必须是当前的直接子节点总数，含历史会话。在线快照时插件与下一条的 `foreignChildCounts` 用同一次扫描，得到用户任务根下的会话集合。集合由变更处理器维护：会话移入用户任务根（新建或接管）时加入，移出或被删除时去掉。集合带水位 `seq`，不晚于水位的变更已经计入：一条变更只在其 `seq` 大于水位时改集合，处理完后水位推进到该 `seq`；处理器读取详情期间较晚的快照替换了集合时，读到的详情可能早于快照，不再改动集合。快照的扫描只在切点不早于水位时替换集合，较晚完成的旧扫描不覆盖已计入的变更；不替换时快照根节点的 `childCount` 取集合的当前值，之后推给该订阅的帧都晚于切点，带根节点时也是同样新或更新的数目。集合大小与处理器上次推送的数目不同时（处理器实例新建或跳过变更后的第一条树变更也是），该变更在节点本身那一帧之后附发带新 `childCount` 的根节点 `upsert`；按上一条的规则，两帧分别取子序号 2、3。快照未能完成扫描时根节点不填 `childCount`；`tree/all` 结构标记、来源切换、处理器跳过了集合未计入的变更（新建处理器实例，或快照时空闲的处理器跳到切点）时集合作废，直到切点不早于作废位置的快照重新扫描，期间根节点同样不填。在线快照总是带上用户任务根；离线快照在存档中有用户任务时总是带上该根，即使这些任务都不热，`childCount` 取元数据索引中的直接子节点总数，口径与在线相同，冷历史任务因此可以从根节点按需加载。
+- **其他来源父节点的子节点数**：插件不能为 pi-pane 的节点填写 `childCount`，因此 `tree.snapshot` 在 `foreignChildCounts` 中报告：键为 `pane:` 开头的父节点 ID，值为 agora 挂在它下面的直接子节点总数，含不热的已完成任务和 `isCurrent: false` 的历史会话，与 `tree.children(parentId)` 能分页取到的节点一致；没有子节点的父节点不列出。插件按前缀统计全部 `pane:` 父节点；agora 的节点只挂在主会话 `pane:session:<piSessionId>` 下，父主会话列不出时改挂“未归属”分组由 pi-pane 完成，插件不知道哪些主会话列不出，所以不报告 `pane:group:unassigned`。热快照只含热节点，在线时插件另外以 `GET /v1/sessions?limit=200&cursor=` 分页读取全部可见会话，按节点的 `parentId` 计数。扫描晚于快照页，可能读到快照切点之后才新建或变热的会话；pi-pane 计算“历史（N）”时只扣除经快照或分页取到的子节点，不扣除订阅推来的节点，而这类会话会由订阅回放推送并直接显示，因此不在快照页里、`treeRevision` 晚于切点且按快照请求的条件是热节点的会话不计入，避免同一个任务既显示为子节点又算进历史；冷的照常计入，宿主不显示订阅推来的冷节点，它们要从“历史”分页取到。被排除的热节点仍按创建顺序出现在 `tree.children()` 的分页里，pi-pane 会把它算作已取到的子节点，差值可能在最后一页之前降到 0；pi-pane 以分页游标判断是否还有历史，已开始分页且还有下一页时照常显示“历史”（见 pi-pane `plugin-api.md`“按需加载”），所以不会漏掉最后几个冷节点。扫描期间或快照与扫描之间 `epoch` 改变时省略该字段，订阅随后收到 `reset`，下一次快照再报告；游标绑定 `epoch`，换页时 daemon 对旧游标返回 `400 invalid_params`，插件据此重新读取当前 `epoch`，已改变就按来源切换处理，未改变时原样报错。离线时直接从 archive reader 已读取的元数据索引计算；会议分组算作召集人主会话的一个直接子节点。数目以最近一次快照为准，订阅推送的新节点不更新它。
 - 订阅推送 agora 来源全部节点的变更，pi-pane 负责只更新已加载部分和补取祖先。
 
 #### 状态映射
@@ -391,11 +401,11 @@ agora:root:user-tasks            〔用户任务〕   用户通过 CLI 或 pi-pa
 
 | 节点 | daemon 在线 | daemon 不在线 |
 | --- | --- | --- |
-| 用户管理的运行任务 | `open`、`subscribe`、`send`、`abort`、`action:agora.task.steer`、`action:agora.task.stop` | `open` |
+| 用户管理的运行任务 | `open`、`subscribe`、`send`、`abort`、`action:agora.task.steer` | `open` |
 | 用户管理的已完成、失败任务 | `open`、`send`、`action:agora.task.steer`（返工）、`action:agora.task.cleanup` | `open` |
 | 用户管理的中断任务 | `open`、`action:agora.task.recover` | `open` |
 | 用户管理的额度或预算暂停任务 | `open`、`action:agora.task.recover`（resume）、`action:agora.task.stop` | `open` |
-| Agent 管理的当前任务 | `open`、`action:agora.task.takeover`；按状态保留订阅、停止和清理，不提供 `send`、steer 或 recover | `open` |
+| Agent 管理的当前任务 | `open`、`action:agora.task.takeover`；按状态保留订阅、停止（`abort`，暂停时为 `action:agora.task.stop`）和清理，不提供 `send`、steer 或 recover | `open` |
 | 历史任务会话 | `open`，`availability: archived` | `open` |
 | 参会者、书记 | `open`、`subscribe` | `open` |
 | 会议 | `action:agora.meeting.interject`、`action:agora.meeting.decide`、`action:agora.meeting.limits`、`action:agora.meeting.stop` | 无 |
@@ -405,6 +415,7 @@ Agent 管理的当前任务在状态说明里显示“由 Agent 管理，接管�
 
 - `send`：用户管理的任务当前会话节点同时填 `composer: { actionId: "agora.task.steer", placeholder: "对子代理补充说明或返工", images: false }`。pi-pane 把聊天输入框的提交转成该动作（文字在 `input.fields.message`），不附动作表单的 id 或 revision；该受限通路只接受文字并固定 `interrupt: false`，仍保存固定请求快照。菜单里的返工表单保留版本校验，`interrupt` 由 checkbox 选择。两条通路都调用 `POST /v1/tasks/:id/steer`，保证有记录、有代数；`sessions.send` 也复用同一请求机制。`isCurrent: false` 的历史任务会话只有 `open` 能力，不能误控任务的当前运行。
 - `abort`：插件实现 `sessions.abort(ref, { clearQueue, origin })`，调用 `POST /v1/tasks/:id/stop`，语义是取消（先 `clear_queue` 再 `abort`，见 [tasks.md](tasks.md#agora_task-接口)）。`AbortResult.clearedText` 填被清掉的返工消息原文（去掉 agora 加的标注行），pi-pane 放回输入框。
+- 停止入口只出现一个：`abort` 与 `action:agora.task.stop` 调用同一端点，pi-pane 对声明了 `abort` 的节点总是显示停止按钮，只有会话视图已显示结束状态时不显示；这包括排队中（`created`）、等待决策（`waiting_decision`）和等待子任务（`waiting_children`）等映射为 `waiting`、可能没有运行进程的任务。因此未结束的任务能 `abort` 时不再声明 `action:agora.task.stop`。额度或预算暂停的任务没有运行可中止，不声明 `abort`，改为声明 `action:agora.task.stop`。
 - 参会者和书记不带 `send`：会议中对参会者说话一律通过会议插话，进入 board。
 
 ### 会话
@@ -486,17 +497,19 @@ pane 插件通过 `renderers.customMessages` 声明 agora 自定义消息的渲�
 
 pi-pane 只有一个“待处理”区，承载所有插件的持久表单。agora 需要用户处理的事项都以持久表单呈现（`ctx.formAdded()`），不另做面板：
 
-| 事项 | `FormSpec.id` | 内容 | `cancel` 按钮 | 提交后 |
-| --- | --- | --- | --- | --- |
-| 转给用户的提问（含召集人不可达时的提问） | `agora:request:<requestId>` | 由提问的题目生成（`RequestQuestion` 的字段与 pane 协议 v1 的 `FormQuestion` 相同，见 [tasks.md](tasks.md#数据模型)） | “不答复，取消提问” | `answer` 或 `cancel`（用户级） |
-| 发给用户的决策请求（会议、中断任务） | `agora:decision:<id>` | 选项来自决策请求 | 无 | `decide` 或 `recover`（用户级） |
-| CLI 等发起的待确认 | `agora:confirmation:<confirmationId>` | 操作内容、发起方、过期时间 | “拒绝” | 签名后执行；取消为 `cancel` |
-| 待批准设备 | `agora:device:<deviceId>` | 新设备标签、公钥指纹、请求时间 | “拒绝” | `approve` 或拒绝（用户级） |
-| 子会话的扩展对话框（`childUiPolicy = "pending"` 时） | `agora:ui:<runId>:<uiRequestId>` | 原对话框的标题和选项 | “取消” | 回应该对话框 |
+| 事项 | `FormSpec.id` | `title` | 内容 | `cancel` 按钮 | 提交后 |
+| --- | --- | --- | --- | --- | --- |
+| 转给用户的提问（含召集人不可达时的提问） | `agora:request:<requestId>` | `提问：<首个问题>` | 由提问的题目生成（`RequestQuestion` 的字段与 pane 协议 v1 的 `FormQuestion` 相同，见 [tasks.md](tasks.md#数据模型)） | “不答复，取消提问” | `answer` 或 `cancel`（用户级） |
+| 发给用户的决策请求（会议、中断任务） | `agora:decision:<id>` | `决策：<说明>`，中断任务为 `决策：处理中断任务：<任务标题>` | 选项来自决策请求 | 无 | `decide` 或 `recover`（用户级） |
+| CLI 等发起的待确认 | `agora:confirmation:<confirmationId>` | `待确认：<待确认的标题>` | 操作内容、发起方、过期时间 | “拒绝” | 签名后执行；取消为 `cancel` |
+| 待批准设备 | `agora:device:<deviceId>` | `待批准设备：<设备标签>` | 新设备标签、公钥指纹、请求时间 | “拒绝” | `approve` 或拒绝（用户级） |
+| 子会话的扩展对话框（`childUiPolicy = "pending"` 时） | `agora:ui:<runId>:<uiRequestId>` | 原对话框的标题，不加前缀 | 原对话框的标题和选项 | “取消” | 回应该对话框 |
 
 规则：
 
-- `FormSpec.revision` 取 daemon 中对象的 `revision`；`nodeId` 填相关的树节点；`expiresAt` 只用于显示。
+- **标题前缀**：`title` 以事项类型开头，pi-pane 的待处理区据此区分类型。提问的标题取首个问题的文字，去掉 Markdown 标记（强调、链接和图片只留文字，行内代码只去掉反引号、内容原样保留（如 `obj.__init__()`、`a * b`），标题、引用和列表标记删去）并合并空白，尖括号按普通文字保留（如 `Promise<string>`），超过 40 个字符时保留前 40 个字符并加“…”；去掉标记后为空时标题为“提问”。无法归类的事项使用兜底标题“待处理事项”，不加前缀。
+- `FormSpec.revision` 取 daemon 中对象的 `revision`；`expiresAt` 只用于显示。
+- **关联节点**：`nodeId` 填相关的树节点，pi-pane 据此在树节点上显示待处理数，并在子会话顶部显示“待处理：…”和“处理”。转给用户的提问填发起提问的任务当前会话节点 `agora:session:<agoraSessionId>`，插件按提问的 `taskId` 读取 `GET /v1/tasks/:id` 得到；答复或取消提问的待确认（`action` 为 `agora.request.answer`、`agora.request.cancel`，`target` 为提问 ID）填同一节点。提问没有 `taskId` 或任务读取失败时省略 `nodeId`，待处理区照常列出。中断任务的决策填该任务的当前会话节点；待批准设备不填。pi-pane 只接受同一表单更高的 `revision`，首次列出时省略的 `nodeId` 要等该事项的 `revision` 变化或 pi-pane 重启后才会显示。任务重开或换人后当前会话改变，daemon 迁移该任务的未答提问时递增其 `revision`（见 [tasks.md](tasks.md#提问答复与转交)），表单因此以新 `revision` 和新会话节点重新推送；用户按迁移前的 `revision` 提交时 daemon 不生成待确认，直接返回 `409 conflict`，插件映射为 `stale` 并附新表单。待确认生成后提问才被迁移时，签名执行返回 `409`，待确认结束为 `failed`，插件返回 `alreadyHandled` 并提示这次确认已作废、请在待处理区重新打开该事项，重读列表后移除该待确认表单，提问表单以新 `revision` 留在“待处理”中。离线时表单来自上次在线时写入的缓存，保留当时的 `nodeId`。
 - **提交**：`forms.submit(submission, origin)` 中，用户级事项先用 `origin` 调 `ctx.userPresence.confirm()`（确认框出现在提交的标签页），再把签名交给 daemon。结果映射（`FormSubmitResult`）：成功为 `accepted`；`202` 且尚未结束（等待用户确认、处理中）为 `pending`；`409 already_handled` 为 `alreadyHandled`；`revision` 落后为 `stale`（附新表单）；`409 idempotency_mismatch` 为 `idempotencyConflict`；其他错误为 `failed`。
 - **关闭显示与取消**：用户关闭弹窗（dismiss）不通知插件，事项仍待处理。用户点 `cancel` 按钮提交的 `{ status: "cancelled" }` 是明确的业务结果：提问被取消且不视为同意，待确认变为 `cancelled`，设备批准变为拒绝。取消提问同样是用户级操作。
 - **过期与移除**：由 daemon 统一裁定。事项被处理、取消、过期或撤回（如召集人已答复、CLI 已确认）后，daemon 推送变更，插件调用 `ctx.formRemoved(id, reason)`，`reason` 对应 `handled`、`cancelled`、`expired`、`withdrawn`。插件启动或重连时 `forms.pending()` 从 daemon 重新列出。

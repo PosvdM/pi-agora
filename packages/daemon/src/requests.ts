@@ -167,9 +167,17 @@ export class Requests {
     this.expire();
     const actor = proof ? 'user' : conn.principalId!, row = this.get(requestId);
     if (action !== 'answer' && action !== 'escalate' && action !== 'cancel') invalid('提问动作无效');
+    const current = () => {
+      if (!['open', 'escalated'].includes(row.state)) throw new AgoraError(409, 'already_handled', '提问已经处理');
+      if (body.expectedRevision !== undefined && body.expectedRevision !== row.revision) throw new AgoraError(409, 'conflict', '提问状态已变化');
+    };
+    // 主机连接答复或取消提问时，acl 会为它建持久待确认。先核对状态和版本，旧答复直接得到 409，
+    // 不留下签名时必然失败的待确认。主机连接本就可以读取任何提问，提前核对不会泄露状态；
+    // Agent 连接仍先经过 acl，无权访问的提问只得到拒绝。
+    const hostDecision = isHost(conn) && (action === 'answer' || action === 'cancel');
+    if (hostDecision) current();
     this.acl.question(conn, row, action, body, proof, requestId);
-    if (!['open', 'escalated'].includes(row.state)) throw new AgoraError(409, 'already_handled', '提问已经处理');
-    if (body.expectedRevision !== undefined && body.expectedRevision !== row.revision) throw new AgoraError(409, 'conflict', '提问状态已变化');
+    if (!hostDecision) current();
     const answers = action === 'answer' ? answersOf(JSON.parse(row.questions), body.answers) : undefined;
     let target = row.target_id;
     if (action === 'escalate') {

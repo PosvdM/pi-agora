@@ -8,7 +8,7 @@ import { openStore } from '../packages/daemon/dist/store.js';
 import { TaskManager } from '../packages/daemon/dist/tasks.js';
 import { changesCursor, readChanges, pruneChanges, streamChanges } from '../packages/daemon/dist/changes.js';
 import { listSessions, sessionDetail } from '../packages/daemon/dist/session-list.js';
-import { createViews } from '../packages/pane-plugin/dist/views.js';
+import { createViews, REVISION_SLOTS } from '../packages/pane-plugin/dist/views.js';
 
 const host = { type: 'host:pane', principalId: 'user' };
 const OLD = '2020-01-01T00:00:00.000Z';
@@ -61,7 +61,14 @@ function viewsFixture(t, store) {
     },
   });
   t.after(() => views.dispose());
-  function subscribe(cursor) { return views.tree.subscribe({ epoch: cursor.epoch, revision: cursor.seq }, event => events.push(event)); }
+  let epoch;
+  /** 先取快照建立处理器实例（切点即 cursor），再用快照的 epoch 从 cursor 订阅。 */
+  async function subscribe(cursor) {
+    const snapshot = await views.tree.snapshot({ openNodeIds: [], recentSince: '2999-01-01T00:00:00.000Z' });
+    assert.equal(snapshot.revision, cursor.seq * REVISION_SLOTS + REVISION_SLOTS - 1);
+    epoch = snapshot.epoch;
+    return views.tree.subscribe({ epoch, revision: snapshot.revision }, event => events.push(event));
+  }
   async function replay(cursor) {
     const batch = readChanges(store, cursor.epoch, cursor.seq);
     assert.equal(batch.reset, false);
@@ -72,11 +79,11 @@ function viewsFixture(t, store) {
     await new Promise(resolve => setImmediate(resolve));
     return batch.rows;
   }
-  return { views, subscribe, replay, events, requests, stopped: () => stopped };
+  return { views, subscribe, replay, events, requests, epoch: () => epoch, stopped: () => stopped };
 }
 
 function projection(item) {
-  return { id: item.agoraSessionId, parentId: item.parentId, childCount: item.childCount, hasChildren: item.hasChildren, revision: item.treeRevision };
+  return { id: item.agoraSessionId, parentId: item.parentId, childCount: item.childCount, hasChildren: item.hasChildren, revision: item.treeRevision * REVISION_SLOTS };
 }
 async function snapshotMatchesSql(views, store, ids) {
   const request = { openNodeIds: ids.map(nodeId), recentSince: '2999-01-01T00:00:00.000Z' };
@@ -84,8 +91,8 @@ async function snapshotMatchesSql(views, store, ids) {
   const params = new URLSearchParams({ snapshot: '1', recentSince: request.recentSince });
   ids.forEach(id => params.append('openNodeId', nodeId(id)));
   const sql = listSessions(store, host, params, 50);
-  assert.equal(snapshot.epoch, sql.changesCursor.epoch);
-  assert.equal(snapshot.revision, sql.changesCursor.seq);
+  assert.ok(snapshot.epoch.startsWith(`${sql.changesCursor.epoch}.`), '复合 epoch 以 daemon epoch 开头');
+  assert.equal(snapshot.revision, sql.changesCursor.seq * REVISION_SLOTS + REVISION_SLOTS - 1);
   assert.deepEqual(snapshot.nodes.filter(node => node.kind === 'session').map(node => ({
     id: node.sessionRef.id, parentId: node.parentId, childCount: node.childCount, hasChildren: node.hasChildren, revision: node.revision,
   })), sql.items.map(projection));
@@ -109,7 +116,7 @@ for (const mode of ['reopen', 'replace']) test(`父任务 ${mode} 使全部历�
   const plugin = viewsFixture(t, f.store);
   await snapshotMatchesSql(plugin.views, f.store, ids);
   const cursor = changesCursor(f.store);
-  plugin.subscribe(cursor);
+  await plugin.subscribe(cursor);
   plugin.requests.length = 0;
   const reopened = await f.tasks.recover(f.actor(parent), parent.taskId, { mode });
   ids.push(reopened.agoraSessionId);
@@ -117,7 +124,7 @@ for (const mode of ['reopen', 'replace']) test(`父任务 ${mode} 使全部历�
   const markers = rows.filter(row => row.object_type === 'tree' && row.object_id === 'all');
   assert.equal(markers.length, 1);
   assert.equal(changesCursor(f.store).epoch, cursor.epoch, '结构迁移不更换数据库 epoch');
-  assert.deepEqual(plugin.events, [{ type: 'reset', epoch: cursor.epoch }]);
+  assert.deepEqual(plugin.events, [{ type: 'reset', epoch: plugin.epoch() }]);
   assert.equal(plugin.stopped(), 1, 'marker 后停止订阅，不继续 upsert 或 root-noop');
   assert.deepEqual(plugin.requests, [], 'marker 后不处理队列中的后续 task change');
   const items = await snapshotMatchesSql(plugin.views, f.store, ids);
@@ -153,10 +160,10 @@ test('已完成子任务中断重开推进外父计数及 revision；普通状�
   f.state(child, 'interrupted');
   const before = sessionDetail(f.store, parent.agoraSessionId);
   const cursor = changesCursor(f.store);
-  const plugin = viewsFixture(t, f.store); plugin.subscribe(cursor);
+  const plugin = viewsFixture(t, f.store); await plugin.subscribe(cursor);
   const reopened = await f.tasks.recover(f.actor(child), child.taskId, { mode: 'reopen' });
   await plugin.replay(cursor);
-  assert.deepEqual(plugin.events, [{ type: 'reset', epoch: cursor.epoch }]);
+  assert.deepEqual(plugin.events, [{ type: 'reset', epoch: plugin.epoch() }]);
   const items = await snapshotMatchesSql(plugin.views, f.store, [parent.agoraSessionId, child.agoraSessionId, reopened.agoraSessionId]);
   const after = items.find(item => item.agoraSessionId === parent.agoraSessionId);
   assert.equal(before.childCount, 1);

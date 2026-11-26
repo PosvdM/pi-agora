@@ -156,6 +156,8 @@ daemon 收到签名后依次检查，任何一步失败都拒绝并写审计：
 
 同步动作（提问答复与取消、任务 limits 与 takeover、租约接管、设备和安全设置）在同一事务内完成业务写入、nonce 消费、待确认的 `confirmed` 状态和审计；失败时共同回滚，拒绝审计另行保存。接管通知也在事务内写 outbox，提交后才唤醒。不能在事务回滚前触发停止等外部副作用。
 
+验签通过后，同步动作执行时发现业务状态已变、返回 `409 conflict` 或 `409 already_handled`（如提问在生成待确认后被迁移或已在别处处理）时，签名参数固定，重试不可能成功。业务写入回滚后，daemon 在另一事务里把该待确认标为 `failed`，`failure_reason` 取该错误码，记录签名设备并写 `failed` 审计，把等待它的幂等操作结束为同一错误，并写 `confirmation` 变更记录，客户端据此重读待处理列表。再次签名该待确认返回 `409 already_handled`。签名无效、设备不符、挑战不匹配等拒绝只写拒绝审计，待确认保持 `pending`，可以重新签名。执行时返回 `lease_required`（发起确认的主会话暂时失去租约）同样保持 `pending`：主会话重连并重新取得租约后，同一签名参数仍可能执行成功，待确认按过期或取消结束。
+
 spawn、recover 和 archive delete 涉及异步文件或进程操作，HTTP 签名入口使用 `signAsync`：先在短事务内验签、消费 nonce 并写 `executing`，再在事务外执行，最后持久化 `confirmed` 与结果或 `failed` 与受控失败原因。nonce 消费后，即使执行失败也不能重放；daemon 重启将遗留的 `executing` 标为 `failed`、`operation_interrupted`，不自动执行。同步动作使用 `sign`，不把异步回调放入 SQLite 事务。
 
 ### 经 pi-pane 确认
@@ -204,7 +206,7 @@ daemon 在 `settings` 表里持久记录两个独立的状态：
 | 其他（普通新增） | 进入“待批准设备”，由已配对设备签名批准（用户级操作 `agora.device.approve`） |
 
 - **配对动作的签名**：前两种情况下没有已配对设备，daemon 只能验证新设备持有自己的私钥：配对挑战（`action: "agora.device.pair"`）由新设备自己的密钥签名，daemon 用请求里附带的公钥验证。这种“自签”只对配对动作本身有效；其他所有用户级操作（包括批准设备）仍然只接受已配对设备的签名，不放宽。
-- **待批准设备**：pane 插件在“待处理”区列出，写明新设备的标签、公钥指纹和请求时间。未配对浏览器提交的批准签名无效。pane 插件可以用 `ctx.userPresence.devices()` 发现新登录的浏览器并提示配对。
+- **待批准设备**：新设备提交配对后进入待批准时，pane 插件提示“已提交配对请求，请在已配对的设备上批准”，不提示已配对。pane 插件在“待处理”区列出待批准设备，写明新设备的标签、公钥指纹和请求时间。未配对浏览器提交的批准签名无效。pane 插件可以用 `ctx.userPresence.devices()` 发现新登录的浏览器并提示配对。
 - **源变化即新设备**：IndexedDB 按源（协议 + 主机 + 端口）隔离。pi-pane 只服务 `http://127.0.0.1:<port>`（默认 4319，可配置），端口或源改变后浏览器里是另一份密钥，按普通新增处理。
 - 已配对设备可以在 pi-pane 或 CLI 里查看。
 
@@ -238,7 +240,7 @@ daemon 启动时、以及在线检测到状态变化时，检查以下情况，�
 
 1. pane 插件调用 `POST /v1/security/alerts/:alertId/acknowledge`，带用户看到的 `revision`；daemon 生成待确认和挑战（`action: "agora.security.acknowledge"`、`target: alertId`，`paramsHash` 覆盖 `revision`），返回 `202`。
 2. 浏览器签名后，插件走通用的 `POST /v1/confirmations/:id/sign`。签名设备必须是已配对设备（离线重置后重新配对的设备也算）。
-3. daemon 在同一个事务里：校验警告仍为未确认、`revision` 未变；记录已知悉（设备、时间）；消费 nonce；写审计；产生变更事件。`revision` 已变时返回 `409 conflict`，用户需要按新内容重新确认，旧的确认不能清掉新的警告。
+3. daemon 在同一个事务里：校验警告仍为未确认、`revision` 未变；记录已知悉（设备、时间）；消费 nonce；写审计；产生变更事件。`revision` 已变时返回 `409 conflict`，旧知悉的待确认结束为 `failed`（见[验签](#验签)），用户需要按新内容重新确认，旧的确认不能清掉新的警告。
 4. pane 插件收到警告状态变为已知悉的变更后，才清除横幅。
 
 ## 只用终端

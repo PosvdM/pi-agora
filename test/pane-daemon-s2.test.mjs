@@ -59,7 +59,10 @@ test("真实 daemon 变更流驱动插件树，daemon 重启后 reset 并重新�
       const snapshot = await plugin.tree.snapshot(request);
       return snapshot.nodes.some(node => node.id === "agora:session:two") ? snapshot : undefined;
     });
-    assert.equal(recovered.epoch, epoch, "数据库级 epoch 不因 daemon 进程重启变化");
+    // 复合 epoch 为 <daemon epoch>.<实例随机标识>：数据库级 epoch 不因 daemon 进程重启变化，重连后修订号序列换新实例。
+    const source = value => value.slice(0, value.lastIndexOf("."));
+    assert.equal(source(recovered.epoch), source(epoch), "数据库级 epoch 不因 daemon 进程重启变化");
+    assert.notEqual(recovered.epoch, epoch, "重连后换新的修订号序列，旧游标续订时 reset");
     assert.deepEqual(recovered.nodes.filter(node => node.kind === "session").map(node => node.id).sort(), ["agora:session:one", "agora:session:two"]);
     assert.ok(recovered.revision >= initial.revision);
   } finally {
