@@ -65,12 +65,14 @@ test('两台浏览器同时首次配对：只有一台消费 TOFU，另一台进
   // 两个确认框都弹出后再同时签名，签名请求并发到达 daemon。
   await Promise.all([c, d].map(x => globalAction(x.page, '配对当前浏览器')));
   await Promise.all([c, d].map(x => byId(x.page, 'presence-dialog').waitFor()));
+  // 待批准提示 5 秒后自动消失，签名之前就开始等，记下出现在哪一页，不要求轮询结束后它仍在屏幕上。
+  const toasted = Promise.any([c, d].map(x => byId(x.page, 'toast').filter({ hasText: '请在已配对的设备上批准' }).waitFor({ timeout: 60_000 }).then(() => x)));
   await Promise.all([c, d].map(x => confirmPresence(x.page)));
   await until(async () => { const states = [await deviceState(w, c.id), await deviceState(w, d.id)]; return states.every(Boolean) && states; });
   const states = [await deviceState(w, c.id), await deviceState(w, d.id)].sort();
   assert.deepEqual(states, ['paired', 'pending'], '只有一台浏览器直接配对');
   const loser = await deviceState(w, c.id) === 'pending' ? c : d;
-  await byId(loser.page, 'toast').filter({ hasText: '请在已配对的设备上批准' }).waitFor();
+  assert.equal(await toasted, loser, '待批准提示出现在进入待批准的浏览器');
   await byId(c.page, 'pending-item').filter({ hasText: `待批准设备：${loser === c ? '设备丙' : '设备丁'}` }).waitFor();
 });
 
